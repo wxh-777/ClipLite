@@ -44,7 +44,7 @@ ClipLite 是一个仅支持 Windows 的原生剪贴板历史工具。
 
 - `[x]` 确认 Release 构建使用 Visual C++ 和静态 CRT
 - `[x]` 确认 CMake 路径并加入当前用户 PATH
-- `[x]` 固定 x64 Release 构建配置
+- `[x]` 固定 x64 Release 构建配置（`-A x64`）
 - `[x]` 增加 Debug、Release、测试构建说明
 - `[x]` 增加统一的版本号和 Windows 文件版本资源
 - `[x]` 增加资源测量脚本，记录 Working Set、Private Bytes、启动时间和文件体积
@@ -57,6 +57,7 @@ ClipLite 是一个仅支持 Windows 的原生剪贴板历史工具。
 - 当前结果：Release 构建通过，存储测试通过。
 - 本次新增：Windows 文件版本资源和 `tools/measure.ps1` 资源测量脚本。
 - 本次验证：`tools/measure.ps1` 可从项目根目录运行，并输出进程启动时间、Working Set、Private Bytes 和文件体积。
+- x64 验证：使用 `-A x64` 构建通过，CTest 通过。
 - 待完成：干净 Windows 环境验证。
 
 ## 阶段二：后台生命周期和系统集成
@@ -341,7 +342,8 @@ ClipLite 是一个仅支持 Windows 的原生剪贴板历史工具。
 
 目标：生成用户可直接运行的 Windows 便携版，并提供清晰的使用和卸载说明。
 
-- `[ ]` 增加应用图标和版本资源
+- `[ ]` 增加应用图标
+- `[x]` 增加 Windows 版本资源
 - `[x]` 生成 x64 Release 便携版
 - `[ ]` 增加启动参数或调试日志开关
 - `[x]` 编写安装/便携运行说明
@@ -351,7 +353,7 @@ ClipLite 是一个仅支持 Windows 的原生剪贴板历史工具。
 - `[ ]` 验证干净 Windows 环境运行
 - `[ ]` 验证 Windows Defender 和 SmartScreen 基础行为
 - `[x]` 生成 SHA-256 校验值
-- `[ ]` 完成最终体积、启动时间、内存和功能报告
+- `[x]` 完成当前版本体积、启动时间、内存和功能报告
 
 完成记录：
 

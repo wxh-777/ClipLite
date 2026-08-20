@@ -4,7 +4,7 @@ param(
 )
 
 $root = Split-Path -Parent $PSScriptRoot
-$exe = Join-Path $root "build\$Configuration\ClipLite.exe"
+$exe = Join-Path $root "build-x64\$Configuration\ClipLite.exe"
 $out = Join-Path $root "out\ClipLite-$Version-win-x64"
 
 if (-not (Test-Path $exe)) {

@@ -25,15 +25,15 @@ ClipLite 是一个仅面向 Windows 的轻量剪贴板历史工具。
 需要 Windows、Visual Studio 2019 或更高版本、CMake 3.15 或更高版本。
 
 ```pwsh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
-cmake --build build --config Release
-ctest --test-dir build -C Release --output-on-failure
+cmake -S . -B build-x64 -A x64 -DBUILD_TESTING=ON
+cmake --build build-x64 --config Release
+ctest --test-dir build-x64 -C Release --output-on-failure
 
 # 可选：测量启动后的进程资源
 powershell -ExecutionPolicy Bypass -File tools/measure.ps1
 ```
 
-程序输出为 `build/Release/ClipLite.exe`。
+程序输出为 `build-x64/Release/ClipLite.exe`。
 
 生成便携发布目录：
 

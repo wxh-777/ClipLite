@@ -1,5 +1,5 @@
 param(
-    [string]$ExePath = "..\build\Release\ClipLite.exe",
+    [string]$ExePath = "..\build-x64\Release\ClipLite.exe",
     [int]$WaitMilliseconds = 1000
 )
 
