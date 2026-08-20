@@ -1,0 +1,32 @@
+#include <winver.h>
+
+#define CLIPLITE_VERSION 0,1,0,0
+#define CLIPLITE_VERSION_STRING "0.1.0"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION CLIPLITE_VERSION
+ PRODUCTVERSION CLIPLITE_VERSION
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+ FILEFLAGS 0
+ FILEOS VOS__WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "ClipLite"
+            VALUE "FileDescription", "Lightweight Windows clipboard history"
+            VALUE "FileVersion", CLIPLITE_VERSION_STRING
+            VALUE "InternalName", "ClipLite"
+            VALUE "OriginalFilename", "ClipLite.exe"
+            VALUE "ProductName", "ClipLite"
+            VALUE "ProductVersion", CLIPLITE_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

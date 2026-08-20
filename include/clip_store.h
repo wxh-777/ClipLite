@@ -38,6 +38,7 @@ public:
     bool remove(std::size_t index);
     bool togglePinned(std::size_t index);
     bool setCategory(std::size_t index, std::uint32_t category);
+    bool prune(std::size_t maxItems, std::uint64_t maxBytes, std::uint64_t minTimestamp);
     bool clear();
 
     std::vector<std::size_t> search(const std::string& query) const;

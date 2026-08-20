@@ -17,6 +17,7 @@ ClipLite 是一个仅面向 Windows 的轻量剪贴板历史工具。
 - Windows 原生单实例后台监听
 - 英文和简体中文基础界面
 - 黑色和白色主题设置
+- 可配置最大记录数、最大磁盘空间、保留天数和暂停监听
 - 追加式磁盘存储，不在内存中保存完整历史正文
 
 ## 构建
@@ -27,6 +28,9 @@ ClipLite 是一个仅面向 Windows 的轻量剪贴板历史工具。
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
+
+# 可选：测量启动后的进程资源
+powershell -ExecutionPolicy Bypass -File tools/measure.ps1
 ```
 
 程序输出为 `build/Release/ClipLite.exe`。

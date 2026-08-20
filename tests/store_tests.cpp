@@ -69,5 +69,14 @@ int main() {
     ClipStore checksumRejected(10);
     if (!checksumRejected.open() || checksumRejected.activeCount() != 0) return 22;
     checksumRejected.clear();
+
+    ClipStore limited(10);
+    limited.open();
+    limited.clear();
+    if (!limited.append(ClipType::Text, "one", clipLiteHash("one"))) return 26;
+    if (!limited.append(ClipType::Text, "two", clipLiteHash("two"))) return 27;
+    if (!limited.append(ClipType::Text, "three", clipLiteHash("three"))) return 28;
+    if (!limited.prune(2, 0, 0) || limited.activeCount() != 2) return 29;
+    limited.clear();
     return 0;
 }

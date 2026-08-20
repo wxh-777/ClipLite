@@ -193,6 +193,10 @@ bool ClipStore::append(ClipType type, const std::string& payload, std::uint64_t 
     std::FILE* file = nullptr;
     _wfopen_s(&file, path_.c_str(), L"ab");
     if (!file) return false;
+    if (_fseeki64(file, 0, SEEK_END) != 0) {
+        std::fclose(file);
+        return false;
+    }
 
     ClipItem item;
     item.type = type;
@@ -286,6 +290,26 @@ bool ClipStore::togglePinned(std::size_t index) {
 bool ClipStore::setCategory(std::size_t index, std::uint32_t category) {
     if (index >= items_.size()) return false;
     items_[index].category = category;
+    return rebuildFile();
+}
+
+bool ClipStore::prune(std::size_t maxItems, std::uint64_t maxBytes, std::uint64_t minTimestamp) {
+    if (items_.empty()) return true;
+    std::vector<ClipItem> kept;
+    kept.reserve(items_.size());
+    std::uint64_t bytes = 0;
+    for (const ClipItem& item : items_) {
+        const std::uint64_t recordBytes = sizeof(DiskHeader) + item.payloadSize;
+        const bool underCount = maxItems == 0 || kept.size() < maxItems;
+        const bool underBytes = maxBytes == 0 || bytes + recordBytes <= maxBytes;
+        const bool recent = minTimestamp == 0 || item.timestamp >= minTimestamp;
+        if (item.pinned || (underCount && underBytes && recent)) {
+            kept.push_back(item);
+            bytes += recordBytes;
+        }
+    }
+    if (kept.size() == items_.size()) return true;
+    items_ = std::move(kept);
     return rebuildFile();
 }
 

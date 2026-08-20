@@ -15,6 +15,7 @@ add_executable(ClipLite WIN32
     src/main.cpp
     src/clip_store.cpp
     include/clip_store.h
+    resources/clipLite.rc
 )
 
 target_include_directories(ClipLite PRIVATE include)

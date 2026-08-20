@@ -34,6 +34,10 @@ constexpr int kSettingDark = 21;
 constexpr int kSettingLanguage = 22;
 constexpr int kSettingClear = 23;
 constexpr int kSettingSave = 24;
+constexpr int kSettingMaxItems = 25;
+constexpr int kSettingRetentionDays = 26;
+constexpr int kSettingMaxDiskMb = 27;
+constexpr int kSettingPause = 28;
 constexpr int kMenuPaste = 100;
 constexpr int kMenuPin = 101;
 constexpr int kMenuDelete = 102;
@@ -49,6 +53,10 @@ constexpr int kTrayExit = 202;
 struct Settings {
     bool winV = false;
     bool dark = false;
+    bool pauseMonitoring = false;
+    int maxItems = 1000;
+    int retentionDays = 30;
+    int maxDiskMb = 256;
     int language = -1; // -1 system, 0 English, 1 Simplified Chinese
 };
 
@@ -64,6 +72,7 @@ struct AppState {
     WNDPROC oldEditProc = nullptr;
     POINT popupPoint{};
     int selected = 0;
+    int scrollOffset = 0;
     std::string query;
     Settings settingsData;
     ClipStore store;
@@ -102,6 +111,15 @@ std::wstring settingsPath() {
     return clipLiteDataDirectory() + L"\\settings.ini";
 }
 
+std::uint64_t nowUnix() {
+    FILETIME ft{};
+    GetSystemTimeAsFileTime(&ft);
+    ULARGE_INTEGER value{};
+    value.LowPart = ft.dwLowDateTime;
+    value.HighPart = ft.dwHighDateTime;
+    return (value.QuadPart - 116444736000000000ULL) / 10000000ULL;
+}
+
 void loadSettings(Settings& settings) {
     std::FILE* file = nullptr;
     _wfopen_s(&file, settingsPath().c_str(), L"rb");
@@ -110,6 +128,10 @@ void loadSettings(Settings& settings) {
     while (std::fgets(line, sizeof(line), file)) {
         if (std::strncmp(line, "winV=1", 6) == 0) settings.winV = true;
         if (std::strncmp(line, "dark=1", 6) == 0) settings.dark = true;
+        if (std::strncmp(line, "pauseMonitoring=1", 17) == 0) settings.pauseMonitoring = true;
+        if (std::strncmp(line, "maxItems=", 9) == 0) settings.maxItems = std::clamp(std::atoi(line + 9), 0, 100000);
+        if (std::strncmp(line, "retentionDays=", 14) == 0) settings.retentionDays = std::clamp(std::atoi(line + 14), 0, 36500);
+        if (std::strncmp(line, "maxDiskMb=", 10) == 0) settings.maxDiskMb = std::clamp(std::atoi(line + 10), 0, 102400);
         if (std::strncmp(line, "language=0", 10) == 0) settings.language = 0;
         if (std::strncmp(line, "language=1", 10) == 0) settings.language = 1;
         if (std::strncmp(line, "language=-1", 11) == 0) settings.language = -1;
@@ -121,8 +143,11 @@ void saveSettings(const Settings& settings) {
     std::FILE* file = nullptr;
     _wfopen_s(&file, settingsPath().c_str(), L"wb");
     if (!file) return;
-    std::fprintf(file, "winV=%d\ndark=%d\nlanguage=%d\n", settings.winV ? 1 : 0,
-                 settings.dark ? 1 : 0, settings.language);
+    std::fprintf(file, "winV=%d\ndark=%d\npauseMonitoring=%d\nmaxItems=%d\n"
+                      "retentionDays=%d\nmaxDiskMb=%d\nlanguage=%d\n",
+                 settings.winV ? 1 : 0, settings.dark ? 1 : 0,
+                 settings.pauseMonitoring ? 1 : 0, settings.maxItems,
+                 settings.retentionDays, settings.maxDiskMb, settings.language);
     std::fclose(file);
 }
 
@@ -370,7 +395,18 @@ void refreshVisible() {
     g_app->visible = g_app->store.search(g_app->query);
     if (g_app->visible.empty()) g_app->selected = 0;
     else g_app->selected = std::clamp(g_app->selected, 0, static_cast<int>(g_app->visible.size()) - 1);
+    const int visibleRows = 8;
+    const int maxOffset = std::max(0, static_cast<int>(g_app->visible.size()) - visibleRows);
+    g_app->scrollOffset = std::clamp(g_app->scrollOffset, 0, maxOffset);
+    if (g_app->selected < g_app->scrollOffset) g_app->scrollOffset = g_app->selected;
+    if (g_app->selected >= g_app->scrollOffset + visibleRows) {
+        g_app->scrollOffset = g_app->selected - visibleRows + 1;
+    }
     InvalidateRect(g_app->popup, nullptr, FALSE);
+}
+
+void notifyPasteFailure() {
+    MessageBeep(MB_ICONWARNING);
 }
 
 void sendPaste() {
@@ -378,9 +414,15 @@ void sendPaste() {
     const int selected = std::clamp(g_app->selected, 0, static_cast<int>(g_app->visible.size()) - 1);
     const std::size_t index = g_app->visible[static_cast<std::size_t>(selected)];
     std::string payload;
-    if (!g_app->store.readPayload(index, payload)) return;
+    if (!g_app->store.readPayload(index, payload)) {
+        notifyPasteFailure();
+        return;
+    }
     const std::uint64_t hash = g_app->store.items()[index].hash;
-    if (!setClipboardDataForItem(g_app->store.items()[index], payload)) return;
+    if (!setClipboardDataForItem(g_app->store.items()[index], payload)) {
+        notifyPasteFailure();
+        return;
+    }
     g_app->ignoredClipboardHash = hash;
     HWND target = g_app->targetWindow;
     DestroyWindow(g_app->popup);
@@ -410,6 +452,7 @@ void showPopup() {
     GetCursorPos(&g_app->popupPoint);
     g_app->query.clear();
     g_app->selected = 0;
+    g_app->scrollOffset = 0;
     g_app->visible = g_app->store.search({});
 
     const int width = 480;
@@ -576,7 +619,8 @@ void paintPopup(HWND hwnd, HDC dc) {
     SelectObject(dc, rowFont);
 
     int y = 78;
-    for (int row = 0; row < static_cast<int>(g_app->visible.size()) && y < client.bottom; ++row) {
+    for (int row = g_app->scrollOffset;
+         row < static_cast<int>(g_app->visible.size()) && y < client.bottom; ++row) {
         const ClipItem& item = g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]];
         RECT rowRect{8, y, client.right - 8, y + 56};
         if (row == g_app->selected) {
@@ -634,19 +678,52 @@ void createSettingsControls(HWND hwnd) {
     const int languageSelection = g_app->settingsData.language < 0
         ? 0 : g_app->settingsData.language + 1;
     SendMessageW(language, CB_SETCURSEL, languageSelection, 0);
-    CreateWindowW(L"STATIC", zh ? L"历史记录" : L"History",
-                  WS_CHILD | WS_VISIBLE, 20, 176, 90, 24, hwnd, nullptr,
+    CreateWindowW(L"STATIC", zh ? L"数据保留" : L"Data retention",
+                  WS_CHILD | WS_VISIBLE, 20, 176, 180, 24, hwnd, nullptr,
+                  GetModuleHandleW(nullptr), nullptr);
+    CreateWindowW(L"STATIC", zh ? L"最大记录数" : L"Maximum records",
+                  WS_CHILD | WS_VISIBLE, 20, 208, 180, 24, hwnd, nullptr,
+                  GetModuleHandleW(nullptr), nullptr);
+    wchar_t value[32]{};
+    swprintf_s(value, L"%d", g_app->settingsData.maxItems);
+    CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", value, WS_CHILD | WS_VISIBLE | ES_NUMBER,
+                    220, 204, 120, 26, hwnd,
+                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingMaxItems)),
+                    GetModuleHandleW(nullptr), nullptr);
+    CreateWindowW(L"STATIC", zh ? L"保留天数（0 = 永久）" : L"Retention days (0 = forever)",
+                  WS_CHILD | WS_VISIBLE, 20, 242, 180, 24, hwnd, nullptr,
+                  GetModuleHandleW(nullptr), nullptr);
+    swprintf_s(value, L"%d", g_app->settingsData.retentionDays);
+    CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", value, WS_CHILD | WS_VISIBLE | ES_NUMBER,
+                    220, 238, 120, 26, hwnd,
+                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingRetentionDays)),
+                    GetModuleHandleW(nullptr), nullptr);
+    CreateWindowW(L"STATIC", zh ? L"最大磁盘空间（MB，0 = 不限制）" : L"Maximum disk space (MB, 0 = unlimited)",
+                  WS_CHILD | WS_VISIBLE, 20, 276, 200, 24, hwnd, nullptr,
+                  GetModuleHandleW(nullptr), nullptr);
+    swprintf_s(value, L"%d", g_app->settingsData.maxDiskMb);
+    CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", value, WS_CHILD | WS_VISIBLE | ES_NUMBER,
+                    220, 272, 120, 26, hwnd,
+                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingMaxDiskMb)),
+                    GetModuleHandleW(nullptr), nullptr);
+    HWND pause = CreateWindowW(L"BUTTON", zh ? L"暂停剪贴板监听" : L"Pause clipboard monitoring",
+                               WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 20, 308, 260, 26, hwnd,
+                               reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingPause)),
+                               GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(pause, BM_SETCHECK, g_app->settingsData.pauseMonitoring ? BST_CHECKED : BST_UNCHECKED, 0);
+    CreateWindowW(L"STATIC", zh ? L"当前历史" : L"Current history",
+                  WS_CHILD | WS_VISIBLE, 20, 342, 100, 24, hwnd, nullptr,
                   GetModuleHandleW(nullptr), nullptr);
     wchar_t count[128]{};
     swprintf_s(count, zh ? L"%zu 条记录，%llu 字节" : L"%zu records, %llu bytes",
                g_app->store.activeCount(), g_app->store.diskBytes());
-    CreateWindowW(L"STATIC", count, WS_CHILD | WS_VISIBLE, 110, 176, 250, 24, hwnd, nullptr,
+    CreateWindowW(L"STATIC", count, WS_CHILD | WS_VISIBLE, 120, 342, 250, 24, hwnd, nullptr,
                   GetModuleHandleW(nullptr), nullptr);
     CreateWindowW(L"BUTTON", zh ? L"清空历史" : L"Clear history",
-                  WS_CHILD | WS_VISIBLE, 20, 216, 120, 28, hwnd,
+                  WS_CHILD | WS_VISIBLE, 20, 375, 120, 28, hwnd,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingClear)), GetModuleHandleW(nullptr), nullptr);
     CreateWindowW(L"BUTTON", zh ? L"保存" : L"Save",
-                  WS_CHILD | WS_VISIBLE, 270, 216, 90, 28, hwnd,
+                  WS_CHILD | WS_VISIBLE, 270, 375, 90, 28, hwnd,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingSave)), GetModuleHandleW(nullptr), nullptr);
 }
 
@@ -689,6 +766,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == WM_CLIPBOARDUPDATE) {
+            if (g_app->settingsData.pauseMonitoring) return 0;
             ClipType type{};
             std::string payload;
             if (captureClipboard(type, payload)) {
@@ -716,11 +794,29 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 HWND win = GetDlgItem(hwnd, kSettingWinV);
                 HWND dark = GetDlgItem(hwnd, kSettingDark);
                 HWND language = GetDlgItem(hwnd, kSettingLanguage);
+                HWND pause = GetDlgItem(hwnd, kSettingPause);
+                HWND maxItems = GetDlgItem(hwnd, kSettingMaxItems);
+                HWND retentionDays = GetDlgItem(hwnd, kSettingRetentionDays);
+                HWND maxDiskMb = GetDlgItem(hwnd, kSettingMaxDiskMb);
                 g_app->settingsData.winV = SendMessageW(win, BM_GETCHECK, 0, 0) == BST_CHECKED;
                 g_app->settingsData.dark = SendMessageW(dark, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                wchar_t value[32]{};
+                GetWindowTextW(maxItems, value, 32);
+                g_app->settingsData.maxItems = std::clamp(std::wcstol(value, nullptr, 10), 0L, 100000L);
+                GetWindowTextW(retentionDays, value, 32);
+                g_app->settingsData.retentionDays = std::clamp(std::wcstol(value, nullptr, 10), 0L, 36500L);
+                GetWindowTextW(maxDiskMb, value, 32);
+                g_app->settingsData.maxDiskMb = std::clamp(std::wcstol(value, nullptr, 10), 0L, 102400L);
+                g_app->settingsData.pauseMonitoring = SendMessageW(pause, BM_GETCHECK, 0, 0) == BST_CHECKED;
                 const int languageSelection = static_cast<int>(SendMessageW(language, CB_GETCURSEL, 0, 0));
                 g_app->settingsData.language = languageSelection <= 0 ? -1 : languageSelection - 1;
                 saveSettings(g_app->settingsData);
+                const std::uint64_t cutoff = g_app->settingsData.retentionDays > 0
+                    ? nowUnix() - static_cast<std::uint64_t>(g_app->settingsData.retentionDays) * 86400ULL
+                    : 0;
+                g_app->store.prune(g_app->settingsData.maxItems,
+                                   static_cast<std::uint64_t>(g_app->settingsData.maxDiskMb) * 1024ULL * 1024ULL,
+                                   cutoff);
                 registerHotkeys();
                 DestroyWindow(hwnd);
                 g_app->settings = nullptr;
@@ -756,8 +852,14 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             } else if (wParam == VK_F10) openSettings();
             return 0;
         }
+        if (message == WM_MOUSEWHEEL) {
+            const int direction = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -3 : 3;
+            g_app->scrollOffset += direction;
+            refreshVisible();
+            return 0;
+        }
         if (message == WM_LBUTTONDOWN) {
-            const int row = (GET_Y_LPARAM(lParam) - 78) / 62;
+            const int row = g_app->scrollOffset + (GET_Y_LPARAM(lParam) - 78) / 62;
             if (row >= 0 && row < static_cast<int>(g_app->visible.size())) {
                 g_app->selected = row;
                 sendPaste();
@@ -765,7 +867,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == WM_RBUTTONUP) {
-            const int row = (GET_Y_LPARAM(lParam) - 78) / 62;
+            const int row = g_app->scrollOffset + (GET_Y_LPARAM(lParam) - 78) / 62;
             if (row >= 0 && row < static_cast<int>(g_app->visible.size())) {
                 g_app->selected = row;
                 HMENU menu = CreatePopupMenu();
@@ -822,7 +924,7 @@ void openSettings() {
     g_app->settings = CreateWindowExW(WS_EX_TOOLWINDOW, L"ClipLiteSettings",
                                       tr(L"ClipLite Settings", L"ClipLite 设置"),
                                       WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-                                      CW_USEDEFAULT, CW_USEDEFAULT, 400, 300,
+                                      CW_USEDEFAULT, CW_USEDEFAULT, 400, 440,
                                       nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     ShowWindow(g_app->settings, SW_SHOW);
     UpdateWindow(g_app->settings);
@@ -835,6 +937,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     g_app = &app;
     loadSettings(app.settingsData);
     if (!app.store.open()) return 1;
+    const std::uint64_t cutoff = app.settingsData.retentionDays > 0
+        ? nowUnix() - static_cast<std::uint64_t>(app.settingsData.retentionDays) * 86400ULL
+        : 0;
+    app.store.prune(app.settingsData.maxItems,
+                    static_cast<std::uint64_t>(app.settingsData.maxDiskMb) * 1024ULL * 1024ULL,
+                    cutoff);
 
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&controls);
