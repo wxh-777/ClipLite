@@ -1,0 +1,16 @@
+build/
+out/
+cmake-build-*/
+.vs/
+*.user
+*.suo
+*.VC.db
+
+# Local ClipLite data and temporary files
+history.bin
+settings.ini
+*.bin.tmp
+
+# Local test and diagnostic output
+*.log
+*.dmp
