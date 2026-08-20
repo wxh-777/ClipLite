@@ -50,6 +50,9 @@ powershell -ExecutionPolicy Bypass -File packaging/package.ps1
 ## 快捷键
 
 - `Alt+V`：打开历史窗口
+- `ClipLite.exe --history`：启动并打开历史窗口
+- `ClipLite.exe --settings`：启动并打开设置窗口
+- `ClipLite.exe --exit`：退出已运行的 ClipLite 实例
 - 可在设置中尝试启用 `Win+V`。如果 Windows 或其他程序已经注册该快捷键，ClipLite 会保留 `Alt+V`。
 - `Enter`：粘贴当前项目
 - 鼠标单击：粘贴当前项目

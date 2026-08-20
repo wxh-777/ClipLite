@@ -54,6 +54,7 @@ constexpr int kFilterCategoryBase = 140;
 constexpr UINT kShowPopupMessage = WM_APP + 1;
 constexpr UINT kTrayMessage = WM_APP + 2;
 constexpr UINT kShowSettingsMessage = WM_APP + 3;
+constexpr UINT kExitMessage = WM_APP + 4;
 constexpr UINT kTrayId = 1;
 constexpr int kTrayOpen = 200;
 constexpr int kTraySettings = 201;
@@ -932,6 +933,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             openSettings();
             return 0;
         }
+        if (message == kExitMessage) {
+            PostQuitMessage(0);
+            return 0;
+        }
         if (message == WM_CLIPBOARDUPDATE) {
             if (g_app->settingsData.pauseMonitoring) return 0;
             ClipType type{};
@@ -1128,7 +1133,7 @@ void openSettings() {
 
 } // namespace
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     AppState app;
     g_app = &app;
@@ -1163,7 +1168,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     if (!mutex) return 1;
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         HWND existing = FindWindowW(L"ClipLiteHidden", nullptr);
-        if (existing) PostMessageW(existing, kShowSettingsMessage, 0, 0);
+        if (existing) {
+            if (wcsstr(commandLine, L"--exit") || wcsstr(commandLine, L"/exit")) {
+                PostMessageW(existing, kExitMessage, 0, 0);
+            } else if (wcsstr(commandLine, L"--history") || wcsstr(commandLine, L"/history")) {
+                PostMessageW(existing, kShowPopupMessage, 0, 0);
+            } else {
+                PostMessageW(existing, kShowSettingsMessage, 0, 0);
+            }
+        }
         CloseHandle(mutex);
         return 0;
     }
@@ -1178,7 +1191,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     }
     registerHotkeys();
     addTrayIcon();
-    PostMessageW(app.hidden, kShowSettingsMessage, 0, 0);
+    if (wcsstr(commandLine, L"--history") || wcsstr(commandLine, L"/history")) {
+        PostMessageW(app.hidden, kShowPopupMessage, 0, 0);
+    } else {
+        PostMessageW(app.hidden, kShowSettingsMessage, 0, 0);
+    }
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
