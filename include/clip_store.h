@@ -26,6 +26,8 @@ struct ClipItem {
     std::uint32_t payloadCrc = 0;
     bool hasChecksum = false;
     bool encrypted = false;
+    bool hasSource = false;
+    std::string source;
     std::string preview;
 };
 
@@ -37,7 +39,8 @@ public:
     bool encryptionEnabled() const { return encryptionEnabled_; }
     bool rekey(bool enabled);
     bool open();
-    bool append(ClipType type, const std::string& payload, std::uint64_t hash);
+    bool append(ClipType type, const std::string& payload, std::uint64_t hash,
+                const std::string& source = {});
     bool readPayload(std::size_t index, std::string& payload) const;
     bool remove(std::size_t index);
     bool togglePinned(std::size_t index);

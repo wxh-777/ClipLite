@@ -14,8 +14,9 @@ int main() {
     std::string oversized(32u * 1024u * 1024u + 1, 'x');
     if (store.append(ClipType::Text, oversized, clipLiteHash(oversized))) return 31;
     const std::string text = "ClipLite store test with a long searchable suffix";
-    if (!store.append(ClipType::Text, text, clipLiteHash(text))) return 2;
+    if (!store.append(ClipType::Text, text, clipLiteHash(text), "VS Code")) return 2;
     if (store.activeCount() != 1) return 3;
+    if (!store.items()[0].hasSource || store.items()[0].source != "VS Code") return 40;
     std::string restored;
     if (!store.readPayload(0, restored) || restored != text) return 4;
     if (store.search("searchable suffix").size() != 1) return 5;
@@ -26,12 +27,13 @@ int main() {
     ClipStore formats(10);
     formats.open();
     formats.clear();
-    if (!formats.append(ClipType::Html, "<b>html</b>", clipLiteHash("<b>html</b>"))) return 23;
+    if (!formats.append(ClipType::Html, "<b>html</b>", clipLiteHash("<b>html</b>"), "Word")) return 23;
     if (!formats.append(ClipType::ImageV5, "dibv5", clipLiteHash("dibv5"))) return 24;
     ClipStore formatsReopened(10);
     if (!formatsReopened.open() || formatsReopened.activeCount() != 2 ||
         formatsReopened.items()[0].type != ClipType::ImageV5 ||
-        formatsReopened.items()[1].type != ClipType::Html) return 25;
+        formatsReopened.items()[1].type != ClipType::Html ||
+        formatsReopened.items()[1].source != "Word") return 25;
     formatsReopened.clear();
     formats.clear();
 
@@ -46,7 +48,8 @@ int main() {
     if (!store.append(ClipType::Text, "older", clipLiteHash("older"))) return 9;
     if (!store.append(ClipType::Text, "newer", clipLiteHash("newer"))) return 10;
     ClipStore reopened(10);
-    if (!reopened.open() || reopened.activeCount() != 2 || reopened.items()[0].preview != "newer") return 11;
+    if (!reopened.open() || reopened.activeCount() != 2 || reopened.items()[0].preview != "newer" ||
+        reopened.items()[0].source != "") return 11;
     reopened.clear();
     store.clear();
 
