@@ -74,6 +74,19 @@ int main() {
     if (!checksumRejected.open() || checksumRejected.activeCount() != 0) return 22;
     checksumRejected.clear();
 
+    ClipStore secure(10);
+    secure.setEncryption(true);
+    secure.open();
+    secure.clear();
+    const std::string secret = "user secret";
+    if (!secure.append(ClipType::Text, secret, clipLiteHash(secret))) return 35;
+    ClipStore secureReopened(10);
+    secureReopened.setEncryption(true);
+    if (!secureReopened.open() || !secureReopened.readPayload(0, restored) || restored != secret) return 36;
+    if (!secureReopened.rekey(false) || !secureReopened.readPayload(0, restored) || restored != secret) return 37;
+    secureReopened.clear();
+    secure.clear();
+
     ClipStore limited(10);
     limited.open();
     limited.clear();

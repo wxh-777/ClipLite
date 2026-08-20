@@ -25,6 +25,7 @@ struct ClipItem {
     std::uint32_t payloadSize = 0;
     std::uint32_t payloadCrc = 0;
     bool hasChecksum = false;
+    bool encrypted = false;
     std::string preview;
 };
 
@@ -32,6 +33,9 @@ class ClipStore {
 public:
     explicit ClipStore(std::size_t maxItems = 1000);
 
+    void setEncryption(bool enabled) { encryptionEnabled_ = enabled; }
+    bool encryptionEnabled() const { return encryptionEnabled_; }
+    bool rekey(bool enabled);
     bool open();
     bool append(ClipType type, const std::string& payload, std::uint64_t hash);
     bool readPayload(std::size_t index, std::string& payload) const;
@@ -59,6 +63,7 @@ private:
 
     std::wstring path_;
     std::size_t maxItems_;
+    bool encryptionEnabled_ = false;
     std::uint64_t diskBytes_ = 0;
     std::vector<ClipItem> items_;
 };

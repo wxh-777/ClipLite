@@ -39,6 +39,7 @@ constexpr int kSettingRetentionDays = 26;
 constexpr int kSettingMaxDiskMb = 27;
 constexpr int kSettingPause = 28;
 constexpr int kSettingStartup = 29;
+constexpr int kSettingEncrypt = 30;
 constexpr int kMenuPaste = 100;
 constexpr int kMenuPin = 101;
 constexpr int kMenuDelete = 102;
@@ -63,6 +64,7 @@ struct Settings {
     bool dark = false;
     bool pauseMonitoring = false;
     bool startWithWindows = false;
+    bool encryptData = false;
     int maxItems = 1000;
     int retentionDays = 30;
     int maxDiskMb = 256;
@@ -143,6 +145,7 @@ void loadSettings(Settings& settings) {
         if (std::strncmp(line, "dark=1", 6) == 0) settings.dark = true;
         if (std::strncmp(line, "pauseMonitoring=1", 17) == 0) settings.pauseMonitoring = true;
         if (std::strncmp(line, "startWithWindows=1", 18) == 0) settings.startWithWindows = true;
+        if (std::strncmp(line, "encryptData=1", 13) == 0) settings.encryptData = true;
         if (std::strncmp(line, "maxItems=", 9) == 0) settings.maxItems = std::clamp(std::atoi(line + 9), 0, 100000);
         if (std::strncmp(line, "retentionDays=", 14) == 0) settings.retentionDays = std::clamp(std::atoi(line + 14), 0, 36500);
         if (std::strncmp(line, "maxDiskMb=", 10) == 0) settings.maxDiskMb = std::clamp(std::atoi(line + 10), 0, 102400);
@@ -158,9 +161,11 @@ void saveSettings(const Settings& settings) {
     _wfopen_s(&file, settingsPath().c_str(), L"wb");
     if (!file) return;
     std::fprintf(file, "winV=%d\ndark=%d\npauseMonitoring=%d\nstartWithWindows=%d\n"
+                      "encryptData=%d\n"
                       "maxItems=%d\nretentionDays=%d\nmaxDiskMb=%d\nlanguage=%d\n",
                  settings.winV ? 1 : 0, settings.dark ? 1 : 0,
                  settings.pauseMonitoring ? 1 : 0, settings.startWithWindows ? 1 : 0,
+                 settings.encryptData ? 1 : 0,
                  settings.maxItems,
                  settings.retentionDays, settings.maxDiskMb, settings.language);
     std::fclose(file);
@@ -809,13 +814,18 @@ void createSettingsControls(HWND hwnd) {
                                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingStartup)),
                                  GetModuleHandleW(nullptr), nullptr);
     SendMessageW(startup, BM_SETCHECK, g_app->settingsData.startWithWindows ? BST_CHECKED : BST_UNCHECKED, 0);
+    HWND encrypt = CreateWindowW(L"BUTTON", zh ? L"使用 Windows 用户加密保护历史" : L"Protect history with Windows encryption",
+                                 WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 20, 360, 330, 26, hwnd,
+                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingEncrypt)),
+                                 GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(encrypt, BM_SETCHECK, g_app->settingsData.encryptData ? BST_CHECKED : BST_UNCHECKED, 0);
     CreateWindowW(L"STATIC", zh ? L"当前历史" : L"Current history",
-                  WS_CHILD | WS_VISIBLE, 20, 366, 100, 24, hwnd, nullptr,
+                  WS_CHILD | WS_VISIBLE, 20, 390, 100, 24, hwnd, nullptr,
                   GetModuleHandleW(nullptr), nullptr);
     wchar_t count[128]{};
     swprintf_s(count, zh ? L"%zu 条记录，%llu 字节" : L"%zu records, %llu bytes",
                g_app->store.activeCount(), g_app->store.diskBytes());
-    CreateWindowW(L"STATIC", count, WS_CHILD | WS_VISIBLE, 120, 366, 250, 24, hwnd, nullptr,
+    CreateWindowW(L"STATIC", count, WS_CHILD | WS_VISIBLE, 120, 390, 250, 24, hwnd, nullptr,
                   GetModuleHandleW(nullptr), nullptr);
     std::size_t textCount = 0, htmlCount = 0, imageCount = 0, fileCount = 0;
     std::size_t pinnedCount = 0, categorizedCount = 0;
@@ -831,13 +841,13 @@ void createSettingsControls(HWND hwnd) {
     swprintf_s(details, zh ? L"文本 %zu  HTML %zu  图片 %zu  文件 %zu  置顶 %zu  已分类 %zu"
                            : L"Text %zu  HTML %zu  Images %zu  Files %zu  Pinned %zu  Categorized %zu",
                textCount, htmlCount, imageCount, fileCount, pinnedCount, categorizedCount);
-    CreateWindowW(L"STATIC", details, WS_CHILD | WS_VISIBLE, 20, 388, 360, 24, hwnd, nullptr,
+    CreateWindowW(L"STATIC", details, WS_CHILD | WS_VISIBLE, 20, 412, 360, 24, hwnd, nullptr,
                   GetModuleHandleW(nullptr), nullptr);
     CreateWindowW(L"BUTTON", zh ? L"清空历史" : L"Clear history",
-                  WS_CHILD | WS_VISIBLE, 20, 420, 120, 28, hwnd,
+                  WS_CHILD | WS_VISIBLE, 20, 444, 120, 28, hwnd,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingClear)), GetModuleHandleW(nullptr), nullptr);
     CreateWindowW(L"BUTTON", zh ? L"保存" : L"Save",
-                  WS_CHILD | WS_VISIBLE, 270, 420, 90, 28, hwnd,
+                  WS_CHILD | WS_VISIBLE, 270, 444, 90, 28, hwnd,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingSave)), GetModuleHandleW(nullptr), nullptr);
 }
 
@@ -956,6 +966,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 HWND retentionDays = GetDlgItem(hwnd, kSettingRetentionDays);
                 HWND maxDiskMb = GetDlgItem(hwnd, kSettingMaxDiskMb);
                 HWND startup = GetDlgItem(hwnd, kSettingStartup);
+                HWND encrypt = GetDlgItem(hwnd, kSettingEncrypt);
+                const bool previousEncryption = g_app->store.encryptionEnabled();
                 g_app->settingsData.winV = SendMessageW(win, BM_GETCHECK, 0, 0) == BST_CHECKED;
                 g_app->settingsData.dark = SendMessageW(dark, BM_GETCHECK, 0, 0) == BST_CHECKED;
                 wchar_t value[32]{};
@@ -967,8 +979,16 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 g_app->settingsData.maxDiskMb = std::clamp(std::wcstol(value, nullptr, 10), 0L, 102400L);
                 g_app->settingsData.pauseMonitoring = SendMessageW(pause, BM_GETCHECK, 0, 0) == BST_CHECKED;
                 g_app->settingsData.startWithWindows = SendMessageW(startup, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                const bool desiredEncryption = SendMessageW(encrypt, BM_GETCHECK, 0, 0) == BST_CHECKED;
                 const int languageSelection = static_cast<int>(SendMessageW(language, CB_GETCURSEL, 0, 0));
                 g_app->settingsData.language = languageSelection <= 0 ? -1 : languageSelection - 1;
+                if (desiredEncryption != previousEncryption && !g_app->store.rekey(desiredEncryption)) {
+                    g_app->settingsData.encryptData = previousEncryption;
+                    MessageBoxW(hwnd, tr(L"Unable to change history encryption.", L"无法更改历史加密设置。"),
+                                L"ClipLite", MB_OK | MB_ICONWARNING);
+                } else {
+                    g_app->settingsData.encryptData = desiredEncryption;
+                }
                 saveSettings(g_app->settingsData);
                 updateStartupRegistration(g_app->settingsData.startWithWindows);
                 const std::uint64_t cutoff = g_app->settingsData.retentionDays > 0
@@ -1114,6 +1134,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     g_app = &app;
     g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
     loadSettings(app.settingsData);
+    app.store.setEncryption(app.settingsData.encryptData);
     if (!app.store.open()) return 1;
     const std::uint64_t cutoff = app.settingsData.retentionDays > 0
         ? nowUnix() - static_cast<std::uint64_t>(app.settingsData.retentionDays) * 86400ULL

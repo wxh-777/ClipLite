@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <shlobj.h>
+#include <wincrypt.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -45,6 +46,32 @@ std::uint32_t crc32Update(std::uint32_t crc, const char* data, std::size_t size)
 
 std::uint32_t crc32(const std::string& data) {
     return crc32Update(0xFFFFFFFFu, data.data(), data.size()) ^ 0xFFFFFFFFu;
+}
+
+bool protectPayload(const std::string& input, std::string& output) {
+    DATA_BLOB source{static_cast<DWORD>(input.size()),
+                     reinterpret_cast<BYTE*>(const_cast<char*>(input.data()))};
+    DATA_BLOB protectedData{};
+    if (!CryptProtectData(&source, L"ClipLite history", nullptr, nullptr, nullptr,
+                          CRYPTPROTECT_UI_FORBIDDEN, &protectedData)) {
+        return false;
+    }
+    output.assign(reinterpret_cast<const char*>(protectedData.pbData), protectedData.cbData);
+    LocalFree(protectedData.pbData);
+    return true;
+}
+
+bool unprotectPayload(const std::string& input, std::string& output) {
+    DATA_BLOB source{static_cast<DWORD>(input.size()),
+                     reinterpret_cast<BYTE*>(const_cast<char*>(input.data()))};
+    DATA_BLOB plainData{};
+    if (!CryptUnprotectData(&source, nullptr, nullptr, nullptr, nullptr,
+                            CRYPTPROTECT_UI_FORBIDDEN, &plainData)) {
+        return false;
+    }
+    output.assign(reinterpret_cast<const char*>(plainData.pbData), plainData.cbData);
+    LocalFree(plainData.pbData);
+    return true;
 }
 
 std::uint64_t nowUnix() {
@@ -133,11 +160,12 @@ bool ClipStore::open() {
         item.payloadSize = base.payloadSize;
         item.payloadCrc = expectedCrc;
         item.hasChecksum = hasChecksum;
+        item.encrypted = (base.flags & 2) != 0;
 
         std::string preview;
         const bool isImage = base.type == static_cast<std::uint8_t>(ClipType::Image) ||
                              base.type == static_cast<std::uint8_t>(ClipType::ImageV5);
-        const std::size_t previewLimit = isImage ? 0 : 160;
+        const std::size_t previewLimit = item.encrypted || isImage ? 0 : 160;
         std::uint32_t remaining = base.payloadSize;
         std::uint32_t checksum = 0xFFFFFFFFu;
         char buffer[64 * 1024];
@@ -157,7 +185,8 @@ bool ClipStore::open() {
         }
         if (!payloadValid) break;
         if (hasChecksum && (checksum ^ 0xFFFFFFFFu) != expectedCrc) break;
-        if (isImage) preview = "[Image]";
+        if (item.encrypted) preview = "[Protected]";
+        else if (isImage) preview = "[Image]";
         if (base.type == static_cast<std::uint8_t>(ClipType::Html)) preview = "[HTML]";
         if (base.type == static_cast<std::uint8_t>(ClipType::Files)) preview = "[Files] " + preview;
         item.preview = std::move(preview);
@@ -178,7 +207,7 @@ bool ClipStore::writeRecord(std::FILE* file, const ClipItem& item, const std::st
     header.base.magic = kMagic;
     header.base.version = kVersion;
     header.base.type = static_cast<std::uint8_t>(item.type);
-    header.base.flags = item.pinned ? 1 : 0;
+    header.base.flags = (item.pinned ? 1 : 0) | (item.encrypted ? 2 : 0);
     header.base.timestamp = item.timestamp;
     header.base.hash = item.hash;
     header.base.category = item.category;
@@ -202,18 +231,25 @@ bool ClipStore::append(ClipType type, const std::string& payload, std::uint64_t 
     item.type = type;
     item.timestamp = nowUnix();
     item.hash = hash;
-    item.payloadSize = static_cast<std::uint32_t>(payload.size());
-    item.payloadCrc = crc32(payload);
+    item.encrypted = encryptionEnabled_;
+    std::string storedPayload;
+    if (item.encrypted && !protectPayload(payload, storedPayload)) {
+        std::fclose(file);
+        return false;
+    }
+    if (!item.encrypted) storedPayload = payload;
+    item.payloadSize = static_cast<std::uint32_t>(storedPayload.size());
+    item.payloadCrc = crc32(storedPayload);
     item.hasChecksum = true;
     item.fileOffset = static_cast<std::uint64_t>(_ftelli64(file));
     item.preview = makePreview(type, payload);
-    const bool ok = writeRecord(file, item, payload);
+    const bool ok = writeRecord(file, item, storedPayload);
     std::fflush(file);
     std::fclose(file);
     if (!ok) return false;
 
     items_.insert(items_.begin(), std::move(item));
-    diskBytes_ += sizeof(DiskHeader) + payload.size();
+    diskBytes_ += sizeof(DiskHeader) + storedPayload.size();
     const bool needsRebuild = items_.size() > maxItems_;
     while (items_.size() > maxItems_) items_.pop_back();
     if (needsRebuild) rebuildFile();
@@ -233,7 +269,12 @@ bool ClipStore::readPayload(std::size_t index, std::string& payload) const {
     payload.resize(item.payloadSize);
     const bool readOk = std::fread(payload.data(), 1, payload.size(), file) == payload.size();
     std::fclose(file);
-    return readOk && (!item.hasChecksum || crc32(payload) == item.payloadCrc);
+    if (!readOk || (item.hasChecksum && crc32(payload) != item.payloadCrc)) return false;
+    if (!item.encrypted) return true;
+    std::string plain;
+    if (!unprotectPayload(payload, plain)) return false;
+    payload = std::move(plain);
+    return true;
 }
 
 bool ClipStore::rebuildFile() {
@@ -254,14 +295,22 @@ bool ClipStore::rebuildFile() {
         }
         ClipItem item = old;
         item.fileOffset = offset;
-        item.payloadCrc = crc32(payload);
-        item.hasChecksum = true;
-        if (!writeRecord(out, item, payload)) {
+        std::string storedPayload;
+        if (item.encrypted && !protectPayload(payload, storedPayload)) {
             std::fclose(out);
             DeleteFileW(tempPath.c_str());
             return false;
         }
-        offset += sizeof(DiskHeader) + payload.size();
+        if (!item.encrypted) storedPayload = payload;
+        item.payloadSize = static_cast<std::uint32_t>(storedPayload.size());
+        item.payloadCrc = crc32(storedPayload);
+        item.hasChecksum = true;
+        if (!writeRecord(out, item, storedPayload)) {
+            std::fclose(out);
+            DeleteFileW(tempPath.c_str());
+            return false;
+        }
+        offset += sizeof(DiskHeader) + storedPayload.size();
         rebuilt.push_back(std::move(item));
     }
     std::fflush(out);
@@ -291,6 +340,56 @@ bool ClipStore::setCategory(std::size_t index, std::uint32_t category) {
     if (index >= items_.size()) return false;
     items_[index].category = category;
     return rebuildFile();
+}
+
+bool ClipStore::rekey(bool enabled) {
+    if (encryptionEnabled_ == enabled) return true;
+    const std::wstring tempPath = path_ + L".tmp";
+    std::FILE* out = nullptr;
+    _wfopen_s(&out, tempPath.c_str(), L"wb");
+    if (!out) return false;
+
+    std::vector<ClipItem> rebuilt;
+    rebuilt.reserve(items_.size());
+    std::uint64_t offset = 0;
+    for (std::size_t index = 0; index < items_.size(); ++index) {
+        std::string plain;
+        if (!readPayload(index, plain)) {
+            std::fclose(out);
+            DeleteFileW(tempPath.c_str());
+            return false;
+        }
+        ClipItem item = items_[index];
+        item.encrypted = enabled;
+        std::string stored;
+        if (enabled && !protectPayload(plain, stored)) {
+            std::fclose(out);
+            DeleteFileW(tempPath.c_str());
+            return false;
+        }
+        if (!enabled) stored = std::move(plain);
+        item.fileOffset = offset;
+        item.payloadSize = static_cast<std::uint32_t>(stored.size());
+        item.payloadCrc = crc32(stored);
+        item.hasChecksum = true;
+        if (!writeRecord(out, item, stored)) {
+            std::fclose(out);
+            DeleteFileW(tempPath.c_str());
+            return false;
+        }
+        offset += sizeof(DiskHeader) + stored.size();
+        rebuilt.push_back(std::move(item));
+    }
+    std::fflush(out);
+    std::fclose(out);
+    if (!MoveFileExW(tempPath.c_str(), path_.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(tempPath.c_str());
+        return false;
+    }
+    items_ = std::move(rebuilt);
+    diskBytes_ = offset;
+    encryptionEnabled_ = enabled;
+    return true;
 }
 
 bool ClipStore::prune(std::size_t maxItems, std::uint64_t maxBytes, std::uint64_t minTimestamp) {
