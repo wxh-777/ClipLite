@@ -409,6 +409,36 @@ void notifyPasteFailure() {
     MessageBeep(MB_ICONWARNING);
 }
 
+bool drawImagePreview(HDC dc, const ClipItem& item, const RECT& rowRect) {
+    std::string payload;
+    if (!g_app->store.readPayload(&item - g_app->store.items().data(), payload)) return false;
+    if (payload.size() < sizeof(BITMAPINFOHEADER)) return false;
+
+    BITMAPINFOHEADER header{};
+    std::memcpy(&header, payload.data(), sizeof(header));
+    if (header.biSize < sizeof(BITMAPINFOHEADER) || header.biSize > payload.size() ||
+        header.biWidth <= 0 || header.biHeight == 0 || header.biPlanes != 1 ||
+        header.biBitCount == 0 || header.biBitCount > 32 ||
+        header.biWidth > 10000 || header.biHeight < -10000 || header.biHeight > 10000) {
+        return false;
+    }
+    std::size_t colorEntries = 0;
+    if (header.biBitCount <= 8) colorEntries = std::size_t{1} << header.biBitCount;
+    if (header.biCompression == BI_BITFIELDS && header.biSize == sizeof(BITMAPINFOHEADER)) {
+        colorEntries = 3;
+    }
+    const std::size_t bitsOffset = header.biSize + colorEntries * sizeof(RGBQUAD);
+    if (bitsOffset >= payload.size()) return false;
+
+    const auto* bitmapInfo = reinterpret_cast<const BITMAPINFO*>(payload.data());
+    const int width = rowRect.right - rowRect.left;
+    const int height = rowRect.bottom - rowRect.top;
+    const int result = StretchDIBits(dc, rowRect.left, rowRect.top, width, height,
+                                     0, 0, header.biWidth, std::abs(header.biHeight),
+                                     payload.data() + bitsOffset, bitmapInfo, DIB_RGB_COLORS, SRCCOPY);
+    return result != GDI_ERROR;
+}
+
 void sendPaste() {
     if (!g_app->popup || g_app->visible.empty()) return;
     const int selected = std::clamp(g_app->selected, 0, static_cast<int>(g_app->visible.size()) - 1);
@@ -628,16 +658,22 @@ void paintPopup(HWND hwnd, HDC dc) {
             FillRect(dc, &rowRect, selectedBrush);
             DeleteObject(selectedBrush);
         }
-        std::wstring preview = utf8ToWide(item.preview);
-        if (preview.empty()) preview = L"[Empty]";
-        if (preview.size() > 72) preview.resize(72), preview += L"...";
+        const bool image = item.type == ClipType::Image || item.type == ClipType::ImageV5;
+        if (image && drawImagePreview(dc, item, RECT{20, y + 4, 92, y + 52})) {
+            // The image itself is the primary preview for image records.
+        } else {
+            std::wstring preview = utf8ToWide(item.preview);
+            if (preview.empty()) preview = L"[Empty]";
+            if (preview.size() > 58) preview.resize(58), preview += L"...";
+            SetTextColor(dc, text);
+            TextOutW(dc, image ? 104 : 20, y + 10, preview.c_str(), static_cast<int>(preview.size()));
+        }
         SetTextColor(dc, text);
-        TextOutW(dc, 20, y + 10, preview.c_str(), static_cast<int>(preview.size()));
         std::wstring kind = (item.type == ClipType::Image || item.type == ClipType::ImageV5) ? L"Image" :
                             item.type == ClipType::Html ? L"HTML" :
                             item.type == ClipType::Files ? L"Files" : L"Text";
         SetTextColor(dc, secondary);
-        TextOutW(dc, 20, y + 34, kind.c_str(), static_cast<int>(kind.size()));
+        TextOutW(dc, image ? 104 : 20, y + 34, kind.c_str(), static_cast<int>(kind.size()));
         if (item.pinned) {
             const wchar_t* pin = tr(L"Pinned", L"置顶");
             TextOutW(dc, client.right - 70, y + 34, pin, static_cast<int>(wcslen(pin)));
