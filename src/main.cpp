@@ -15,6 +15,17 @@
 
 namespace {
 
+constexpr std::uint32_t kStoredHtmlMagic = 0x314D5448; // HTM1
+constexpr std::size_t kMaxClipboardPayload = 32u * 1024u * 1024u;
+
+#pragma pack(push, 1)
+struct StoredHtmlHeader {
+    std::uint32_t magic;
+    std::uint32_t textSize;
+    std::uint32_t htmlSize;
+};
+#pragma pack(pop)
+
 constexpr int kHotkeyAltV = 1;
 constexpr int kHotkeyWinV = 2;
 constexpr int kSearchEdit = 10;
@@ -137,8 +148,67 @@ std::string wideToUtf8(const wchar_t* value, std::size_t length) {
     return result;
 }
 
+UINT htmlClipboardFormat() {
+    static const UINT format = RegisterClipboardFormatW(L"HTML Format");
+    return format;
+}
+
+std::string makeStoredHtml(const std::string& text, const std::string& html) {
+    if (text.size() > kMaxClipboardPayload || html.size() > kMaxClipboardPayload ||
+        sizeof(StoredHtmlHeader) + text.size() + html.size() > kMaxClipboardPayload) {
+        return {};
+    }
+    StoredHtmlHeader header{kStoredHtmlMagic,
+                           static_cast<std::uint32_t>(text.size()),
+                           static_cast<std::uint32_t>(html.size())};
+    std::string result(reinterpret_cast<const char*>(&header), sizeof(header));
+    result += text;
+    result += html;
+    return result;
+}
+
+bool splitStoredHtml(const std::string& payload, std::string& text, std::string& html) {
+    if (payload.size() < sizeof(StoredHtmlHeader)) {
+        html = payload;
+        return !html.empty();
+    }
+    StoredHtmlHeader header{};
+    std::memcpy(&header, payload.data(), sizeof(header));
+    const std::size_t dataOffset = sizeof(header);
+    const std::size_t total = static_cast<std::size_t>(header.textSize) + header.htmlSize;
+    if (header.magic != kStoredHtmlMagic || total != payload.size() - dataOffset) {
+        html = payload;
+        return !html.empty();
+    }
+    text.assign(payload.data() + dataOffset, header.textSize);
+    html.assign(payload.data() + dataOffset + header.textSize, header.htmlSize);
+    return !html.empty();
+}
+
+bool openClipboardWithRetry() {
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        if (OpenClipboard(g_app->hidden)) return true;
+        Sleep(5);
+    }
+    return false;
+}
+
 bool captureClipboard(ClipType& type, std::string& payload) {
-    if (!OpenClipboard(g_app->hidden)) return false;
+    if (!openClipboardWithRetry()) return false;
+
+    std::string htmlPayload;
+    if (const UINT format = htmlClipboardFormat(); format != 0) {
+        if (HANDLE handle = GetClipboardData(format)) {
+            const SIZE_T size = GlobalSize(handle);
+            if (size > 0 && size <= 32u * 1024u * 1024u) {
+                const void* data = GlobalLock(handle);
+                if (data) {
+                    htmlPayload.assign(static_cast<const char*>(data), static_cast<std::size_t>(size));
+                    GlobalUnlock(handle);
+                }
+            }
+        }
+    }
 
     if (HANDLE handle = GetClipboardData(CF_UNICODETEXT)) {
         const auto* text = static_cast<const wchar_t*>(GlobalLock(handle));
@@ -147,10 +217,29 @@ bool captureClipboard(ClipType& type, std::string& payload) {
             payload = wideToUtf8(text, length);
             GlobalUnlock(handle);
             if (!payload.empty()) {
-                type = ClipType::Text;
+                if (!htmlPayload.empty()) {
+                    std::string stored = makeStoredHtml(payload, htmlPayload);
+                    if (!stored.empty()) {
+                        payload = std::move(stored);
+                        type = ClipType::Html;
+                    } else {
+                        type = ClipType::Text;
+                    }
+                } else {
+                    type = ClipType::Text;
+                }
                 CloseClipboard();
                 return true;
             }
+        }
+    }
+
+    if (!htmlPayload.empty()) {
+        payload = makeStoredHtml({}, htmlPayload);
+        if (!payload.empty()) {
+            type = ClipType::Html;
+            CloseClipboard();
+            return true;
         }
     }
 
@@ -168,6 +257,20 @@ bool captureClipboard(ClipType& type, std::string& payload) {
             type = ClipType::Files;
             CloseClipboard();
             return true;
+        }
+    }
+
+    if (HANDLE handle = GetClipboardData(CF_DIBV5)) {
+        const SIZE_T size = GlobalSize(handle);
+        if (size >= sizeof(BITMAPV5HEADER) && size <= 32u * 1024u * 1024u) {
+            const void* data = GlobalLock(handle);
+            if (data) {
+                payload.assign(static_cast<const char*>(data), static_cast<std::size_t>(size));
+                GlobalUnlock(handle);
+                type = ClipType::ImageV5;
+                CloseClipboard();
+                return true;
+            }
         }
     }
 
@@ -190,7 +293,7 @@ bool captureClipboard(ClipType& type, std::string& payload) {
 }
 
 bool setClipboardDataForItem(const ClipItem& item, const std::string& payload) {
-    if (!OpenClipboard(g_app->hidden)) return false;
+    if (!openClipboardWithRetry()) return false;
     EmptyClipboard();
     HGLOBAL memory = nullptr;
     bool ok = false;
@@ -205,14 +308,42 @@ bool setClipboardDataForItem(const ClipItem& item, const std::string& payload) {
             if (SetClipboardData(CF_UNICODETEXT, memory)) ok = true;
             else GlobalFree(memory);
         }
-    } else if (item.type == ClipType::Image) {
+    } else if (item.type == ClipType::Image || item.type == ClipType::ImageV5) {
         memory = GlobalAlloc(GMEM_MOVEABLE, payload.size());
         if (memory) {
             void* destination = GlobalLock(memory);
             std::memcpy(destination, payload.data(), payload.size());
             GlobalUnlock(memory);
-            if (SetClipboardData(CF_DIB, memory)) ok = true;
+            const UINT format = item.type == ClipType::ImageV5 ? CF_DIBV5 : CF_DIB;
+            if (SetClipboardData(format, memory)) ok = true;
             else GlobalFree(memory);
+        }
+    } else if (item.type == ClipType::Html) {
+        const UINT format = htmlClipboardFormat();
+        std::string plainText;
+        std::string html;
+        if (format != 0 && splitStoredHtml(payload, plainText, html)) {
+            HGLOBAL htmlMemory = GlobalAlloc(GMEM_MOVEABLE, html.size());
+            if (htmlMemory) {
+                void* destination = GlobalLock(htmlMemory);
+                std::memcpy(destination, html.data(), html.size());
+                GlobalUnlock(htmlMemory);
+                if (SetClipboardData(format, htmlMemory)) ok = true;
+                else GlobalFree(htmlMemory);
+            }
+            if (!plainText.empty()) {
+                const std::wstring text = utf8ToWide(plainText);
+                HGLOBAL textMemory = GlobalAlloc(GMEM_MOVEABLE,
+                                                  (text.size() + 1) * sizeof(wchar_t));
+                if (textMemory) {
+                    void* destination = GlobalLock(textMemory);
+                    std::memcpy(destination, text.c_str(),
+                                (text.size() + 1) * sizeof(wchar_t));
+                    GlobalUnlock(textMemory);
+                    if (SetClipboardData(CF_UNICODETEXT, textMemory)) ok = true;
+                    else GlobalFree(textMemory);
+                }
+            }
         }
     } else {
         std::wstring paths = utf8ToWide(payload);
@@ -458,7 +589,8 @@ void paintPopup(HWND hwnd, HDC dc) {
         if (preview.size() > 72) preview.resize(72), preview += L"...";
         SetTextColor(dc, text);
         TextOutW(dc, 20, y + 10, preview.c_str(), static_cast<int>(preview.size()));
-        std::wstring kind = item.type == ClipType::Image ? L"Image" :
+        std::wstring kind = (item.type == ClipType::Image || item.type == ClipType::ImageV5) ? L"Image" :
+                            item.type == ClipType::Html ? L"HTML" :
                             item.type == ClipType::Files ? L"Files" : L"Text";
         SetTextColor(dc, secondary);
         TextOutW(dc, 20, y + 34, kind.c_str(), static_cast<int>(kind.size()));

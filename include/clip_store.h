@@ -11,6 +11,8 @@ enum class ClipType : std::uint8_t {
     Text = 1,
     Files = 2,
     Image = 3,
+    ImageV5 = 4,
+    Html = 5,
 };
 
 struct ClipItem {

@@ -18,6 +18,19 @@ int main() {
     if (!store.togglePinned(0) || !store.items()[0].pinned) return 6;
     if (!store.setCategory(0, 2) || store.items()[0].category != 2) return 7;
     if (!store.remove(0) || store.activeCount() != 0) return 8;
+
+    ClipStore formats(10);
+    formats.open();
+    formats.clear();
+    if (!formats.append(ClipType::Html, "<b>html</b>", clipLiteHash("<b>html</b>"))) return 23;
+    if (!formats.append(ClipType::ImageV5, "dibv5", clipLiteHash("dibv5"))) return 24;
+    ClipStore formatsReopened(10);
+    if (!formatsReopened.open() || formatsReopened.activeCount() != 2 ||
+        formatsReopened.items()[0].type != ClipType::ImageV5 ||
+        formatsReopened.items()[1].type != ClipType::Html) return 25;
+    formatsReopened.clear();
+    formats.clear();
+
     if (!store.append(ClipType::Text, "older", clipLiteHash("older"))) return 9;
     if (!store.append(ClipType::Text, "newer", clipLiteHash("newer"))) return 10;
     ClipStore reopened(10);

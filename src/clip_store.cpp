@@ -113,7 +113,7 @@ bool ClipStore::open() {
         LegacyDiskHeader base{};
         if (std::fread(&base, sizeof(base), 1, file) != 1) break;
         if (base.magic != kMagic || (base.version != kLegacyVersion && base.version != kVersion) ||
-            base.payloadSize > kMaxPayload || base.type < 1 || base.type > 3) {
+            base.payloadSize > kMaxPayload || base.type < 1 || base.type > 5) {
             break;
         }
 
@@ -135,7 +135,9 @@ bool ClipStore::open() {
         item.hasChecksum = hasChecksum;
 
         std::string preview;
-        const std::size_t previewLimit = base.type == static_cast<std::uint8_t>(ClipType::Image) ? 0 : 160;
+        const bool isImage = base.type == static_cast<std::uint8_t>(ClipType::Image) ||
+                             base.type == static_cast<std::uint8_t>(ClipType::ImageV5);
+        const std::size_t previewLimit = isImage ? 0 : 160;
         std::uint32_t remaining = base.payloadSize;
         std::uint32_t checksum = 0xFFFFFFFFu;
         char buffer[64 * 1024];
@@ -155,7 +157,8 @@ bool ClipStore::open() {
         }
         if (!payloadValid) break;
         if (hasChecksum && (checksum ^ 0xFFFFFFFFu) != expectedCrc) break;
-        if (base.type == static_cast<std::uint8_t>(ClipType::Image)) preview = "[Image]";
+        if (isImage) preview = "[Image]";
+        if (base.type == static_cast<std::uint8_t>(ClipType::Html)) preview = "[HTML]";
         if (base.type == static_cast<std::uint8_t>(ClipType::Files)) preview = "[Files] " + preview;
         item.preview = std::move(preview);
         items_.push_back(std::move(item));
@@ -307,7 +310,7 @@ std::vector<std::size_t> ClipStore::search(const std::string& query) const {
             result.push_back(i);
             continue;
         }
-        if (items_[i].type == ClipType::Image) continue;
+        if (items_[i].type == ClipType::Image || items_[i].type == ClipType::ImageV5) continue;
         std::string payload;
         if (readPayload(i, payload) && containsIgnoreCase(payload, needle)) result.push_back(i);
     }
@@ -315,7 +318,8 @@ std::vector<std::size_t> ClipStore::search(const std::string& query) const {
 }
 
 std::string ClipStore::makePreview(ClipType type, const std::string& payload) {
-    if (type == ClipType::Image) return "[Image]";
+    if (type == ClipType::Image || type == ClipType::ImageV5) return "[Image]";
+    if (type == ClipType::Html) return "[HTML]";
     std::string value = payload.substr(0, 160);
     if (type == ClipType::Files) value = "[Files] " + value;
     for (char& c : value) if (c == '\r' || c == '\n' || c == '\t') c = ' ';
