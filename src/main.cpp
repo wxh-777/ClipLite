@@ -80,6 +80,11 @@ struct AppState {
     HWND searchEdit = nullptr;
     HWND settings = nullptr;
     HWND targetWindow = nullptr;
+    HFONT popupFont = nullptr;
+    HFONT settingsFont = nullptr;
+    HBRUSH popupInputBrush = nullptr;
+    HBRUSH settingsBackgroundBrush = nullptr;
+    HBRUSH settingsInputBrush = nullptr;
     HHOOK keyboardHook = nullptr;
     bool winKeyDown = false;
     bool suppressWinV = false;
@@ -618,6 +623,7 @@ void showPopup() {
                                    L"ClipLite", WS_POPUP | WS_BORDER, x, y, width, height,
                                    nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!g_app->popup) return;
+    SetWindowRgn(g_app->popup, CreateRoundRectRgn(0, 0, width + 1, height + 1, 16, 16), TRUE);
     ShowWindow(g_app->popup, SW_SHOWNOACTIVATE);
     SetForegroundWindow(g_app->popup);
 }
@@ -745,10 +751,11 @@ void paintPopup(HWND hwnd, HDC dc) {
     RECT client{};
     GetClientRect(hwnd, &client);
     const bool dark = g_app->settingsData.dark;
-    const COLORREF background = dark ? RGB(28, 30, 34) : RGB(247, 249, 252);
+    const COLORREF background = dark ? RGB(24, 27, 32) : RGB(246, 248, 251);
     const COLORREF text = dark ? RGB(240, 243, 247) : RGB(26, 32, 42);
     const COLORREF secondary = dark ? RGB(170, 178, 190) : RGB(90, 104, 124);
-    const COLORREF selected = dark ? RGB(53, 74, 105) : RGB(220, 235, 255);
+    const COLORREF selected = dark ? RGB(48, 74, 108) : RGB(222, 236, 255);
+    const COLORREF separator = dark ? RGB(52, 57, 65) : RGB(225, 229, 235);
     HBRUSH brush = CreateSolidBrush(background);
     FillRect(dc, &client, brush);
     DeleteObject(brush);
@@ -764,17 +771,30 @@ void paintPopup(HWND hwnd, HDC dc) {
     SetTextColor(dc, text);
     TextOutW(dc, 16, 54, tr(L"Clipboard history", L"剪贴板历史"),
              static_cast<int>(wcslen(tr(L"Clipboard history", L"剪贴板历史"))));
+    SetTextColor(dc, secondary);
+    wchar_t countLabel[64]{};
+    swprintf_s(countLabel, L"%zu", g_app->visible.size());
+    TextOutW(dc, client.right - 36, 54, countLabel, static_cast<int>(wcslen(countLabel)));
     SelectObject(dc, rowFont);
 
     int y = 78;
     for (int row = g_app->scrollOffset;
-         row < static_cast<int>(g_app->visible.size()) && y < client.bottom; ++row) {
+         row < static_cast<int>(g_app->visible.size()) && y < client.bottom - 28; ++row) {
         const ClipItem& item = g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]];
         RECT rowRect{8, y, client.right - 8, y + 56};
         if (row == g_app->selected) {
             HBRUSH selectedBrush = CreateSolidBrush(selected);
-            FillRect(dc, &rowRect, selectedBrush);
+            HGDIOBJ oldBrush = SelectObject(dc, selectedBrush);
+            RoundRect(dc, rowRect.left, rowRect.top, rowRect.right, rowRect.bottom, 10, 10);
+            SelectObject(dc, oldBrush);
             DeleteObject(selectedBrush);
+        } else {
+            HPEN linePen = CreatePen(PS_SOLID, 1, separator);
+            HGDIOBJ oldPen = SelectObject(dc, linePen);
+            MoveToEx(dc, 20, rowRect.bottom - 1, nullptr);
+            LineTo(dc, client.right - 20, rowRect.bottom - 1);
+            SelectObject(dc, oldPen);
+            DeleteObject(linePen);
         }
         const bool image = item.type == ClipType::Image || item.type == ClipType::ImageV5;
         if (image && drawImagePreview(dc, item, RECT{20, y + 4, 92, y + 52})) {
@@ -803,6 +823,10 @@ void paintPopup(HWND hwnd, HDC dc) {
         SetTextColor(dc, secondary);
         TextOutW(dc, 20, 100, empty, static_cast<int>(wcslen(empty)));
     }
+    SetTextColor(dc, secondary);
+    const wchar_t* footer = tr(L"Enter paste  |  Esc close  |  Ctrl+0 clear filter",
+                               L"回车粘贴  |  Esc 关闭  |  Ctrl+0 清除筛选");
+    TextOutW(dc, 16, client.bottom - 20, footer, static_cast<int>(wcslen(footer)));
     SelectObject(dc, old);
     DeleteObject(titleFont);
     DeleteObject(rowFont);
@@ -961,25 +985,83 @@ void applyFilterCommand(int command) {
     }
 }
 
+void applyFontToChildren(HWND parent, HFONT font) {
+    for (HWND child = GetWindow(parent, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
+        SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    }
+}
+
 LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     if (message == WM_CREATE) {
         wchar_t className[64]{};
         GetClassNameW(hwnd, className, 64);
         if (std::wcscmp(className, L"ClipLiteSettings") == 0) {
+            g_app->settingsFont = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+            const COLORREF background = g_app->settingsData.dark ? RGB(30, 33, 38) : RGB(246, 248, 251);
+            const COLORREF input = g_app->settingsData.dark ? RGB(43, 47, 54) : RGB(255, 255, 255);
+            g_app->settingsBackgroundBrush = CreateSolidBrush(background);
+            g_app->settingsInputBrush = CreateSolidBrush(input);
             createSettingsControls(hwnd);
+            applyFontToChildren(hwnd, g_app->settingsFont);
             return 0;
         }
         if (std::wcscmp(className, L"ClipLitePopup") == 0) {
+            g_app->popupFont = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                           CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+            g_app->popupInputBrush = CreateSolidBrush(
+                g_app->settingsData.dark ? RGB(43, 47, 54) : RGB(255, 255, 255));
             g_app->searchEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                                                 WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                                 12, 12, 456, 30, hwnd,
                                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSearchEdit)),
                                                 GetModuleHandleW(nullptr), nullptr);
+            SendMessageW(g_app->searchEdit, WM_SETFONT,
+                         reinterpret_cast<WPARAM>(g_app->popupFont), TRUE);
             g_app->oldEditProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
                 g_app->searchEdit, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(editProc)));
             SetFocus(g_app->searchEdit);
             return 0;
         }
+    }
+    if (message == WM_ERASEBKGND && (hwnd == g_app->settings || hwnd == g_app->popup)) {
+        HBRUSH brush = hwnd == g_app->settings ? g_app->settingsBackgroundBrush :
+                                                  g_app->popupInputBrush;
+        RECT client{};
+        GetClientRect(hwnd, &client);
+        FillRect(reinterpret_cast<HDC>(wParam), &client, brush);
+        return 1;
+    }
+    if ((message == WM_CTLCOLORSTATIC || message == WM_CTLCOLOREDIT || message == WM_CTLCOLORBTN) &&
+        (hwnd == g_app->settings || hwnd == g_app->popup)) {
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        const bool dark = g_app->settingsData.dark;
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, dark ? RGB(238, 241, 245) : RGB(30, 36, 46));
+        if (message == WM_CTLCOLOREDIT) {
+            SetBkMode(dc, OPAQUE);
+            SetBkColor(dc, dark ? RGB(43, 47, 54) : RGB(255, 255, 255));
+            return reinterpret_cast<LRESULT>(hwnd == g_app->popup
+                ? g_app->popupInputBrush : g_app->settingsInputBrush);
+        }
+        return reinterpret_cast<LRESULT>(hwnd == g_app->settings
+            ? g_app->settingsBackgroundBrush : g_app->popupInputBrush);
+    }
+    if (message == WM_DESTROY && hwnd == g_app->popup) {
+        if (g_app->popupFont) DeleteObject(g_app->popupFont);
+        if (g_app->popupInputBrush) DeleteObject(g_app->popupInputBrush);
+        g_app->popupFont = nullptr;
+        g_app->popupInputBrush = nullptr;
+    }
+    if (message == WM_DESTROY && hwnd == g_app->settings) {
+        if (g_app->settingsFont) DeleteObject(g_app->settingsFont);
+        if (g_app->settingsBackgroundBrush) DeleteObject(g_app->settingsBackgroundBrush);
+        if (g_app->settingsInputBrush) DeleteObject(g_app->settingsInputBrush);
+        g_app->settingsFont = nullptr;
+        g_app->settingsBackgroundBrush = nullptr;
+        g_app->settingsInputBrush = nullptr;
     }
     if (hwnd == g_app->hidden) {
         if (g_taskbarCreated != 0 && message == g_taskbarCreated) {
@@ -1097,6 +1179,14 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
 
     if (hwnd == g_app->popup) {
+        if (message == WM_ACTIVATEAPP && !wParam) {
+            closePopup();
+            return 0;
+        }
+        if (message == WM_NCACTIVATE && !wParam) {
+            closePopup();
+            return 0;
+        }
         if (message == WM_COMMAND && LOWORD(wParam) == kSearchEdit &&
             HIWORD(wParam) == EN_CHANGE) {
             wchar_t value[512]{};
