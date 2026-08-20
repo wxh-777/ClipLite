@@ -21,6 +21,8 @@ struct ClipItem {
     bool pinned = false;
     std::uint64_t fileOffset = 0;
     std::uint32_t payloadSize = 0;
+    std::uint32_t payloadCrc = 0;
+    bool hasChecksum = false;
     std::string preview;
 };
 
