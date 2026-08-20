@@ -35,6 +35,12 @@ powershell -ExecutionPolicy Bypass -File tools/measure.ps1
 
 程序输出为 `build/Release/ClipLite.exe`。
 
+生成便携发布目录：
+
+```pwsh
+powershell -ExecutionPolicy Bypass -File packaging/package.ps1
+```
+
 ## 数据位置
 
 - 历史记录：`%LOCALAPPDATA%\\ClipLite\\history.bin`

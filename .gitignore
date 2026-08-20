@@ -1,5 +1,6 @@
 build/
 out/
+packaging/out/
 cmake-build-*/
 .vs/
 *.user
