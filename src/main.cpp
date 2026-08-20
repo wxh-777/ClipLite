@@ -38,10 +38,18 @@ constexpr int kSettingMaxItems = 25;
 constexpr int kSettingRetentionDays = 26;
 constexpr int kSettingMaxDiskMb = 27;
 constexpr int kSettingPause = 28;
+constexpr int kSettingStartup = 29;
 constexpr int kMenuPaste = 100;
 constexpr int kMenuPin = 101;
 constexpr int kMenuDelete = 102;
 constexpr int kMenuCategoryBase = 110;
+constexpr int kFilterAll = 130;
+constexpr int kFilterText = 131;
+constexpr int kFilterFiles = 132;
+constexpr int kFilterImage = 133;
+constexpr int kFilterHtml = 134;
+constexpr int kFilterPinned = 135;
+constexpr int kFilterCategoryBase = 140;
 constexpr UINT kShowPopupMessage = WM_APP + 1;
 constexpr UINT kTrayMessage = WM_APP + 2;
 constexpr UINT kShowSettingsMessage = WM_APP + 3;
@@ -54,6 +62,7 @@ struct Settings {
     bool winV = false;
     bool dark = false;
     bool pauseMonitoring = false;
+    bool startWithWindows = false;
     int maxItems = 1000;
     int retentionDays = 30;
     int maxDiskMb = 256;
@@ -73,6 +82,9 @@ struct AppState {
     POINT popupPoint{};
     int selected = 0;
     int scrollOffset = 0;
+    int filterType = 0;
+    int filterCategory = -1;
+    bool pinnedOnly = false;
     std::string query;
     Settings settingsData;
     ClipStore store;
@@ -81,6 +93,7 @@ struct AppState {
 };
 
 AppState* g_app = nullptr;
+UINT g_taskbarCreated = 0;
 
 bool systemLanguageIsChinese() {
     ULONG languageCount = 0;
@@ -129,6 +142,7 @@ void loadSettings(Settings& settings) {
         if (std::strncmp(line, "winV=1", 6) == 0) settings.winV = true;
         if (std::strncmp(line, "dark=1", 6) == 0) settings.dark = true;
         if (std::strncmp(line, "pauseMonitoring=1", 17) == 0) settings.pauseMonitoring = true;
+        if (std::strncmp(line, "startWithWindows=1", 18) == 0) settings.startWithWindows = true;
         if (std::strncmp(line, "maxItems=", 9) == 0) settings.maxItems = std::clamp(std::atoi(line + 9), 0, 100000);
         if (std::strncmp(line, "retentionDays=", 14) == 0) settings.retentionDays = std::clamp(std::atoi(line + 14), 0, 36500);
         if (std::strncmp(line, "maxDiskMb=", 10) == 0) settings.maxDiskMb = std::clamp(std::atoi(line + 10), 0, 102400);
@@ -143,12 +157,38 @@ void saveSettings(const Settings& settings) {
     std::FILE* file = nullptr;
     _wfopen_s(&file, settingsPath().c_str(), L"wb");
     if (!file) return;
-    std::fprintf(file, "winV=%d\ndark=%d\npauseMonitoring=%d\nmaxItems=%d\n"
-                      "retentionDays=%d\nmaxDiskMb=%d\nlanguage=%d\n",
+    std::fprintf(file, "winV=%d\ndark=%d\npauseMonitoring=%d\nstartWithWindows=%d\n"
+                      "maxItems=%d\nretentionDays=%d\nmaxDiskMb=%d\nlanguage=%d\n",
                  settings.winV ? 1 : 0, settings.dark ? 1 : 0,
-                 settings.pauseMonitoring ? 1 : 0, settings.maxItems,
+                 settings.pauseMonitoring ? 1 : 0, settings.startWithWindows ? 1 : 0,
+                 settings.maxItems,
                  settings.retentionDays, settings.maxDiskMb, settings.language);
     std::fclose(file);
+}
+
+void updateStartupRegistration(bool enabled) {
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER,
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, nullptr, 0,
+            KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) {
+        return;
+    }
+    constexpr wchar_t valueName[] = L"ClipLite";
+    if (enabled) {
+        wchar_t executable[MAX_PATH]{};
+        const DWORD length = GetModuleFileNameW(nullptr, executable, MAX_PATH);
+        if (length > 0 && length < MAX_PATH) {
+            std::wstring command = L"\"";
+            command += executable;
+            command += L"\"";
+            RegSetValueExW(key, valueName, 0, REG_SZ,
+                           reinterpret_cast<const BYTE*>(command.c_str()),
+                           static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t)));
+        }
+    } else {
+        RegDeleteValueW(key, valueName);
+    }
+    RegCloseKey(key);
 }
 
 std::wstring utf8ToWide(const std::string& value) {
@@ -392,7 +432,21 @@ bool setClipboardDataForItem(const ClipItem& item, const std::string& payload) {
 
 void refreshVisible() {
     if (!g_app->popup) return;
-    g_app->visible = g_app->store.search(g_app->query);
+    const std::vector<std::size_t> candidates = g_app->store.search(g_app->query);
+    g_app->visible.clear();
+    for (const std::size_t index : candidates) {
+        const ClipItem& item = g_app->store.items()[index];
+        const bool image = item.type == ClipType::Image || item.type == ClipType::ImageV5;
+        const bool typeMatches = g_app->filterType == 0 ||
+            (g_app->filterType == 1 && item.type == ClipType::Text) ||
+            (g_app->filterType == 2 && item.type == ClipType::Files) ||
+            (g_app->filterType == 3 && image) ||
+            (g_app->filterType == 4 && item.type == ClipType::Html);
+        if (typeMatches && (!g_app->pinnedOnly || item.pinned) &&
+            (g_app->filterCategory < 0 || static_cast<int>(item.category) == g_app->filterCategory)) {
+            g_app->visible.push_back(index);
+        }
+    }
     if (g_app->visible.empty()) g_app->selected = 0;
     else g_app->selected = std::clamp(g_app->selected, 0, static_cast<int>(g_app->visible.size()) - 1);
     const int visibleRows = 8;
@@ -483,6 +537,9 @@ void showPopup() {
     g_app->query.clear();
     g_app->selected = 0;
     g_app->scrollOffset = 0;
+    g_app->filterType = 0;
+    g_app->filterCategory = -1;
+    g_app->pinnedOnly = false;
     g_app->visible = g_app->store.search({});
 
     const int width = 480;
@@ -747,20 +804,64 @@ void createSettingsControls(HWND hwnd) {
                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingPause)),
                                GetModuleHandleW(nullptr), nullptr);
     SendMessageW(pause, BM_SETCHECK, g_app->settingsData.pauseMonitoring ? BST_CHECKED : BST_UNCHECKED, 0);
+    HWND startup = CreateWindowW(L"BUTTON", zh ? L"随 Windows 启动" : L"Start with Windows",
+                                 WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 20, 334, 260, 26, hwnd,
+                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingStartup)),
+                                 GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(startup, BM_SETCHECK, g_app->settingsData.startWithWindows ? BST_CHECKED : BST_UNCHECKED, 0);
     CreateWindowW(L"STATIC", zh ? L"当前历史" : L"Current history",
-                  WS_CHILD | WS_VISIBLE, 20, 342, 100, 24, hwnd, nullptr,
+                  WS_CHILD | WS_VISIBLE, 20, 366, 100, 24, hwnd, nullptr,
                   GetModuleHandleW(nullptr), nullptr);
     wchar_t count[128]{};
     swprintf_s(count, zh ? L"%zu 条记录，%llu 字节" : L"%zu records, %llu bytes",
                g_app->store.activeCount(), g_app->store.diskBytes());
-    CreateWindowW(L"STATIC", count, WS_CHILD | WS_VISIBLE, 120, 342, 250, 24, hwnd, nullptr,
+    CreateWindowW(L"STATIC", count, WS_CHILD | WS_VISIBLE, 120, 366, 250, 24, hwnd, nullptr,
                   GetModuleHandleW(nullptr), nullptr);
     CreateWindowW(L"BUTTON", zh ? L"清空历史" : L"Clear history",
-                  WS_CHILD | WS_VISIBLE, 20, 375, 120, 28, hwnd,
+                  WS_CHILD | WS_VISIBLE, 20, 400, 120, 28, hwnd,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingClear)), GetModuleHandleW(nullptr), nullptr);
     CreateWindowW(L"BUTTON", zh ? L"保存" : L"Save",
-                  WS_CHILD | WS_VISIBLE, 270, 375, 90, 28, hwnd,
+                  WS_CHILD | WS_VISIBLE, 270, 400, 90, 28, hwnd,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingSave)), GetModuleHandleW(nullptr), nullptr);
+}
+
+void appendFilterMenu(HMENU menu) {
+    HMENU filters = CreatePopupMenu();
+    AppendMenuW(filters, MF_STRING, kFilterAll, tr(L"All", L"全部"));
+    AppendMenuW(filters, MF_STRING, kFilterText, tr(L"Text", L"文本"));
+    AppendMenuW(filters, MF_STRING, kFilterFiles, tr(L"Files", L"文件"));
+    AppendMenuW(filters, MF_STRING, kFilterImage, tr(L"Images", L"图片"));
+    AppendMenuW(filters, MF_STRING, kFilterHtml, L"HTML");
+    AppendMenuW(filters, MF_STRING, kFilterPinned, tr(L"Pinned only", L"仅置顶"));
+    HMENU filterCategories = CreatePopupMenu();
+    AppendMenuW(filterCategories, MF_STRING, kFilterCategoryBase, tr(L"General", L"常规"));
+    AppendMenuW(filterCategories, MF_STRING, kFilterCategoryBase + 1, tr(L"Work", L"工作"));
+    AppendMenuW(filterCategories, MF_STRING, kFilterCategoryBase + 2, tr(L"Code", L"代码"));
+    AppendMenuW(filterCategories, MF_STRING, kFilterCategoryBase + 3, tr(L"Links", L"链接"));
+    AppendMenuW(filters, MF_POPUP, reinterpret_cast<UINT_PTR>(filterCategories),
+                tr(L"Category", L"分类"));
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(filters),
+                tr(L"Filter", L"筛选"));
+}
+
+void applyFilterCommand(int command) {
+    if (command == kFilterAll) {
+        g_app->filterType = 0;
+        g_app->filterCategory = -1;
+        g_app->pinnedOnly = false;
+    } else if (command >= kFilterText && command <= kFilterHtml) {
+        g_app->filterType = command - kFilterText + 1;
+        g_app->filterCategory = -1;
+        g_app->pinnedOnly = false;
+    } else if (command == kFilterPinned) {
+        g_app->filterType = 0;
+        g_app->filterCategory = -1;
+        g_app->pinnedOnly = true;
+    } else if (command >= kFilterCategoryBase && command < kFilterCategoryBase + 4) {
+        g_app->filterType = 0;
+        g_app->filterCategory = command - kFilterCategoryBase;
+        g_app->pinnedOnly = false;
+    }
 }
 
 LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -784,6 +885,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
     }
     if (hwnd == g_app->hidden) {
+        if (g_taskbarCreated != 0 && message == g_taskbarCreated) {
+            addTrayIcon();
+            return 0;
+        }
         if (message == kTrayMessage) {
             if (lParam == WM_LBUTTONUP || lParam == WM_LBUTTONDBLCLK) showPopup();
             else if (lParam == WM_RBUTTONUP) showTrayMenu();
@@ -834,6 +939,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 HWND maxItems = GetDlgItem(hwnd, kSettingMaxItems);
                 HWND retentionDays = GetDlgItem(hwnd, kSettingRetentionDays);
                 HWND maxDiskMb = GetDlgItem(hwnd, kSettingMaxDiskMb);
+                HWND startup = GetDlgItem(hwnd, kSettingStartup);
                 g_app->settingsData.winV = SendMessageW(win, BM_GETCHECK, 0, 0) == BST_CHECKED;
                 g_app->settingsData.dark = SendMessageW(dark, BM_GETCHECK, 0, 0) == BST_CHECKED;
                 wchar_t value[32]{};
@@ -844,9 +950,11 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 GetWindowTextW(maxDiskMb, value, 32);
                 g_app->settingsData.maxDiskMb = std::clamp(std::wcstol(value, nullptr, 10), 0L, 102400L);
                 g_app->settingsData.pauseMonitoring = SendMessageW(pause, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                g_app->settingsData.startWithWindows = SendMessageW(startup, BM_GETCHECK, 0, 0) == BST_CHECKED;
                 const int languageSelection = static_cast<int>(SendMessageW(language, CB_GETCURSEL, 0, 0));
                 g_app->settingsData.language = languageSelection <= 0 ? -1 : languageSelection - 1;
                 saveSettings(g_app->settingsData);
+                updateStartupRegistration(g_app->settingsData.startWithWindows);
                 const std::uint64_t cutoff = g_app->settingsData.retentionDays > 0
                     ? nowUnix() - static_cast<std::uint64_t>(g_app->settingsData.retentionDays) * 86400ULL
                     : 0;
@@ -879,6 +987,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         if (message == WM_KEYDOWN) {
             if (wParam == VK_ESCAPE) closePopup();
+            else if ((GetKeyState(VK_CONTROL) & 0x8000) && wParam == '0') {
+                applyFilterCommand(kFilterAll);
+                refreshVisible();
+            }
             else if (wParam == VK_UP) { --g_app->selected; refreshVisible(); }
             else if (wParam == VK_DOWN) { ++g_app->selected; refreshVisible(); }
             else if (wParam == VK_RETURN) sendPaste();
@@ -921,6 +1033,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                             tr(L"Links", L"链接"));
                 AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(categories),
                             tr(L"Category", L"分类"));
+                appendFilterMenu(menu);
                 POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
                 ClientToScreen(hwnd, &point);
                 const int command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
@@ -933,6 +1046,17 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 else if (command >= kMenuCategoryBase && command < kMenuCategoryBase + 4) {
                     g_app->store.setCategory(index, static_cast<std::uint32_t>(command - kMenuCategoryBase));
                 }
+                applyFilterCommand(command);
+                refreshVisible();
+            } else {
+                HMENU menu = CreatePopupMenu();
+                appendFilterMenu(menu);
+                POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+                ClientToScreen(hwnd, &point);
+                const int command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
+                                                   point.x, point.y, 0, hwnd, nullptr);
+                DestroyMenu(menu);
+                applyFilterCommand(command);
                 refreshVisible();
             }
             return 0;
@@ -960,7 +1084,7 @@ void openSettings() {
     g_app->settings = CreateWindowExW(WS_EX_TOOLWINDOW, L"ClipLiteSettings",
                                       tr(L"ClipLite Settings", L"ClipLite 设置"),
                                       WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-                                      CW_USEDEFAULT, CW_USEDEFAULT, 400, 440,
+                                      CW_USEDEFAULT, CW_USEDEFAULT, 400, 470,
                                       nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     ShowWindow(g_app->settings, SW_SHOW);
     UpdateWindow(g_app->settings);
@@ -971,6 +1095,7 @@ void openSettings() {
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     AppState app;
     g_app = &app;
+    g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
     loadSettings(app.settingsData);
     if (!app.store.open()) return 1;
     const std::uint64_t cutoff = app.settingsData.retentionDays > 0
