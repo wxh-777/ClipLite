@@ -88,6 +88,7 @@ struct AppState {
     HHOOK keyboardHook = nullptr;
     bool winKeyDown = false;
     bool suppressWinV = false;
+    bool suppressWinKey = false;
     WNDPROC oldEditProc = nullptr;
     POINT popupPoint{};
     int selected = 0;
@@ -681,12 +682,19 @@ LRESULT CALLBACK lowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
         const bool keyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
         const bool keyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
         const bool injected = (key->flags & LLKHF_INJECTED) != 0;
-        if (!injected && (key->vkCode == VK_LWIN || key->vkCode == VK_RWIN)) {
+        const bool winKey = key->vkCode == VK_LWIN || key->vkCode == VK_RWIN;
+        if (!injected && winKey) {
+            if (keyUp && g_app->suppressWinKey) {
+                g_app->suppressWinKey = false;
+                g_app->winKeyDown = false;
+                return 1;
+            }
             g_app->winKeyDown = keyDown || (g_app->winKeyDown && !keyUp);
         }
-        if (!injected && key->vkCode == 'V' && g_app->winKeyDown) {
-            if (keyDown && !g_app->suppressWinV) {
+        if (!injected && key->vkCode == 'V') {
+            if (keyDown && g_app->winKeyDown && !g_app->suppressWinV) {
                 g_app->suppressWinV = true;
+                g_app->suppressWinKey = true;
                 PostMessageW(g_app->hidden, kShowPopupMessage, 0, 0);
                 return 1;
             }
@@ -694,10 +702,6 @@ LRESULT CALLBACK lowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
                 g_app->suppressWinV = false;
                 return 1;
             }
-        }
-        if (!injected && key->vkCode == 'V' && keyUp && g_app->suppressWinV) {
-            g_app->suppressWinV = false;
-            return 1;
         }
     }
     return CallNextHookEx(nullptr, code, wParam, lParam);
@@ -775,6 +779,14 @@ void paintPopup(HWND hwnd, HDC dc) {
     wchar_t countLabel[64]{};
     swprintf_s(countLabel, L"%zu", g_app->visible.size());
     TextOutW(dc, client.right - 36, 54, countLabel, static_cast<int>(wcslen(countLabel)));
+    HBRUSH clearBrush = CreateSolidBrush(dark ? RGB(47, 51, 58) : RGB(255, 255, 255));
+    HGDIOBJ oldClearBrush = SelectObject(dc, clearBrush);
+    RoundRect(dc, client.right - 120, 40, client.right - 48, 68, 8, 8);
+    SelectObject(dc, oldClearBrush);
+    DeleteObject(clearBrush);
+    const wchar_t* clearLabel = tr(L"Clear all", L"全部清除");
+    SetTextColor(dc, secondary);
+    TextOutW(dc, client.right - 110, 49, clearLabel, static_cast<int>(wcslen(clearLabel)));
     SelectObject(dc, rowFont);
 
     int y = 78;
@@ -1217,6 +1229,17 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == WM_LBUTTONDOWN) {
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            if (GET_Y_LPARAM(lParam) >= 40 && GET_Y_LPARAM(lParam) < 72 &&
+                GET_X_LPARAM(lParam) >= client.right - 130) {
+                if (MessageBoxW(hwnd, tr(L"Clear all clipboard history?", L"清空全部剪贴板历史？"),
+                                L"ClipLite", MB_YESNO | MB_ICONWARNING) == IDYES) {
+                    g_app->store.clear();
+                    refreshVisible();
+                }
+                return 0;
+            }
             const int row = g_app->scrollOffset + (GET_Y_LPARAM(lParam) - 78) / 62;
             if (row >= 0 && row < static_cast<int>(g_app->visible.size())) {
                 g_app->selected = row;
@@ -1289,10 +1312,21 @@ void openSettings() {
         SetForegroundWindow(g_app->settings);
         return;
     }
+    POINT cursor{};
+    GetCursorPos(&cursor);
+    HMONITOR monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO monitorInfo{sizeof(monitorInfo)};
+    GetMonitorInfoW(monitor, &monitorInfo);
+    const int width = 400;
+    const int height = std::min(700, static_cast<int>(monitorInfo.rcWork.bottom - monitorInfo.rcWork.top - 40));
+    const int x = monitorInfo.rcWork.left +
+        (monitorInfo.rcWork.right - monitorInfo.rcWork.left - width) / 2;
+    const int y = monitorInfo.rcWork.top +
+        (monitorInfo.rcWork.bottom - monitorInfo.rcWork.top - height) / 2;
     g_app->settings = CreateWindowExW(WS_EX_TOOLWINDOW, L"ClipLiteSettings",
                                       tr(L"ClipLite Settings", L"ClipLite 设置"),
                                       WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-                                      CW_USEDEFAULT, CW_USEDEFAULT, 400, 700,
+                                      x, y, width, height,
                                       nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     ShowWindow(g_app->settings, SW_SHOW);
     UpdateWindow(g_app->settings);
