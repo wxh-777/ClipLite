@@ -47,6 +47,10 @@ powershell -ExecutionPolicy Bypass -File packaging/package.ps1
 - 历史记录：`%LOCALAPPDATA%\\ClipLite\\history.bin`
 - 设置：`%LOCALAPPDATA%\\ClipLite\\settings.ini`
 
+ClipLite 不记录剪贴板正文日志。历史内容默认保存在当前用户目录；启用 DPAPI 后，历史 payload 只能由同一 Windows 用户恢复。清空历史会删除本地历史文件，暂停监听可用于临时避免保存敏感内容。
+
+粘贴到管理员权限或受保护窗口可能受 Windows UIPI 限制；此时 ClipLite 不能绕过系统权限，用户需要在目标应用中手动粘贴。
+
 ## 快捷键
 
 - `Alt+V`：打开历史窗口
