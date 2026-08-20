@@ -4,11 +4,15 @@
 
 #include <cstdio>
 #include <io.h>
+#include <string>
 
 int main() {
     ClipStore store(10);
     if (!store.open()) return 1;
     store.clear();
+    if (store.append(ClipType::Text, {}, 1)) return 30;
+    std::string oversized(32u * 1024u * 1024u + 1, 'x');
+    if (store.append(ClipType::Text, oversized, clipLiteHash(oversized))) return 31;
     const std::string text = "ClipLite store test with a long searchable suffix";
     if (!store.append(ClipType::Text, text, clipLiteHash(text))) return 2;
     if (store.activeCount() != 1) return 3;
@@ -78,5 +82,18 @@ int main() {
     if (!limited.append(ClipType::Text, "three", clipLiteHash("three"))) return 28;
     if (!limited.prune(2, 0, 0) || limited.activeCount() != 2) return 29;
     limited.clear();
+
+    ClipStore pressure(10000);
+    pressure.open();
+    pressure.clear();
+    for (int i = 0; i < 10000; ++i) {
+        const std::string value = "pressure-" + std::to_string(i);
+        if (!pressure.append(ClipType::Text, value, clipLiteHash(value))) return 32;
+    }
+    if (pressure.activeCount() != 10000) return 33;
+    ClipStore pressureReopened(10000);
+    if (!pressureReopened.open() || pressureReopened.activeCount() != 10000) return 34;
+    pressureReopened.clear();
+    pressure.clear();
     return 0;
 }
