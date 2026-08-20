@@ -1149,7 +1149,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     app.hidden = CreateWindowExW(0, L"ClipLiteHidden", L"ClipLite", 0, 0, 0, 0, 0,
                                  HWND_MESSAGE, nullptr, instance, nullptr);
     if (!app.hidden) return 1;
-    AddClipboardFormatListener(app.hidden);
+    if (!AddClipboardFormatListener(app.hidden)) {
+        MessageBoxW(nullptr, tr(L"Unable to monitor the clipboard.", L"无法监听剪贴板。"),
+                    L"ClipLite", MB_OK | MB_ICONERROR);
+        DestroyWindow(app.hidden);
+        return 1;
+    }
     registerHotkeys();
     addTrayIcon();
     PostMessageW(app.hidden, kShowSettingsMessage, 0, 0);
