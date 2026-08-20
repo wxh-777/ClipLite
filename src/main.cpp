@@ -264,6 +264,25 @@ bool openClipboardWithRetry() {
     return false;
 }
 
+bool isValidDibPayload(const std::string& payload) {
+    if (payload.size() < sizeof(BITMAPINFOHEADER)) return false;
+    BITMAPINFOHEADER header{};
+    std::memcpy(&header, payload.data(), sizeof(header));
+    if (header.biSize < sizeof(BITMAPINFOHEADER) || header.biSize > payload.size() ||
+        header.biWidth <= 0 || header.biHeight == 0 || header.biPlanes != 1 ||
+        header.biBitCount == 0 || header.biBitCount > 32 ||
+        header.biWidth > 10000 || header.biHeight < -10000 || header.biHeight > 10000) {
+        return false;
+    }
+    std::size_t colorEntries = header.biBitCount <= 8
+        ? (std::size_t{1} << header.biBitCount) : 0;
+    if (header.biCompression == BI_BITFIELDS && header.biSize == sizeof(BITMAPINFOHEADER)) {
+        colorEntries = 3;
+    }
+    const std::size_t bitsOffset = header.biSize + colorEntries * sizeof(RGBQUAD);
+    return bitsOffset < payload.size();
+}
+
 bool captureClipboard(ClipType& type, std::string& payload) {
     if (!openClipboardWithRetry()) return false;
 
@@ -338,9 +357,12 @@ bool captureClipboard(ClipType& type, std::string& payload) {
             if (data) {
                 payload.assign(static_cast<const char*>(data), static_cast<std::size_t>(size));
                 GlobalUnlock(handle);
-                type = ClipType::ImageV5;
-                CloseClipboard();
-                return true;
+                if (isValidDibPayload(payload)) {
+                    type = ClipType::ImageV5;
+                    CloseClipboard();
+                    return true;
+                }
+                payload.clear();
             }
         }
     }
@@ -352,9 +374,12 @@ bool captureClipboard(ClipType& type, std::string& payload) {
             if (data) {
                 payload.assign(static_cast<const char*>(data), static_cast<std::size_t>(size));
                 GlobalUnlock(handle);
-                type = ClipType::Image;
-                CloseClipboard();
-                return true;
+                if (isValidDibPayload(payload)) {
+                    type = ClipType::Image;
+                    CloseClipboard();
+                    return true;
+                }
+                payload.clear();
             }
         }
     }
