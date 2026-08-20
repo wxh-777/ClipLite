@@ -32,6 +32,7 @@ if(BUILD_TESTING)
         tests/store_tests.cpp
         src/clip_store.cpp
         include/clip_store.h
+        resources/clipLite.rc
     )
     target_include_directories(ClipLiteStoreTests PRIVATE include)
     target_compile_definitions(ClipLiteStoreTests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)

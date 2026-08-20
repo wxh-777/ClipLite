@@ -27,7 +27,9 @@ struct ClipItem {
     bool hasChecksum = false;
     bool encrypted = false;
     bool hasSource = false;
+    bool hasExpiry = false;
     std::string source;
+    std::uint64_t expiresAt = 0;
     std::string preview;
 };
 
@@ -35,23 +37,29 @@ class ClipStore {
 public:
     explicit ClipStore(std::size_t maxItems = 1000);
 
+    void setMaxItems(std::size_t maxItems) { maxItems_ = maxItems; }
     void setEncryption(bool enabled) { encryptionEnabled_ = enabled; }
     bool encryptionEnabled() const { return encryptionEnabled_; }
+    void setMaxPayloadBytes(std::uint32_t bytes) { maxPayloadBytes_ = bytes; }
     bool rekey(bool enabled);
     bool open();
     bool append(ClipType type, const std::string& payload, std::uint64_t hash,
-                const std::string& source = {});
+                const std::string& source = {}, std::uint64_t expiresAt = 0);
     bool readPayload(std::size_t index, std::string& payload) const;
     bool remove(std::size_t index);
     bool togglePinned(std::size_t index);
     bool setCategory(std::size_t index, std::uint32_t category);
     bool prune(std::size_t maxItems, std::uint64_t maxBytes, std::uint64_t minTimestamp);
     bool clear();
+    bool clearType(ClipType type);
+    bool pruneExpired(std::uint64_t timestamp);
 
     std::vector<std::size_t> search(const std::string& query) const;
     std::size_t findHash(std::uint64_t hash) const;
     const std::vector<ClipItem>& items() const { return items_; }
     std::size_t activeCount() const { return items_.size(); }
+    std::size_t countType(ClipType type) const;
+    std::uint64_t bytesType(ClipType type) const;
     std::uint64_t diskBytes() const { return diskBytes_; }
     const std::wstring& path() const { return path_; }
 
@@ -67,6 +75,7 @@ private:
     std::wstring path_;
     std::size_t maxItems_;
     bool encryptionEnabled_ = false;
+    std::uint32_t maxPayloadBytes_ = 32u * 1024u * 1024u;
     std::uint64_t diskBytes_ = 0;
     std::vector<ClipItem> items_;
 };

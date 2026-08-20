@@ -19,11 +19,13 @@ ClipLite 是一个仅面向 Windows 的轻量剪贴板历史工具。
 - 历史记录保存剪贴板来源进程，并在卡片中显示 Chrome、VS Code、Word 等友好名称
 - 置顶、删除、清空历史
 - Windows 原生单实例后台监听
+- 程序、设置窗口、历史弹窗和系统托盘统一使用 ClipLite 工具图标
 - 英文和简体中文基础界面
 - 黑色和白色主题设置
-- 可配置最大记录数、最大磁盘空间、保留天数和暂停监听
+- 可配置最大记录数、最大磁盘空间、保留天数、单条内容上限和暂停监听
+- 支持按来源名称忽略应用，支持可选的敏感内容自动过期
 - 可选使用 Windows DPAPI 按当前用户加密历史内容
-- 追加式磁盘存储，不在内存中保存完整历史正文
+- 追加式磁盘存储，不在内存中保存完整历史正文，当前格式为 v4 并兼容 v1/v2/v3
 
 ## 构建
 
@@ -39,6 +41,9 @@ powershell -ExecutionPolicy Bypass -File tools/measure.ps1
 
 # 可选：重复打开和关闭历史窗口
 powershell -ExecutionPolicy Bypass -File tools/stress-windows.ps1 -Iterations 100
+
+# 可选：执行 10000 次文本剪贴板捕获压力测试，并在结束后恢复原文本剪贴板
+powershell -ExecutionPolicy Bypass -File tools/stress-clipboard.ps1 -Iterations 10000
 ```
 
 程序输出为 `build-x64/Release/ClipLite.exe`。
@@ -54,7 +59,7 @@ powershell -ExecutionPolicy Bypass -File packaging/package.ps1
 - 历史记录：`%LOCALAPPDATA%\\ClipLite\\history.bin`
 - 设置：`%LOCALAPPDATA%\\ClipLite\\settings.ini`
 
-ClipLite 不记录剪贴板正文日志。历史内容默认保存在当前用户目录；启用 DPAPI 后，历史 payload 只能由同一 Windows 用户恢复。清空历史会删除本地历史文件，暂停监听可用于临时避免保存敏感内容。
+ClipLite 不记录剪贴板正文日志。历史内容默认保存在当前用户目录；启用 DPAPI 后，历史 payload 只能由同一 Windows 用户恢复。清空历史会删除本地历史文件，暂停监听可用于临时避免保存敏感内容。敏感内容过期默认关闭，启用后只对包含明确 `password`、`token`、`api_key`、`secret` 或私钥标记的文本生效。
 
 粘贴到管理员权限或受保护窗口可能受 Windows UIPI 限制；此时 ClipLite 不能绕过系统权限，用户需要在目标应用中手动粘贴。
 

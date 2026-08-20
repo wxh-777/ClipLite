@@ -10,12 +10,42 @@ int main() {
     ClipStore store(10);
     if (!store.open()) return 1;
     store.clear();
+    const std::wstring tempPath = store.path() + L".tmp";
+    std::FILE* tempFile = nullptr;
+    _wfopen_s(&tempFile, tempPath.c_str(), L"wb");
+    if (!tempFile) return 46;
+    std::fputs("stale temporary data", tempFile);
+    std::fclose(tempFile);
+    ClipStore tempRecovered(10);
+    if (!tempRecovered.open() || GetFileAttributesW(tempPath.c_str()) != INVALID_FILE_ATTRIBUTES) return 47;
     if (store.append(ClipType::Text, {}, 1)) return 30;
     std::string oversized(32u * 1024u * 1024u + 1, 'x');
     if (store.append(ClipType::Text, oversized, clipLiteHash(oversized))) return 31;
+    ClipStore payloadLimited(10);
+    payloadLimited.setMaxPayloadBytes(4);
+    payloadLimited.open();
+    payloadLimited.clear();
+    if (payloadLimited.append(ClipType::Text, "12345", clipLiteHash("12345"))) return 42;
+    if (!payloadLimited.append(ClipType::Text, "1234", clipLiteHash("1234"))) return 43;
+    payloadLimited.clear();
+    ClipStore countLimited(0);
+    countLimited.setMaxItems(2);
+    countLimited.open();
+    countLimited.clear();
+    if (!countLimited.append(ClipType::Text, "a", clipLiteHash("a")) ||
+        !countLimited.append(ClipType::Text, "b", clipLiteHash("b")) ||
+        !countLimited.append(ClipType::Text, "c", clipLiteHash("c")) ||
+        countLimited.activeCount() != 2) return 45;
+    countLimited.clear();
+    ClipStore expiry(10);
+    expiry.open();
+    expiry.clear();
+    if (!expiry.append(ClipType::Text, "expire", clipLiteHash("expire"), {}, 1)) return 48;
+    if (expiry.items()[0].expiresAt != 1 || !expiry.pruneExpired(2) || expiry.activeCount() != 0) return 49;
     const std::string text = "ClipLite store test with a long searchable suffix";
     if (!store.append(ClipType::Text, text, clipLiteHash(text), "VS Code")) return 2;
     if (store.activeCount() != 1) return 3;
+    if (store.countType(ClipType::Text) != 1 || store.bytesType(ClipType::Text) != text.size()) return 44;
     if (!store.items()[0].hasSource || store.items()[0].source != "VS Code") return 40;
     std::string restored;
     if (!store.readPayload(0, restored) || restored != text) return 4;
@@ -30,10 +60,13 @@ int main() {
     if (!formats.append(ClipType::Html, "<b>html</b>", clipLiteHash("<b>html</b>"), "Word")) return 23;
     if (!formats.append(ClipType::ImageV5, "dibv5", clipLiteHash("dibv5"))) return 24;
     ClipStore formatsReopened(10);
-    if (!formatsReopened.open() || formatsReopened.activeCount() != 2 ||
-        formatsReopened.items()[0].type != ClipType::ImageV5 ||
-        formatsReopened.items()[1].type != ClipType::Html ||
-        formatsReopened.items()[1].source != "Word") return 25;
+    if (!formatsReopened.open()) return 250;
+    if (formatsReopened.activeCount() != 2) return 251;
+    if (formatsReopened.items()[0].type != ClipType::ImageV5) return 252;
+    if (formatsReopened.items()[1].type != ClipType::Html) return 253;
+    if (formatsReopened.items()[1].source != "Word") return 254;
+    if (!formatsReopened.clearType(ClipType::Html) || formatsReopened.activeCount() != 1 ||
+        formatsReopened.items()[0].type != ClipType::ImageV5) return 41;
     formatsReopened.clear();
     formats.clear();
 
