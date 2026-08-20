@@ -341,6 +341,8 @@ ClipLite 是一个仅支持 Windows 的原生剪贴板历史工具。
 - 当前 x64 实测：设置窗口 Private Bytes 约 `2.35 MB`、Working Set 约 `16.64 MB`、程序约 `233.5 KB`。
 - 历史窗口实测：Private Bytes 约 `2.43 MB`、Working Set 约 `17.40 MB`。
 - 10000 条记录追加、重启读取和清理测试通过，耗时约 `4.5 秒`。
+- 最终资源测量：进程启动约 `74.84 ms`，设置窗口 Working Set 约 `14.23 MB`，Private Bytes 约 `2.13 MB`，x64 程序约 `240.5 KB`。
+- 最终窗口压力：1000 次打开/关闭历史窗口通过。
 - 待完成：图片预览专项测量、10000 次真实剪贴板复制和不同 Windows/DPI 环境数据。
 
 ## 阶段十三：发布和文档
@@ -363,7 +365,7 @@ ClipLite 是一个仅支持 Windows 的原生剪贴板历史工具。
 完成记录：
 
 - 当前结果：已有基础 README 和 Release 可执行文件。
-- 本次完成：数据目录、清理、DPAPI、权限限制和隐私说明已写入 README。
+- 本次完成：数据目录、清理、DPAPI、权限限制、隐私说明、x64 便携包和 SHA-256 已完成。
 - 待完成：图标、干净 Windows 环境和 Defender/SmartScreen 验证。
 
 ## 每次开发完成后的固定流程
