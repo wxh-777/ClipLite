@@ -32,6 +32,9 @@ ctest --test-dir build-x64 -C Release --output-on-failure
 
 # 可选：测量启动后的进程资源
 powershell -ExecutionPolicy Bypass -File tools/measure.ps1
+
+# 可选：重复打开和关闭历史窗口
+powershell -ExecutionPolicy Bypass -File tools/stress-windows.ps1 -Iterations 100
 ```
 
 程序输出为 `build-x64/Release/ClipLite.exe`。
