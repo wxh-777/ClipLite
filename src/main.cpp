@@ -668,7 +668,7 @@ LRESULT CALLBACK editProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
             closePopup();
             return 0;
         }
-        if (wParam == VK_DOWN) {
+        if (wParam == VK_DOWN || wParam == VK_UP || wParam == VK_TAB) {
             SetFocus(g_app->popup);
             return 0;
         }
@@ -817,11 +817,27 @@ void createSettingsControls(HWND hwnd) {
                g_app->store.activeCount(), g_app->store.diskBytes());
     CreateWindowW(L"STATIC", count, WS_CHILD | WS_VISIBLE, 120, 366, 250, 24, hwnd, nullptr,
                   GetModuleHandleW(nullptr), nullptr);
+    std::size_t textCount = 0, htmlCount = 0, imageCount = 0, fileCount = 0;
+    std::size_t pinnedCount = 0, categorizedCount = 0;
+    for (const ClipItem& item : g_app->store.items()) {
+        if (item.type == ClipType::Text) ++textCount;
+        else if (item.type == ClipType::Html) ++htmlCount;
+        else if (item.type == ClipType::Files) ++fileCount;
+        else ++imageCount;
+        if (item.pinned) ++pinnedCount;
+        if (item.category != 0) ++categorizedCount;
+    }
+    wchar_t details[256]{};
+    swprintf_s(details, zh ? L"文本 %zu  HTML %zu  图片 %zu  文件 %zu  置顶 %zu  已分类 %zu"
+                           : L"Text %zu  HTML %zu  Images %zu  Files %zu  Pinned %zu  Categorized %zu",
+               textCount, htmlCount, imageCount, fileCount, pinnedCount, categorizedCount);
+    CreateWindowW(L"STATIC", details, WS_CHILD | WS_VISIBLE, 20, 388, 360, 24, hwnd, nullptr,
+                  GetModuleHandleW(nullptr), nullptr);
     CreateWindowW(L"BUTTON", zh ? L"清空历史" : L"Clear history",
-                  WS_CHILD | WS_VISIBLE, 20, 400, 120, 28, hwnd,
+                  WS_CHILD | WS_VISIBLE, 20, 420, 120, 28, hwnd,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingClear)), GetModuleHandleW(nullptr), nullptr);
     CreateWindowW(L"BUTTON", zh ? L"保存" : L"Save",
-                  WS_CHILD | WS_VISIBLE, 270, 400, 90, 28, hwnd,
+                  WS_CHILD | WS_VISIBLE, 270, 420, 90, 28, hwnd,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingSave)), GetModuleHandleW(nullptr), nullptr);
 }
 
@@ -1084,7 +1100,7 @@ void openSettings() {
     g_app->settings = CreateWindowExW(WS_EX_TOOLWINDOW, L"ClipLiteSettings",
                                       tr(L"ClipLite Settings", L"ClipLite 设置"),
                                       WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-                                      CW_USEDEFAULT, CW_USEDEFAULT, 400, 470,
+                                      CW_USEDEFAULT, CW_USEDEFAULT, 400, 500,
                                       nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     ShowWindow(g_app->settings, SW_SHOW);
     UpdateWindow(g_app->settings);
@@ -1093,6 +1109,7 @@ void openSettings() {
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     AppState app;
     g_app = &app;
     g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
