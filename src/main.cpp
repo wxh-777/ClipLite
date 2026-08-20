@@ -40,6 +40,7 @@ constexpr int kSettingMaxDiskMb = 27;
 constexpr int kSettingPause = 28;
 constexpr int kSettingStartup = 29;
 constexpr int kSettingEncrypt = 30;
+constexpr int kSettingCategoryBase = 31;
 constexpr int kMenuPaste = 100;
 constexpr int kMenuPin = 101;
 constexpr int kMenuDelete = 102;
@@ -70,6 +71,7 @@ struct Settings {
     int retentionDays = 30;
     int maxDiskMb = 256;
     int language = -1; // -1 system, 0 English, 1 Simplified Chinese
+    std::vector<std::string> categories{"General", "Work", "Code", "Links"};
 };
 
 struct AppState {
@@ -150,6 +152,17 @@ void loadSettings(Settings& settings) {
         if (std::strncmp(line, "maxItems=", 9) == 0) settings.maxItems = std::clamp(std::atoi(line + 9), 0, 100000);
         if (std::strncmp(line, "retentionDays=", 14) == 0) settings.retentionDays = std::clamp(std::atoi(line + 14), 0, 36500);
         if (std::strncmp(line, "maxDiskMb=", 10) == 0) settings.maxDiskMb = std::clamp(std::atoi(line + 10), 0, 102400);
+        for (int i = 0; i < 4; ++i) {
+            const std::string prefix = "category" + std::to_string(i) + "=";
+            if (std::strncmp(line, prefix.c_str(), prefix.size()) == 0) {
+                settings.categories[static_cast<std::size_t>(i)] = line + prefix.size();
+                while (!settings.categories[static_cast<std::size_t>(i)].empty() &&
+                       (settings.categories[static_cast<std::size_t>(i)].back() == '\r' ||
+                        settings.categories[static_cast<std::size_t>(i)].back() == '\n')) {
+                    settings.categories[static_cast<std::size_t>(i)].pop_back();
+                }
+            }
+        }
         if (std::strncmp(line, "language=0", 10) == 0) settings.language = 0;
         if (std::strncmp(line, "language=1", 10) == 0) settings.language = 1;
         if (std::strncmp(line, "language=-1", 11) == 0) settings.language = -1;
@@ -169,6 +182,9 @@ void saveSettings(const Settings& settings) {
                  settings.encryptData ? 1 : 0,
                  settings.maxItems,
                  settings.retentionDays, settings.maxDiskMb, settings.language);
+    for (int i = 0; i < 4; ++i) {
+        std::fprintf(file, "category%d=%s\n", i, settings.categories[static_cast<std::size_t>(i)].c_str());
+    }
     std::fclose(file);
 }
 
@@ -217,6 +233,20 @@ std::string wideToUtf8(const wchar_t* value, std::size_t length) {
     WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, static_cast<int>(length),
                         result.data(), count, nullptr, nullptr);
     return result;
+}
+
+std::wstring categoryLabel(int index) {
+    if (index < 0 || index >= 4) return {};
+    const std::string& value = g_app->settingsData.categories[static_cast<std::size_t>(index)];
+    static const char* defaults[] = {"General", "Work", "Code", "Links"};
+    if (value == defaults[index]) {
+        const wchar_t* localized[] = {
+            tr(L"General", L"常规"), tr(L"Work", L"工作"),
+            tr(L"Code", L"代码"), tr(L"Links", L"链接")
+        };
+        return localized[index];
+    }
+    return utf8ToWide(value);
 }
 
 UINT htmlClipboardFormat() {
@@ -869,11 +899,24 @@ void createSettingsControls(HWND hwnd) {
                textCount, htmlCount, imageCount, fileCount, pinnedCount, categorizedCount);
     CreateWindowW(L"STATIC", details, WS_CHILD | WS_VISIBLE, 20, 412, 360, 24, hwnd, nullptr,
                   GetModuleHandleW(nullptr), nullptr);
+    CreateWindowW(L"STATIC", zh ? L"分类名称" : L"Category names",
+                  WS_CHILD | WS_VISIBLE, 20, 458, 180, 24, hwnd, nullptr,
+                  GetModuleHandleW(nullptr), nullptr);
+    for (int i = 0; i < 4; ++i) {
+        wchar_t categoryValue[128]{};
+        const std::wstring categoryWide = utf8ToWide(g_app->settingsData.categories[static_cast<std::size_t>(i)]);
+        wcsncpy_s(categoryValue, categoryWide.c_str(), _TRUNCATE);
+        CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", categoryValue,
+                        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                        20, 484 + i * 34, 320, 26, hwnd,
+                        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingCategoryBase + i)),
+                        GetModuleHandleW(nullptr), nullptr);
+    }
     CreateWindowW(L"BUTTON", zh ? L"清空历史" : L"Clear history",
-                  WS_CHILD | WS_VISIBLE, 20, 444, 120, 28, hwnd,
+                  WS_CHILD | WS_VISIBLE, 20, 630, 120, 28, hwnd,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingClear)), GetModuleHandleW(nullptr), nullptr);
     CreateWindowW(L"BUTTON", zh ? L"保存" : L"Save",
-                  WS_CHILD | WS_VISIBLE, 270, 444, 90, 28, hwnd,
+                  WS_CHILD | WS_VISIBLE, 270, 630, 90, 28, hwnd,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingSave)), GetModuleHandleW(nullptr), nullptr);
 }
 
@@ -886,10 +929,12 @@ void appendFilterMenu(HMENU menu) {
     AppendMenuW(filters, MF_STRING, kFilterHtml, L"HTML");
     AppendMenuW(filters, MF_STRING, kFilterPinned, tr(L"Pinned only", L"仅置顶"));
     HMENU filterCategories = CreatePopupMenu();
-    AppendMenuW(filterCategories, MF_STRING, kFilterCategoryBase, tr(L"General", L"常规"));
-    AppendMenuW(filterCategories, MF_STRING, kFilterCategoryBase + 1, tr(L"Work", L"工作"));
-    AppendMenuW(filterCategories, MF_STRING, kFilterCategoryBase + 2, tr(L"Code", L"代码"));
-    AppendMenuW(filterCategories, MF_STRING, kFilterCategoryBase + 3, tr(L"Links", L"链接"));
+    std::wstring category0 = categoryLabel(0), category1 = categoryLabel(1);
+    std::wstring category2 = categoryLabel(2), category3 = categoryLabel(3);
+    AppendMenuW(filterCategories, MF_STRING, kFilterCategoryBase, category0.c_str());
+    AppendMenuW(filterCategories, MF_STRING, kFilterCategoryBase + 1, category1.c_str());
+    AppendMenuW(filterCategories, MF_STRING, kFilterCategoryBase + 2, category2.c_str());
+    AppendMenuW(filterCategories, MF_STRING, kFilterCategoryBase + 3, category3.c_str());
     AppendMenuW(filters, MF_POPUP, reinterpret_cast<UINT_PTR>(filterCategories),
                 tr(L"Category", L"分类"));
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(filters),
@@ -1010,6 +1055,15 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 g_app->settingsData.pauseMonitoring = SendMessageW(pause, BM_GETCHECK, 0, 0) == BST_CHECKED;
                 g_app->settingsData.startWithWindows = SendMessageW(startup, BM_GETCHECK, 0, 0) == BST_CHECKED;
                 const bool desiredEncryption = SendMessageW(encrypt, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                for (int i = 0; i < 4; ++i) {
+                    HWND category = GetDlgItem(hwnd, kSettingCategoryBase + i);
+                    wchar_t categoryValue[128]{};
+                    GetWindowTextW(category, categoryValue, 128);
+                    std::string categoryUtf8 = wideToUtf8(categoryValue, std::wcslen(categoryValue));
+                    if (!categoryUtf8.empty()) {
+                        g_app->settingsData.categories[static_cast<std::size_t>(i)] = std::move(categoryUtf8);
+                    }
+                }
                 const int languageSelection = static_cast<int>(SendMessageW(language, CB_GETCURSEL, 0, 0));
                 g_app->settingsData.language = languageSelection <= 0 ? -1 : languageSelection - 1;
                 if (desiredEncryption != previousEncryption && !g_app->store.rekey(desiredEncryption)) {
@@ -1089,14 +1143,12 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 AppendMenuW(menu, MF_STRING, kMenuPin, tr(L"Toggle pin", L"切换置顶"));
                 AppendMenuW(menu, MF_STRING, kMenuDelete, tr(L"Delete", L"删除"));
                 HMENU categories = CreatePopupMenu();
-                AppendMenuW(categories, MF_STRING, kMenuCategoryBase,
-                            tr(L"General", L"常规"));
-                AppendMenuW(categories, MF_STRING, kMenuCategoryBase + 1,
-                            tr(L"Work", L"工作"));
-                AppendMenuW(categories, MF_STRING, kMenuCategoryBase + 2,
-                            tr(L"Code", L"代码"));
-                AppendMenuW(categories, MF_STRING, kMenuCategoryBase + 3,
-                            tr(L"Links", L"链接"));
+                std::wstring category0 = categoryLabel(0), category1 = categoryLabel(1);
+                std::wstring category2 = categoryLabel(2), category3 = categoryLabel(3);
+                AppendMenuW(categories, MF_STRING, kMenuCategoryBase, category0.c_str());
+                AppendMenuW(categories, MF_STRING, kMenuCategoryBase + 1, category1.c_str());
+                AppendMenuW(categories, MF_STRING, kMenuCategoryBase + 2, category2.c_str());
+                AppendMenuW(categories, MF_STRING, kMenuCategoryBase + 3, category3.c_str());
                 AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(categories),
                             tr(L"Category", L"分类"));
                 appendFilterMenu(menu);
@@ -1150,7 +1202,7 @@ void openSettings() {
     g_app->settings = CreateWindowExW(WS_EX_TOOLWINDOW, L"ClipLiteSettings",
                                       tr(L"ClipLite Settings", L"ClipLite 设置"),
                                       WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-                                      CW_USEDEFAULT, CW_USEDEFAULT, 400, 500,
+                                      CW_USEDEFAULT, CW_USEDEFAULT, 400, 700,
                                       nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     ShowWindow(g_app->settings, SW_SHOW);
     UpdateWindow(g_app->settings);
