@@ -35,6 +35,14 @@ int main() {
     formatsReopened.clear();
     formats.clear();
 
+    ClipStore unicode(10);
+    unicode.open();
+    unicode.clear();
+    const std::string chinese = u8"剪贴板搜索";
+    if (!unicode.append(ClipType::Text, chinese, clipLiteHash(chinese))) return 38;
+    if (unicode.search(u8"贴板").size() != 1) return 39;
+    unicode.clear();
+
     if (!store.append(ClipType::Text, "older", clipLiteHash("older"))) return 9;
     if (!store.append(ClipType::Text, "newer", clipLiteHash("newer"))) return 10;
     ClipStore reopened(10);

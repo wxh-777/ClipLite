@@ -431,11 +431,15 @@ std::vector<std::size_t> ClipStore::search(const std::string& query) const {
     for (std::size_t i = 0; i < items_.size(); ++i) {
         if (needle.empty() || containsIgnoreCase(items_[i].preview, needle)) {
             result.push_back(i);
+            if (result.size() >= 5000) break;
             continue;
         }
         if (items_[i].type == ClipType::Image || items_[i].type == ClipType::ImageV5) continue;
         std::string payload;
-        if (readPayload(i, payload) && containsIgnoreCase(payload, needle)) result.push_back(i);
+        if (readPayload(i, payload) && containsIgnoreCase(payload, needle)) {
+            result.push_back(i);
+            if (result.size() >= 5000) break;
+        }
     }
     return result;
 }
