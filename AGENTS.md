@@ -107,6 +107,7 @@ powershell -ExecutionPolicy Bypass -File tools/stress-windows.ps1 -Iterations 10
 - 文件格式字段必须进行魔数、版本、长度、上限和 CRC 检查；外部或剪贴板数据不能直接信任。
 - 文本转换明确 UTF-8/UTF-16 边界；不要用本地代码页替代已有的 Unicode 路径。
 - 修改磁盘格式时保留旧版本读取/安全恢复能力，并补充损坏、截断和重启读取测试。
+- 出来的界面禁止有锯齿出现
 
 ## Windows 与存储约束
 
