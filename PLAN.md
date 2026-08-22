@@ -214,7 +214,7 @@ f506adfb7bd7045981c97e60882f2bfa8e36a99c
 
 - 已新增 `app_lifecycle`、`clipboard_monitor`、`hotkey_manager`、`render_context`、`history_window` 和 `settings_window` 模块。
 - 设置窗口和历史窗口主背景、卡片、筛选条、历史文字和统计文字改由 Direct2D/DirectWrite 绘制；DPI、尺寸变化和设备目标重建进入窗口级上下文。
-- WIC 工厂共享，32 位 DIB 图片仅在可见历史行按需复制、缩放和绘制，不建立常驻图片缓存。
+- WIC 工厂共享，24/32 位 DIB 和常见 DIBV5 图片仅在可见历史行按需复制、缩放和绘制，不建立常驻图片缓存。
 - GDI+ 已从目标链接和运行时初始化中移除；迁移期间的旧绘制块已禁用，待下一轮直接删除源码。
 - Win+V 低级钩子已移入独立模块，异常超时、重复 Win 键、注入事件、普通 Win 组合和卸载状态均由模块清理。
 - Release 构建、CTest、窗口压力 `100/100` 和剪贴板压力 `10000/10000` 通过。
