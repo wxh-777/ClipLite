@@ -3,14 +3,17 @@
 #include <shlobj.h>
 #include <shellscalingapi.h>
 #include <commctrl.h>
+#include <dwmapi.h>
 #include <gdiplus.h>
 
 #include "clip_store.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <initializer_list>
 #include <string>
 #include <vector>
 #include <windowsx.h>
@@ -28,14 +31,35 @@ struct StoredHtmlHeader {
 };
 #pragma pack(pop)
 
+struct ShortcutBinding {
+    UINT modifiers = 0;
+    UINT virtualKey = 0;
+};
+
+struct CategoryLimit {
+    int maxItems = 0;
+    int maxDiskMb = 0;
+};
+
+enum class PasteMode {
+    Automatic,
+    PlainText,
+    RichText,
+};
+
+bool operator==(const CategoryLimit& first, const CategoryLimit& second) {
+    return first.maxItems == second.maxItems && first.maxDiskMb == second.maxDiskMb;
+}
+
 constexpr int kHotkeyAltV = 1;
 constexpr int kHotkeyWinV = 2;
+constexpr int kHotkeySettings = 3;
+constexpr int kHotkeyPause = 4;
 constexpr int kSearchEdit = 10;
 constexpr int kSettingWinV = 20;
 constexpr int kSettingDark = 21;
 constexpr int kSettingLanguage = 22;
 constexpr int kSettingClear = 23;
-constexpr int kSettingSave = 24;
 constexpr int kSettingMaxItems = 25;
 constexpr int kSettingRetentionDays = 26;
 constexpr int kSettingMaxDiskMb = 27;
@@ -45,22 +69,36 @@ constexpr int kSettingEncrypt = 30;
 constexpr int kSettingMaxContentMb = 31;
 constexpr int kSettingIgnoredApps = 32;
 constexpr int kSettingSensitiveExpiry = 33;
-constexpr int kSettingCategoryBase = 34;
+constexpr int kSettingDataDirectory = 34;
+constexpr int kSettingBrowseDataDirectory = 35;
 constexpr int kSettingClearText = 40;
 constexpr int kSettingClearImage = 41;
 constexpr int kSettingClearFiles = 42;
-constexpr int kSettingClearHtml = 43;
-constexpr int kSettingClearOther = 44;
+constexpr int kSettingShortcutHistory = 50;
+constexpr int kSettingShortcutSettings = 51;
+constexpr int kSettingShortcutPause = 52;
+constexpr int kSettingShortcutPaste = 53;
+constexpr int kSettingShortcutPastePlain = 54;
+constexpr int kSettingShortcutPasteRich = 55;
+constexpr int kSettingShortcutClosePopup = 56;
+constexpr int kSettingShortcutPopupSettings = 57;
+constexpr int kSettingShortcutClearFilter = 58;
+constexpr int kSettingShortcutDelete = 59;
+constexpr int kSettingCategoryMaxBase = 60;
+constexpr int kSettingCategoryDiskBase = 64;
 constexpr int kMenuPaste = 100;
 constexpr int kMenuPin = 101;
 constexpr int kMenuDelete = 102;
+constexpr int kMenuPastePlain = 103;
+constexpr int kMenuPasteRich = 104;
+constexpr int kMenuPopupPinned = 105;
 constexpr int kFilterAll = 130;
 constexpr int kFilterText = 131;
 constexpr int kFilterFiles = 132;
 constexpr int kFilterImage = 133;
-constexpr int kFilterHtml = 134;
-constexpr int kFilterPinned = 135;
-constexpr int kFilterOther = 136;
+constexpr int kFilterPinned = 134;
+constexpr int kFilterOther = 135;
+constexpr int kStorageCategoryCount = 3;
 constexpr UINT kShowPopupMessage = WM_APP + 1;
 constexpr UINT kTrayMessage = WM_APP + 2;
 constexpr UINT kShowSettingsMessage = WM_APP + 3;
@@ -68,11 +106,26 @@ constexpr UINT kExitMessage = WM_APP + 4;
 constexpr UINT_PTR kExpiryTimer = 3;
 constexpr UINT_PTR kSettingsToggleTimer = 4;
 constexpr UINT_PTR kSettingsDropdownTimer = 5;
+constexpr UINT_PTR kSettingsSyncTimer = 6;
+constexpr UINT_PTR kSettingsThemeTimer = 7;
+constexpr UINT_PTR kSettingsActionFeedbackTimer = 8;
+constexpr UINT_PTR kPopupScrollTimer = 9;
 constexpr DWORD kSettingsToggleAnimationMs = 160;
 constexpr DWORD kSettingsDropdownAnimationMs = 150;
+constexpr DWORD kSettingsThemeAnimationMs = 180;
+constexpr DWORD kPopupScrollAnimationMs = 105;
+constexpr UINT kSettingsSyncDelayMs = 300;
+constexpr UINT kSettingsActionFeedbackMs = 2400;
 constexpr UINT kTrayId = 1;
 constexpr int kPopupFilterTop = 58;
 constexpr int kPopupFilterBottom = 82;
+constexpr int kPopupSearchLeft = 86;
+constexpr int kPopupSearchRight = 218;
+constexpr int kPopupClearLeft = 222;
+constexpr int kPopupClearRight = 254;
+constexpr int kPopupPinLeft = 258;
+constexpr int kPopupPinRight = 278;
+constexpr int kPopupCloseLeft = 282;
 constexpr int kPopupWidth = 320;
 constexpr int kPopupHeight = 500;
 constexpr int kPopupListTop = 108;
@@ -82,6 +135,14 @@ constexpr int kPopupCardGap = 8;
 constexpr int kSettingsWidth = 740;
 constexpr int kSettingsHeight = 520;
 constexpr int kSettingsSidebarWidth = 180;
+constexpr int kSettingsHeaderHeight = 58;
+constexpr int kSettingsToggleWidth = 36;
+constexpr int kSettingsToggleHeight = 20;
+constexpr int kSettingsTrackWidth = 36;
+constexpr int kSettingsTrackHeight = 20;
+constexpr int kSettingsThemeWidth = 102;
+constexpr int kSettingsThemeSegmentWidth = 32;
+constexpr int kSettingsShortcutPage = 1;
 constexpr int kTrayOpen = 200;
 constexpr int kTraySettings = 201;
 constexpr int kTrayExit = 202;
@@ -90,6 +151,8 @@ constexpr int kIconResource = 101;
 struct Settings {
     bool winV = false;
     bool dark = false;
+    int themeMode = -1; // -1 legacy value, 0 system, 1 light, 2 dark
+    int accent = 0; // 0 blue, 1 purple, 2 legacy green, 3 orange
     bool pauseMonitoring = false;
     bool startWithWindows = false;
     bool encryptData = false;
@@ -97,10 +160,22 @@ struct Settings {
     int retentionDays = 30;
     int maxDiskMb = 256;
     int maxContentMb = 32;
+    std::string dataDirectory;
     std::vector<std::string> ignoredApps;
     int sensitiveExpiryHours = 0;
     int language = -1; // -1 system, 0 English, 1 Simplified Chinese
     std::vector<std::string> categories{"General", "Work", "Code", "Links"};
+    ShortcutBinding historyHotkey{MOD_ALT, 'V'};
+    ShortcutBinding settingsHotkey{MOD_CONTROL | MOD_ALT, 'S'};
+    ShortcutBinding pauseHotkey{MOD_CONTROL | MOD_SHIFT, 'P'};
+    ShortcutBinding popupPasteHotkey{0, VK_RETURN};
+    ShortcutBinding popupPlainPasteHotkey{MOD_CONTROL | MOD_SHIFT, 'V'};
+    ShortcutBinding popupRichPasteHotkey{MOD_CONTROL | MOD_SHIFT, 'R'};
+    ShortcutBinding popupCloseHotkey{0, VK_ESCAPE};
+    ShortcutBinding popupSettingsHotkey{0, VK_F10};
+    ShortcutBinding popupClearFilterHotkey{MOD_CONTROL, '0'};
+    ShortcutBinding popupDeleteHotkey{0, VK_DELETE};
+    std::array<CategoryLimit, kStorageCategoryCount> categoryLimits{};
 };
 
 struct AppState {
@@ -111,6 +186,7 @@ struct AppState {
     HWND targetWindow = nullptr;
     HFONT popupFont = nullptr;
     HFONT settingsFont = nullptr;
+    HFONT settingsMultilineFont = nullptr;
     HBRUSH popupInputBrush = nullptr;
     HBRUSH settingsBackgroundBrush = nullptr;
     HBRUSH settingsCardBrush = nullptr;
@@ -124,27 +200,48 @@ struct AppState {
     POINT popupPoint{};
     int selected = 0;
     int scrollOffset = 0;
+    int scrollPosition = 0;
+    bool scrollAnimating = false;
+    int scrollAnimationFrom = 0;
+    int scrollAnimationTo = 0;
+    LONGLONG scrollAnimationStartTicks = 0;
     int filterScrollOffset = 0;
     bool filterDragging = false;
     int filterDragStartX = 0;
     int filterDragStartOffset = 0;
+    bool popupPinned = false;
+    bool scrollDragging = false;
+    int scrollDragStartY = 0;
+    int scrollDragStartOffset = 0;
     int hoveredRow = -1;
     int hoveredFilter = -1;
     int hoveredDeleteRow = -1;
     int hoveredPinRow = -1;
     bool hoveredHeader = false;
     int hoveredSettingsTab = -1;
+    int hoveredSettingsThemeMode = -1;
     int hoveredSettingsControl = 0;
+    int settingsScrollOffset = 0;
+    int settingsControlsTab = -1;
     HWND toggleAnimationControl = nullptr;
     LONGLONG toggleAnimationStartTicks = 0;
     float toggleAnimationFrom = 0.0f;
     float toggleAnimationTo = 0.0f;
+    bool settingsThemeAnimating = false;
+    bool settingsThemeFromDark = false;
+    bool settingsThemeToDark = false;
+    float settingsThemeProgressValue = 1.0f;
+    LONGLONG settingsThemeStartTicks = 0;
     HWND languageDropdown = nullptr;
     int languageDropdownHover = -1;
     LONGLONG languageDropdownStartTicks = 0;
     float languageDropdownFrom = 0.0f;
     float languageDropdownTo = 0.0f;
     int settingsTab = 0;
+    std::wstring settingsActionFeedback;
+    bool settingsActionFeedbackSuccess = true;
+    HWND shortcutCaptureControl = nullptr;
+    bool shortcutRegistrationWarning = false;
     int filterType = 0;
     bool pinnedOnly = false;
     std::string query;
@@ -157,6 +254,16 @@ struct AppState {
 AppState* g_app = nullptr;
 UINT g_taskbarCreated = 0;
 UINT g_uiDpi = 96;
+
+LONGLONG settingsToggleClock();
+LONGLONG settingsToggleClockFrequency();
+float settingsThemeProgress();
+COLORREF settingsThemeColor(COLORREF light, COLORREF dark);
+COLORREF settingsAccentColor();
+COLORREF settingsAccentSoftColor();
+void animateSettingsTheme(HWND hwnd, bool fromDark, bool toDark);
+void setSettingsActionFeedback(HWND hwnd, const std::wstring& message, bool success);
+void scheduleSettingsSync(HWND hwnd);
 
 int ui(int value) {
     return MulDiv(value, static_cast<int>(g_uiDpi), 96);
@@ -207,6 +314,28 @@ std::wstring settingsPath() {
     return clipLiteDataDirectory() + L"\\settings.ini";
 }
 
+bool systemThemeIsDark() {
+    HKEY key = nullptr;
+    DWORD value = 1;
+    DWORD size = sizeof(value);
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                      0, KEY_QUERY_VALUE, &key) == ERROR_SUCCESS) {
+        RegQueryValueExW(key, L"AppsUseLightTheme", nullptr, nullptr,
+                         reinterpret_cast<LPBYTE>(&value), &size);
+        RegCloseKey(key);
+    }
+    return value == 0;
+}
+
+void normalizeShortcutBinding(ShortcutBinding& binding, const ShortcutBinding& fallback) {
+    constexpr UINT allowedModifiers = MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN;
+    binding.modifiers &= allowedModifiers;
+    if (binding.modifiers == 0 || binding.virtualKey == 0 || binding.virtualKey > 0xFF) {
+        binding = fallback;
+    }
+}
+
 std::uint64_t nowUnix() {
     FILETIME ft{};
     GetSystemTimeAsFileTime(&ft);
@@ -227,13 +356,25 @@ std::wstring formatRelativeTime(std::uint64_t timestamp) {
 }
 
 void loadSettings(Settings& settings) {
+    std::array<CategoryLimit, 4> legacyCategoryLimits{};
     std::FILE* file = nullptr;
     _wfopen_s(&file, settingsPath().c_str(), L"rb");
-    if (!file) return;
-    char line[128]{};
+    if (!file) {
+        settings.themeMode = settings.dark ? 2 : 1;
+        return;
+    }
+    char line[1024]{};
+    const auto readShortcutValue = [&line](const char* prefix, UINT& target) {
+        const std::size_t length = std::strlen(prefix);
+        if (std::strncmp(line, prefix, length) == 0) {
+            target = static_cast<UINT>(std::atoi(line + length));
+        }
+    };
     while (std::fgets(line, sizeof(line), file)) {
         if (std::strncmp(line, "winV=1", 6) == 0) settings.winV = true;
         if (std::strncmp(line, "dark=1", 6) == 0) settings.dark = true;
+        if (std::strncmp(line, "themeMode=", 10) == 0) settings.themeMode = std::clamp(std::atoi(line + 10), 0, 2);
+        if (std::strncmp(line, "accent=", 7) == 0) settings.accent = std::clamp(std::atoi(line + 7), 0, 3);
         if (std::strncmp(line, "pauseMonitoring=1", 17) == 0) settings.pauseMonitoring = true;
         if (std::strncmp(line, "startWithWindows=1", 18) == 0) settings.startWithWindows = true;
         if (std::strncmp(line, "encryptData=1", 13) == 0) settings.encryptData = true;
@@ -241,6 +382,13 @@ void loadSettings(Settings& settings) {
         if (std::strncmp(line, "retentionDays=", 14) == 0) settings.retentionDays = std::clamp(std::atoi(line + 14), 0, 36500);
         if (std::strncmp(line, "maxDiskMb=", 10) == 0) settings.maxDiskMb = std::clamp(std::atoi(line + 10), 0, 102400);
         if (std::strncmp(line, "maxContentMb=", 13) == 0) settings.maxContentMb = std::clamp(std::atoi(line + 13), 1, 32);
+        if (std::strncmp(line, "dataDirectory=", 14) == 0) {
+            settings.dataDirectory = line + 14;
+            while (!settings.dataDirectory.empty() &&
+                   (settings.dataDirectory.back() == '\r' || settings.dataDirectory.back() == '\n')) {
+                settings.dataDirectory.pop_back();
+            }
+        }
         if (std::strncmp(line, "ignoredApp=", 11) == 0 && line[11] != '\0') {
             std::string app(line + 11);
             while (!app.empty() && (app.back() == '\r' || app.back() == '\n')) app.pop_back();
@@ -259,33 +407,132 @@ void loadSettings(Settings& settings) {
                     settings.categories[static_cast<std::size_t>(i)].pop_back();
                 }
             }
+            const std::string maxPrefix = "categoryMaxItems" + std::to_string(i) + "=";
+            if (std::strncmp(line, maxPrefix.c_str(), maxPrefix.size()) == 0) {
+                legacyCategoryLimits[static_cast<std::size_t>(i)].maxItems =
+                    std::clamp(std::atoi(line + maxPrefix.size()), 0, 100000);
+            }
+            const std::string diskPrefix = "categoryMaxDiskMb" + std::to_string(i) + "=";
+            if (std::strncmp(line, diskPrefix.c_str(), diskPrefix.size()) == 0) {
+                legacyCategoryLimits[static_cast<std::size_t>(i)].maxDiskMb =
+                    std::clamp(std::atoi(line + diskPrefix.size()), 0, 102400);
+            }
         }
         if (std::strncmp(line, "language=0", 10) == 0) settings.language = 0;
         if (std::strncmp(line, "language=1", 10) == 0) settings.language = 1;
         if (std::strncmp(line, "language=-1", 11) == 0) settings.language = -1;
+        if (std::strncmp(line, "shortcutHistoryModifiers=", 25) == 0) {
+            settings.historyHotkey.modifiers = static_cast<UINT>(std::atoi(line + 25));
+        }
+        if (std::strncmp(line, "shortcutHistoryKey=", 19) == 0) {
+            settings.historyHotkey.virtualKey = static_cast<UINT>(std::atoi(line + 19));
+        }
+        if (std::strncmp(line, "shortcutSettingsModifiers=", 26) == 0) {
+            settings.settingsHotkey.modifiers = static_cast<UINT>(std::atoi(line + 26));
+        }
+        if (std::strncmp(line, "shortcutSettingsKey=", 20) == 0) {
+            settings.settingsHotkey.virtualKey = static_cast<UINT>(std::atoi(line + 20));
+        }
+        if (std::strncmp(line, "shortcutPauseModifiers=", 23) == 0) {
+            settings.pauseHotkey.modifiers = static_cast<UINT>(std::atoi(line + 23));
+        }
+        if (std::strncmp(line, "shortcutPauseKey=", 17) == 0) {
+            settings.pauseHotkey.virtualKey = static_cast<UINT>(std::atoi(line + 17));
+        }
+        readShortcutValue("shortcutPopupPasteModifiers=", settings.popupPasteHotkey.modifiers);
+        readShortcutValue("shortcutPopupPasteKey=", settings.popupPasteHotkey.virtualKey);
+        readShortcutValue("shortcutPopupPlainPasteModifiers=", settings.popupPlainPasteHotkey.modifiers);
+        readShortcutValue("shortcutPopupPlainPasteKey=", settings.popupPlainPasteHotkey.virtualKey);
+        readShortcutValue("shortcutPopupRichPasteModifiers=", settings.popupRichPasteHotkey.modifiers);
+        readShortcutValue("shortcutPopupRichPasteKey=", settings.popupRichPasteHotkey.virtualKey);
+        readShortcutValue("shortcutPopupCloseModifiers=", settings.popupCloseHotkey.modifiers);
+        readShortcutValue("shortcutPopupCloseKey=", settings.popupCloseHotkey.virtualKey);
+        readShortcutValue("shortcutPopupSettingsModifiers=", settings.popupSettingsHotkey.modifiers);
+        readShortcutValue("shortcutPopupSettingsKey=", settings.popupSettingsHotkey.virtualKey);
+        readShortcutValue("shortcutPopupClearFilterModifiers=", settings.popupClearFilterHotkey.modifiers);
+        readShortcutValue("shortcutPopupClearFilterKey=", settings.popupClearFilterHotkey.virtualKey);
+        readShortcutValue("shortcutPopupDeleteModifiers=", settings.popupDeleteHotkey.modifiers);
+        readShortcutValue("shortcutPopupDeleteKey=", settings.popupDeleteHotkey.virtualKey);
     }
     std::fclose(file);
+    const auto mergeLimit = [](const CategoryLimit& first, const CategoryLimit& second) {
+        CategoryLimit result;
+        result.maxItems = first.maxItems == 0 || second.maxItems == 0
+            ? 0 : std::min(100000, first.maxItems + second.maxItems);
+        result.maxDiskMb = first.maxDiskMb == 0 || second.maxDiskMb == 0
+            ? 0 : std::min(102400, first.maxDiskMb + second.maxDiskMb);
+        return result;
+    };
+    settings.categoryLimits[0] = mergeLimit(legacyCategoryLimits[0], legacyCategoryLimits[1]);
+    settings.categoryLimits[1] = legacyCategoryLimits[2];
+    settings.categoryLimits[2] = legacyCategoryLimits[3];
+    if (settings.themeMode < 0) settings.themeMode = settings.dark ? 2 : 1;
+    settings.dark = settings.themeMode == 2 ||
+        (settings.themeMode == 0 && systemThemeIsDark());
+    normalizeShortcutBinding(settings.historyHotkey, ShortcutBinding{MOD_ALT, 'V'});
+    normalizeShortcutBinding(settings.settingsHotkey, ShortcutBinding{MOD_CONTROL | MOD_ALT, 'S'});
+    normalizeShortcutBinding(settings.pauseHotkey, ShortcutBinding{MOD_CONTROL | MOD_SHIFT, 'P'});
+    const auto normalizePopupShortcut = [](ShortcutBinding& binding, const ShortcutBinding& fallback) {
+        binding.modifiers &= MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN;
+        if (binding.virtualKey == 0 || binding.virtualKey > 0xFF) binding = fallback;
+    };
+    normalizePopupShortcut(settings.popupPasteHotkey, ShortcutBinding{0, VK_RETURN});
+    normalizePopupShortcut(settings.popupPlainPasteHotkey, ShortcutBinding{MOD_CONTROL | MOD_SHIFT, 'V'});
+    normalizePopupShortcut(settings.popupRichPasteHotkey, ShortcutBinding{MOD_CONTROL | MOD_SHIFT, 'R'});
+    normalizePopupShortcut(settings.popupCloseHotkey, ShortcutBinding{0, VK_ESCAPE});
+    normalizePopupShortcut(settings.popupSettingsHotkey, ShortcutBinding{0, VK_F10});
+    normalizePopupShortcut(settings.popupClearFilterHotkey, ShortcutBinding{MOD_CONTROL, '0'});
+    normalizePopupShortcut(settings.popupDeleteHotkey, ShortcutBinding{0, VK_DELETE});
 }
 
 void saveSettings(const Settings& settings) {
     std::FILE* file = nullptr;
     _wfopen_s(&file, settingsPath().c_str(), L"wb");
     if (!file) return;
-    std::fprintf(file, "winV=%d\ndark=%d\npauseMonitoring=%d\nstartWithWindows=%d\n"
-                      "encryptData=%d\n"
-                       "maxItems=%d\nretentionDays=%d\nmaxDiskMb=%d\nmaxContentMb=%d\n"
-                       "sensitiveExpiryHours=%d\nlanguage=%d\n",
-                 settings.winV ? 1 : 0, settings.dark ? 1 : 0,
+    std::fprintf(file, "winV=%d\ndark=%d\nthemeMode=%d\naccent=%d\n"
+                        "pauseMonitoring=%d\nstartWithWindows=%d\n"
+                       "encryptData=%d\n"
+                        "maxItems=%d\nretentionDays=%d\nmaxDiskMb=%d\nmaxContentMb=%d\n"
+                        "dataDirectory=%s\n"
+                        "sensitiveExpiryHours=%d\nlanguage=%d\n"
+                         "shortcutHistoryModifiers=%u\nshortcutHistoryKey=%u\n"
+                         "shortcutSettingsModifiers=%u\nshortcutSettingsKey=%u\n"
+                         "shortcutPauseModifiers=%u\nshortcutPauseKey=%u\n"
+                         "shortcutPopupPasteModifiers=%u\nshortcutPopupPasteKey=%u\n"
+                         "shortcutPopupPlainPasteModifiers=%u\nshortcutPopupPlainPasteKey=%u\n"
+                         "shortcutPopupRichPasteModifiers=%u\nshortcutPopupRichPasteKey=%u\n"
+                         "shortcutPopupCloseModifiers=%u\nshortcutPopupCloseKey=%u\n"
+                         "shortcutPopupSettingsModifiers=%u\nshortcutPopupSettingsKey=%u\n"
+                         "shortcutPopupClearFilterModifiers=%u\nshortcutPopupClearFilterKey=%u\n"
+                         "shortcutPopupDeleteModifiers=%u\nshortcutPopupDeleteKey=%u\n",
+                  settings.winV ? 1 : 0, settings.dark ? 1 : 0,
+                  settings.themeMode, settings.accent,
                  settings.pauseMonitoring ? 1 : 0, settings.startWithWindows ? 1 : 0,
-                 settings.encryptData ? 1 : 0,
-                 settings.maxItems,
-                  settings.retentionDays, settings.maxDiskMb, settings.maxContentMb,
-                  settings.sensitiveExpiryHours, settings.language);
+                  settings.encryptData ? 1 : 0,
+                  settings.maxItems,
+                   settings.retentionDays, settings.maxDiskMb, settings.maxContentMb,
+                   settings.dataDirectory.c_str(),
+                    settings.sensitiveExpiryHours, settings.language,
+                    settings.historyHotkey.modifiers, settings.historyHotkey.virtualKey,
+                    settings.settingsHotkey.modifiers, settings.settingsHotkey.virtualKey,
+                    settings.pauseHotkey.modifiers, settings.pauseHotkey.virtualKey,
+                    settings.popupPasteHotkey.modifiers, settings.popupPasteHotkey.virtualKey,
+                    settings.popupPlainPasteHotkey.modifiers, settings.popupPlainPasteHotkey.virtualKey,
+                    settings.popupRichPasteHotkey.modifiers, settings.popupRichPasteHotkey.virtualKey,
+                    settings.popupCloseHotkey.modifiers, settings.popupCloseHotkey.virtualKey,
+                    settings.popupSettingsHotkey.modifiers, settings.popupSettingsHotkey.virtualKey,
+                    settings.popupClearFilterHotkey.modifiers, settings.popupClearFilterHotkey.virtualKey,
+                    settings.popupDeleteHotkey.modifiers, settings.popupDeleteHotkey.virtualKey);
     for (const std::string& app : settings.ignoredApps) {
         std::fprintf(file, "ignoredApp=%s\n", app.c_str());
     }
     for (int i = 0; i < 4; ++i) {
         std::fprintf(file, "category%d=%s\n", i, settings.categories[static_cast<std::size_t>(i)].c_str());
+        if (i < kStorageCategoryCount) {
+            const CategoryLimit& limit = settings.categoryLimits[static_cast<std::size_t>(i)];
+            std::fprintf(file, "categoryMaxItems%d=%d\ncategoryMaxDiskMb%d=%d\n",
+                         i, limit.maxItems, i, limit.maxDiskMb);
+        }
     }
     std::fclose(file);
 }
@@ -572,22 +819,48 @@ bool captureClipboard(ClipType& type, std::string& payload, std::string& source)
     return false;
 }
 
-bool setClipboardDataForItem(const ClipItem& item, const std::string& payload) {
+bool setClipboardDataForItem(const ClipItem& item, const std::string& payload,
+                             PasteMode mode = PasteMode::Automatic) {
     if (!openClipboardWithRetry()) return false;
     EmptyClipboard();
     HGLOBAL memory = nullptr;
     bool ok = false;
 
-    if (item.type == ClipType::Text) {
-        const std::wstring text = utf8ToWide(payload);
-        memory = GlobalAlloc(GMEM_MOVEABLE, (text.size() + 1) * sizeof(wchar_t));
-        if (memory) {
-            void* destination = GlobalLock(memory);
-            std::memcpy(destination, text.c_str(), (text.size() + 1) * sizeof(wchar_t));
-            GlobalUnlock(memory);
-            if (SetClipboardData(CF_UNICODETEXT, memory)) ok = true;
-            else GlobalFree(memory);
+    const auto setUnicodeText = [&](const std::string& value) {
+        const std::wstring text = utf8ToWide(value);
+        HGLOBAL textMemory = GlobalAlloc(GMEM_MOVEABLE, (text.size() + 1) * sizeof(wchar_t));
+        if (!textMemory) return false;
+        void* destination = GlobalLock(textMemory);
+        if (!destination) {
+            GlobalFree(textMemory);
+            return false;
         }
+        std::memcpy(destination, text.c_str(), (text.size() + 1) * sizeof(wchar_t));
+        GlobalUnlock(textMemory);
+        if (SetClipboardData(CF_UNICODETEXT, textMemory)) return true;
+        GlobalFree(textMemory);
+        return false;
+    };
+
+    const auto setHtml = [&](const std::string& value) {
+        const UINT format = htmlClipboardFormat();
+        if (format == 0) return false;
+        HGLOBAL htmlMemory = GlobalAlloc(GMEM_MOVEABLE, value.size());
+        if (!htmlMemory) return false;
+        void* destination = GlobalLock(htmlMemory);
+        if (!destination) {
+            GlobalFree(htmlMemory);
+            return false;
+        }
+        std::memcpy(destination, value.data(), value.size());
+        GlobalUnlock(htmlMemory);
+        if (SetClipboardData(format, htmlMemory)) return true;
+        GlobalFree(htmlMemory);
+        return false;
+    };
+
+    if (item.type == ClipType::Text) {
+        ok = setUnicodeText(payload);
     } else if (item.type == ClipType::Image || item.type == ClipType::ImageV5) {
         memory = GlobalAlloc(GMEM_MOVEABLE, payload.size());
         if (memory) {
@@ -599,30 +872,14 @@ bool setClipboardDataForItem(const ClipItem& item, const std::string& payload) {
             else GlobalFree(memory);
         }
     } else if (item.type == ClipType::Html) {
-        const UINT format = htmlClipboardFormat();
         std::string plainText;
         std::string html;
-        if (format != 0 && splitStoredHtml(payload, plainText, html)) {
-            HGLOBAL htmlMemory = GlobalAlloc(GMEM_MOVEABLE, html.size());
-            if (htmlMemory) {
-                void* destination = GlobalLock(htmlMemory);
-                std::memcpy(destination, html.data(), html.size());
-                GlobalUnlock(htmlMemory);
-                if (SetClipboardData(format, htmlMemory)) ok = true;
-                else GlobalFree(htmlMemory);
-            }
-            if (!plainText.empty()) {
-                const std::wstring text = utf8ToWide(plainText);
-                HGLOBAL textMemory = GlobalAlloc(GMEM_MOVEABLE,
-                                                  (text.size() + 1) * sizeof(wchar_t));
-                if (textMemory) {
-                    void* destination = GlobalLock(textMemory);
-                    std::memcpy(destination, text.c_str(),
-                                (text.size() + 1) * sizeof(wchar_t));
-                    GlobalUnlock(textMemory);
-                    if (SetClipboardData(CF_UNICODETEXT, textMemory)) ok = true;
-                    else GlobalFree(textMemory);
-                }
+        if (splitStoredHtml(payload, plainText, html)) {
+            if (mode == PasteMode::PlainText) {
+                ok = setUnicodeText(plainText);
+            } else {
+                ok = setHtml(html);
+                if (!plainText.empty() || !ok) ok = setUnicodeText(plainText) || ok;
             }
         }
     } else {
@@ -651,10 +908,9 @@ bool isImageType(ClipType type) {
 
 bool isAutomaticTypeMatch(int filterType, ClipType type) {
     if (filterType == 0) return true;
-    if (filterType == 1) return type == ClipType::Text;
+    if (filterType == 1) return type == ClipType::Text || type == ClipType::Html;
     if (filterType == 2) return isImageType(type);
     if (filterType == 3) return type == ClipType::Files;
-    if (filterType == 4) return type == ClipType::Html;
     return type != ClipType::Text && !isImageType(type) &&
            type != ClipType::Files && type != ClipType::Html;
 }
@@ -663,7 +919,7 @@ const wchar_t* automaticTypeLabel(ClipType type) {
     if (type == ClipType::Text) return tr(L"Text", L"文本");
     if (isImageType(type)) return tr(L"Image", L"图片");
     if (type == ClipType::Files) return tr(L"Files", L"文件");
-    if (type == ClipType::Html) return tr(L"Rich text", L"富文本");
+    if (type == ClipType::Html) return tr(L"Text", L"文本");
     return tr(L"Other", L"其他");
 }
 
@@ -681,13 +937,18 @@ int popupCardHeight(const ClipItem& item) {
     return ui(kPopupCardHeight);
 }
 
+int popupScrollStride();
+
 int popupRowAt(int clickY) {
     if (!g_app || !g_app->popup) return -1;
     RECT client{};
     GetClientRect(g_app->popup, &client);
     if (clickY < ui(kPopupListTop) || clickY >= client.bottom - ui(kPopupBottomPadding)) return -1;
-    int y = ui(kPopupListTop);
-    for (int row = g_app->scrollOffset;
+    const int stride = popupScrollStride();
+    const int firstRow = g_app->scrollPosition / std::max(1, stride);
+    const int offset = g_app->scrollPosition % std::max(1, stride);
+    int y = ui(kPopupListTop) - offset;
+    for (int row = firstRow;
          row < static_cast<int>(g_app->visible.size()); ++row) {
         const ClipItem& item = g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]];
         const int height = popupCardHeight(item);
@@ -699,20 +960,19 @@ int popupRowAt(int clickY) {
 }
 
 int popupRowTop(int row) {
-    if (!g_app || row < g_app->scrollOffset) return -1;
-    int y = ui(kPopupListTop);
-    for (int index = g_app->scrollOffset; index < row; ++index) {
-        const ClipItem& item = g_app->store.items()[g_app->visible[static_cast<std::size_t>(index)]];
-        y += popupCardHeight(item) + ui(kPopupCardGap);
-    }
-    return y;
+    if (!g_app) return -1;
+    const int stride = popupScrollStride();
+    const int firstRow = g_app->scrollPosition / std::max(1, stride);
+    if (row < firstRow) return -1;
+    const int offset = g_app->scrollPosition % std::max(1, stride);
+    return ui(kPopupListTop) - offset + (row - firstRow) * stride;
 }
 
 RECT automaticFilterRect(int slot, int scrollOffset);
 
 int popupFilterAt(int x, int y) {
     if (y < ui(kPopupFilterTop) || y >= ui(kPopupFilterBottom)) return -1;
-    for (int slot = 0; slot < 7; ++slot) {
+    for (int slot = 0; slot < 6; ++slot) {
         const RECT rect = automaticFilterRect(slot, g_app->filterScrollOffset);
         if (x >= rect.left && x < rect.right) return slot;
     }
@@ -733,13 +993,20 @@ void invalidatePopupHover(HWND hwnd, int row, int filter, bool header) {
         RECT rowRect{ui(16), top, client.right - ui(16), top + popupCardHeight(item)};
         InvalidateRect(hwnd, &rowRect, FALSE);
     }
-    if (filter >= 0 && filter < 7) {
+    if (filter >= 0 && filter < 6) {
         RECT filterRect = automaticFilterRect(filter, g_app->filterScrollOffset);
         InflateRect(&filterRect, ui(2), ui(2));
         InvalidateRect(hwnd, &filterRect, FALSE);
-    } else if (filter == 7) {
-        RECT clearRect{ui(270), ui(12), client.right - ui(16), ui(46)};
-        InvalidateRect(hwnd, &clearRect, FALSE);
+    } else if (filter >= 7 && filter <= 9) {
+        RECT buttonRect{};
+        if (filter == 7) {
+            buttonRect = RECT{ui(kPopupClearLeft), ui(12), ui(kPopupClearRight), ui(46)};
+        } else if (filter == 8) {
+            buttonRect = RECT{ui(kPopupPinLeft), ui(12), ui(kPopupPinRight), ui(46)};
+        } else {
+            buttonRect = RECT{ui(kPopupCloseLeft), ui(12), client.right - ui(16), ui(46)};
+        }
+        InvalidateRect(hwnd, &buttonRect, FALSE);
     }
     if (header) {
         RECT headerRect{ui(12), ui(10), ui(86), ui(50)};
@@ -748,28 +1015,211 @@ void invalidatePopupHover(HWND hwnd, int row, int filter, bool header) {
 }
 
 void invalidateSettingsNav(HWND hwnd, int tab) {
-    if (tab < 0 || tab > 3) return;
+    if (tab < 0 || tab > 4) return;
     RECT rect{ui(8), ui(50 + tab * 38), ui(180), ui(50 + tab * 38 + 38)};
     InvalidateRect(hwnd, &rect, FALSE);
 }
 
-void drawPinIcon(HDC dc, int x, int y, COLORREF color) {
-    HPEN pen = CreatePen(PS_SOLID, ui(1), color);
+void invalidatePopupList(HWND hwnd) {
+    if (!hwnd) return;
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void invalidateFilterBar(HWND hwnd);
+
+int popupScrollStride() {
+    return ui(kPopupCardHeight + kPopupCardGap);
+}
+
+int popupMaxScrollPixels() {
+    if (!g_app || !g_app->popup) return 0;
+    return std::max(0, static_cast<int>(g_app->visible.size()) - popupVisibleRows()) *
+        popupScrollStride();
+}
+
+void setPopupScrollPosition(int position) {
+    if (!g_app) return;
+    const int maximum = popupMaxScrollPixels();
+    g_app->scrollPosition = std::clamp(position, 0, maximum);
+    g_app->scrollOffset = g_app->scrollPosition / std::max(1, popupScrollStride());
+}
+
+bool popupScrollMetrics(int& trackTop, int& trackBottom, int& thumbTop,
+                        int& thumbHeight, int& maxOffset) {
+    if (!g_app || !g_app->popup) return false;
+    RECT client{};
+    GetClientRect(g_app->popup, &client);
+    const int visibleRows = popupVisibleRows();
+    const int itemCount = static_cast<int>(g_app->visible.size());
+    maxOffset = std::max(0, itemCount - visibleRows) * popupScrollStride();
+    if (maxOffset == 0) return false;
+    trackTop = ui(kPopupListTop);
+    trackBottom = client.bottom - ui(kPopupBottomPadding);
+    const int trackHeight = std::max(1, trackBottom - trackTop);
+    thumbHeight = std::min(trackHeight,
+                           std::max(ui(24), trackHeight * visibleRows / std::max(1, itemCount)));
+    thumbTop = trackTop + (trackHeight - thumbHeight) * g_app->scrollPosition /
+        std::max(1, maxOffset);
+    return true;
+}
+
+bool popupScrollThumbAt(int x, int y) {
+    if (!g_app || !g_app->popup) return false;
+    RECT client{};
+    GetClientRect(g_app->popup, &client);
+    int trackTop = 0;
+    int trackBottom = 0;
+    int thumbTop = 0;
+    int thumbHeight = 0;
+    int maxOffset = 0;
+    if (!popupScrollMetrics(trackTop, trackBottom, thumbTop, thumbHeight, maxOffset)) return false;
+    (void)trackTop;
+    (void)trackBottom;
+    (void)maxOffset;
+    return x >= client.right - ui(12) && x < client.right - ui(1) &&
+           y >= thumbTop && y < thumbTop + thumbHeight;
+}
+
+Gdiplus::Color makeGdiColor(COLORREF value) {
+    return Gdiplus::Color(255, GetRValue(value), GetGValue(value), GetBValue(value));
+}
+
+void configureGdiGraphics(Gdiplus::Graphics& graphics) {
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+    graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
+}
+
+void addGdiRoundedRect(Gdiplus::GraphicsPath& path, const Gdiplus::RectF& rect, float radius) {
+    const float boundedRadius = std::min(radius, std::min(rect.Width, rect.Height) / 2.0f);
+    const float diameter = boundedRadius * 2.0f;
+    path.AddArc(rect.X, rect.Y, diameter, diameter, 180.0f, 90.0f);
+    path.AddArc(rect.X + rect.Width - diameter, rect.Y, diameter, diameter, 270.0f, 90.0f);
+    path.AddArc(rect.X + rect.Width - diameter, rect.Y + rect.Height - diameter,
+                diameter, diameter, 0.0f, 90.0f);
+    path.AddArc(rect.X, rect.Y + rect.Height - diameter, diameter, diameter, 90.0f, 90.0f);
+    path.CloseFigure();
+}
+
+void drawGdiLine(HDC dc, int x1, int y1, int x2, int y2, COLORREF color, float width = 1.0f) {
+    if (g_app && g_app->gdiplusToken != 0) {
+        Gdiplus::Graphics graphics(dc);
+        configureGdiGraphics(graphics);
+        Gdiplus::Pen pen(makeGdiColor(color), width);
+        graphics.DrawLine(&pen, static_cast<float>(x1), static_cast<float>(y1),
+                          static_cast<float>(x2), static_cast<float>(y2));
+        return;
+    }
+    HPEN pen = CreatePen(PS_SOLID, std::max(1, static_cast<int>(width + 0.5f)), color);
     HGDIOBJ oldPen = SelectObject(dc, pen);
-    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-    POINT head[] = {{x + ui(2), y + ui(2)}, {x + ui(10), y + ui(2)},
-                    {x + ui(8), y + ui(8)}, {x + ui(4), y + ui(8)}};
-    Polygon(dc, head, 4);
-    MoveToEx(dc, x + ui(6), y + ui(8), nullptr);
-    LineTo(dc, x + ui(2), y + ui(14));
-    MoveToEx(dc, x + ui(4), y + ui(8), nullptr);
-    LineTo(dc, x + ui(9), y + ui(8));
-    SelectObject(dc, oldBrush);
+    MoveToEx(dc, x1, y1, nullptr);
+    LineTo(dc, x2, y2);
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
 
+void drawGdiRoundedSurface(HDC dc, const RECT& rect, COLORREF fill, COLORREF border, int radius) {
+    if (g_app && g_app->gdiplusToken != 0) {
+        Gdiplus::Graphics graphics(dc);
+        configureGdiGraphics(graphics);
+        Gdiplus::GraphicsPath path;
+        addGdiRoundedRect(path, Gdiplus::RectF(
+            static_cast<float>(rect.left) + 0.5f, static_cast<float>(rect.top) + 0.5f,
+            static_cast<float>(rect.right - rect.left - 1),
+            static_cast<float>(rect.bottom - rect.top - 1)), static_cast<float>(ui(radius)));
+        Gdiplus::SolidBrush brush(makeGdiColor(fill));
+        Gdiplus::Pen pen(makeGdiColor(border), 1.0f);
+        graphics.FillPath(&brush, &path);
+        graphics.DrawPath(&pen, &path);
+        return;
+    }
+    HBRUSH brush = CreateSolidBrush(fill);
+    HPEN pen = CreatePen(PS_SOLID, ui(1), border);
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, ui(radius), ui(radius));
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(pen);
+    DeleteObject(brush);
+}
+
+void drawPinIcon(HDC dc, int right, int centerY, COLORREF color, bool filled = false) {
+    if (!g_app || g_app->gdiplusToken == 0) return;
+    Gdiplus::Graphics graphics(dc);
+    configureGdiGraphics(graphics);
+    const float scale = static_cast<float>(g_uiDpi) / 96.0f * (10.0f / 14.0f);
+    const float originX = static_cast<float>(right) - 19.0f * scale;
+    const float originY = static_cast<float>(centerY) - 12.0f * scale;
+    const auto px = [originX, scale](float value) { return originX + value * scale; };
+    const auto py = [originY, scale](float value) { return originY + value * scale; };
+    Gdiplus::Pen pen(makeGdiColor(color), 1.5f * scale);
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    pen.SetLineJoin(Gdiplus::LineJoinRound);
+
+    graphics.DrawLine(&pen, px(12.0f), py(17.0f), px(12.0f), py(22.0f));
+
+    Gdiplus::GraphicsPath path;
+    path.StartFigure();
+    path.AddBezier(px(9.0f), py(10.76f), px(9.0f), py(11.5f),
+                   px(8.58f), py(12.2f), px(7.89f), py(12.55f));
+    path.AddLine(px(7.89f), py(12.55f), px(6.11f), py(13.45f));
+    path.AddBezier(px(6.11f), py(13.45f), px(5.42f), py(13.8f),
+                   px(5.0f), py(14.5f), px(5.0f), py(15.24f));
+    path.AddLine(px(5.0f), py(15.24f), px(5.0f), py(16.0f));
+    path.AddBezier(px(5.0f), py(16.0f), px(5.0f), py(16.55f),
+                   px(5.45f), py(17.0f), px(6.0f), py(17.0f));
+    path.AddLine(px(6.0f), py(17.0f), px(18.0f), py(17.0f));
+    path.AddBezier(px(18.0f), py(17.0f), px(18.55f), py(17.0f),
+                   px(19.0f), py(16.55f), px(19.0f), py(16.0f));
+    path.AddLine(px(19.0f), py(16.0f), px(19.0f), py(15.24f));
+    path.AddBezier(px(19.0f), py(15.24f), px(19.0f), py(14.5f),
+                   px(18.58f), py(13.8f), px(17.89f), py(13.45f));
+    path.AddLine(px(17.89f), py(13.45f), px(16.11f), py(12.55f));
+    path.AddBezier(px(16.11f), py(12.55f), px(15.42f), py(12.2f),
+                   px(15.0f), py(11.5f), px(15.0f), py(10.76f));
+    path.AddLine(px(15.0f), py(10.76f), px(15.0f), py(6.0f));
+    path.AddLine(px(15.0f), py(6.0f), px(16.0f), py(6.0f));
+    path.AddBezier(px(16.0f), py(6.0f), px(17.1f), py(6.0f),
+                   px(18.0f), py(5.1f), px(18.0f), py(4.0f));
+    path.AddBezier(px(18.0f), py(4.0f), px(18.0f), py(2.9f),
+                   px(17.1f), py(2.0f), px(16.0f), py(2.0f));
+    path.AddLine(px(16.0f), py(2.0f), px(8.0f), py(2.0f));
+    path.AddBezier(px(8.0f), py(2.0f), px(6.9f), py(2.0f),
+                   px(6.0f), py(2.9f), px(6.0f), py(4.0f));
+    path.AddBezier(px(6.0f), py(4.0f), px(6.0f), py(5.1f),
+                   px(6.9f), py(6.0f), px(8.0f), py(6.0f));
+    path.AddLine(px(8.0f), py(6.0f), px(9.0f), py(6.0f));
+    path.CloseFigure();
+    if (filled) {
+        Gdiplus::SolidBrush brush(makeGdiColor(color));
+        graphics.FillPath(&brush, &path);
+    }
+    graphics.DrawPath(&pen, &path);
+}
+
 void drawEmptyClipboardIcon(HDC dc, int centerX, int top, COLORREF color) {
+    if (g_app && g_app->gdiplusToken != 0) {
+        Gdiplus::Graphics graphics(dc);
+        configureGdiGraphics(graphics);
+        Gdiplus::Pen pen(makeGdiColor(color), 1.0f);
+        Gdiplus::GraphicsPath body;
+        addGdiRoundedRect(body, Gdiplus::RectF(
+            static_cast<float>(centerX - ui(14)), static_cast<float>(top + ui(6)),
+            static_cast<float>(ui(28)), static_cast<float>(ui(32))), static_cast<float>(ui(4)));
+        graphics.DrawPath(&pen, &body);
+        Gdiplus::GraphicsPath clip;
+        addGdiRoundedRect(clip, Gdiplus::RectF(
+            static_cast<float>(centerX - ui(7)), static_cast<float>(top),
+            static_cast<float>(ui(14)), static_cast<float>(ui(10))), static_cast<float>(ui(3)));
+        graphics.DrawPath(&pen, &clip);
+        graphics.DrawLine(&pen, static_cast<float>(centerX - ui(7)), static_cast<float>(top + ui(20)),
+                          static_cast<float>(centerX + ui(7)), static_cast<float>(top + ui(20)));
+        graphics.DrawLine(&pen, static_cast<float>(centerX - ui(7)), static_cast<float>(top + ui(27)),
+                          static_cast<float>(centerX + ui(3)), static_cast<float>(top + ui(27)));
+        return;
+    }
     HPEN pen = CreatePen(PS_SOLID, ui(1), color);
     HGDIOBJ oldPen = SelectObject(dc, pen);
     HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
@@ -785,6 +1235,16 @@ void drawEmptyClipboardIcon(HDC dc, int centerX, int top, COLORREF color) {
 }
 
 void drawDeleteIcon(HDC dc, int x, int y, COLORREF color) {
+    if (g_app && g_app->gdiplusToken != 0) {
+        Gdiplus::Graphics graphics(dc);
+        configureGdiGraphics(graphics);
+        Gdiplus::Pen pen(makeGdiColor(color), 1.0f);
+        graphics.DrawLine(&pen, static_cast<float>(x), static_cast<float>(y),
+                          static_cast<float>(x + ui(10)), static_cast<float>(y + ui(10)));
+        graphics.DrawLine(&pen, static_cast<float>(x + ui(10)), static_cast<float>(y),
+                          static_cast<float>(x), static_cast<float>(y + ui(10)));
+        return;
+    }
     HPEN pen = CreatePen(PS_SOLID, ui(1), color);
     HGDIOBJ oldPen = SelectObject(dc, pen);
     MoveToEx(dc, x, y, nullptr);
@@ -795,8 +1255,42 @@ void drawDeleteIcon(HDC dc, int x, int y, COLORREF color) {
     DeleteObject(pen);
 }
 
+void drawSearchIcon(HDC dc, int centerX, int centerY, COLORREF color) {
+    if (!g_app || g_app->gdiplusToken == 0) return;
+    Gdiplus::Graphics graphics(dc);
+    configureGdiGraphics(graphics);
+    const float scale = static_cast<float>(g_uiDpi) / 96.0f;
+    const float x = static_cast<float>(centerX);
+    const float y = static_cast<float>(centerY);
+    Gdiplus::Pen pen(makeGdiColor(color), 1.5f * scale);
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    graphics.DrawEllipse(&pen, x - 5.0f * scale, y - 6.0f * scale,
+                         10.0f * scale, 10.0f * scale);
+    graphics.DrawLine(&pen, x + 3.0f * scale, y + 4.0f * scale,
+                      x + 7.0f * scale, y + 8.0f * scale);
+}
+
 void drawMetadataTag(HDC dc, const RECT& rect, const std::wstring& value,
                      COLORREF background, COLORREF border, COLORREF text, int radius) {
+    if (g_app && g_app->gdiplusToken != 0) {
+        Gdiplus::Graphics graphics(dc);
+        configureGdiGraphics(graphics);
+        Gdiplus::GraphicsPath path;
+        addGdiRoundedRect(path, Gdiplus::RectF(
+            static_cast<float>(rect.left) + 0.5f, static_cast<float>(rect.top) + 0.5f,
+            static_cast<float>(rect.right - rect.left - 1),
+            static_cast<float>(rect.bottom - rect.top - 1)), static_cast<float>(ui(radius)));
+        Gdiplus::SolidBrush brush(makeGdiColor(background));
+        Gdiplus::Pen pen(makeGdiColor(border), 1.0f);
+        graphics.FillPath(&brush, &path);
+        graphics.DrawPath(&pen, &path);
+        SetTextColor(dc, text);
+        RECT textRect = rect;
+        DrawTextW(dc, value.c_str(), -1, &textRect,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        return;
+    }
     HBRUSH brush = CreateSolidBrush(background);
     HPEN pen = CreatePen(PS_SOLID, ui(1), border);
     HGDIOBJ oldBrush = SelectObject(dc, brush);
@@ -812,92 +1306,146 @@ void drawMetadataTag(HDC dc, const RECT& rect, const std::wstring& value,
 }
 
 void drawSettingsNavIcon(HDC dc, int index, int x, int y, COLORREF color) {
-    HPEN pen = CreatePen(PS_SOLID, ui(1), color);
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    if (!g_app || g_app->gdiplusToken == 0 || index < 0 || index > 4) return;
+    Gdiplus::Graphics graphics(dc);
+    configureGdiGraphics(graphics);
+    const float scale = static_cast<float>(g_uiDpi) / 96.0f;
+    const auto px = [x, scale](float value) { return static_cast<float>(x) + value * scale; };
+    const auto py = [y, scale](float value) { return static_cast<float>(y) + value * scale; };
+    Gdiplus::Pen pen(makeGdiColor(color), 1.5f * scale);
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    pen.SetLineJoin(Gdiplus::LineJoinRound);
+
     if (index == 0) {
+        const float lines[] = {7.0f, 12.0f, 17.0f};
+        const float knobs[] = {9.0f, 15.0f, 11.0f};
         for (int row = 0; row < 3; ++row) {
-            const int lineY = y + ui(5 + row * 6);
-            MoveToEx(dc, x, lineY, nullptr);
-            LineTo(dc, x + ui(20), lineY);
-            Ellipse(dc, x + ui(4 + (row % 2) * 8), lineY - ui(2),
-                    x + ui(8 + (row % 2) * 8), lineY + ui(2));
+            graphics.DrawLine(&pen, px(4.0f), py(lines[row]), px(20.0f), py(lines[row]));
+            graphics.DrawEllipse(&pen, px(knobs[row] - 2.0f), py(lines[row] - 2.0f),
+                                 4.0f * scale, 4.0f * scale);
         }
     } else if (index == 1) {
-        Ellipse(dc, x + ui(5), y + ui(5), x + ui(15), y + ui(17));
-        MoveToEx(dc, x + ui(3), y + ui(18), nullptr);
-        LineTo(dc, x + ui(17), y + ui(18));
-        MoveToEx(dc, x + ui(8), y + ui(3), nullptr);
-        LineTo(dc, x + ui(12), y);
+        Gdiplus::GraphicsPath keyboard;
+        addGdiRoundedRect(keyboard, Gdiplus::RectF(px(3.5f), py(5.5f),
+                                                   17.0f * scale, 13.0f * scale), 2.0f * scale);
+        graphics.DrawPath(&pen, &keyboard);
+        const float firstRow[] = {6.5f, 10.5f, 14.5f, 17.5f};
+        for (const float key : firstRow) {
+            graphics.DrawLine(&pen, px(key), py(9.5f), px(key + 1.5f), py(9.5f));
+            graphics.DrawLine(&pen, px(key), py(13.0f), px(key + 1.5f), py(13.0f));
+        }
+        graphics.DrawLine(&pen, px(8.5f), py(16.5f), px(15.5f), py(16.5f));
     } else if (index == 2) {
-        RoundRect(dc, x + ui(3), y + ui(3), x + ui(17), y + ui(19), ui(3), ui(3));
-        MoveToEx(dc, x + ui(6), y + ui(8), nullptr);
-        LineTo(dc, x + ui(14), y + ui(8));
-        MoveToEx(dc, x + ui(6), y + ui(12), nullptr);
-        LineTo(dc, x + ui(14), y + ui(12));
+        Gdiplus::GraphicsPath top;
+        top.AddEllipse(px(4.0f), py(3.0f), 16.0f * scale, 5.0f * scale);
+        graphics.DrawPath(&pen, &top);
+        Gdiplus::GraphicsPath body;
+        body.StartFigure();
+        body.AddLine(px(4.0f), py(5.5f), px(4.0f), py(18.5f));
+        body.AddBezier(px(4.0f), py(18.5f), px(4.0f), py(19.88f),
+                       px(7.58f), py(21.0f), px(12.0f), py(21.0f));
+        body.AddBezier(px(12.0f), py(21.0f), px(16.42f), py(21.0f),
+                       px(20.0f), py(19.88f), px(20.0f), py(18.5f));
+        body.AddLine(px(20.0f), py(18.5f), px(20.0f), py(5.5f));
+        graphics.DrawPath(&pen, &body);
+        Gdiplus::GraphicsPath middle;
+        middle.AddBezier(px(4.0f), py(12.0f), px(4.0f), py(13.38f),
+                         px(7.58f), py(14.5f), px(12.0f), py(14.5f));
+        middle.AddBezier(px(12.0f), py(14.5f), px(16.42f), py(14.5f),
+                         px(20.0f), py(13.38f), px(20.0f), py(12.0f));
+        graphics.DrawPath(&pen, &middle);
     } else if (index == 3) {
-        Ellipse(dc, x + ui(2), y + ui(2), x + ui(20), y + ui(20));
-        for (int row = 0; row < 2; ++row) {
-            for (int col = 0; col < 2; ++col) {
-                Ellipse(dc, x + ui(6 + col * 6), y + ui(6 + row * 6),
-                        x + ui(8 + col * 6), y + ui(8 + row * 6));
-            }
-        }
-    } else if (index == 4) {
-        Ellipse(dc, x + ui(7), y + ui(2), x + ui(13), y + ui(8));
-        Arc(dc, x + ui(3), y + ui(7), x + ui(17), y + ui(21), 0, 0, 0, 0);
-    } else if (index == 5) {
-        Ellipse(dc, x + ui(5), y + ui(5), x + ui(15), y + ui(15));
-        for (int spoke = 0; spoke < 4; ++spoke) {
-            const int offset = spoke * 4;
-            MoveToEx(dc, x + ui(10), y + ui(1 + offset / 2), nullptr);
-            LineTo(dc, x + ui(10), y + ui(5 + offset / 2));
-        }
-    } else if (index == 6) {
-        Arc(dc, x + ui(1), y + ui(4), x + ui(13), y + ui(16), 0, 0, 0, 0);
-        Arc(dc, x + ui(8), y + ui(8), x + ui(20), y + ui(20), 0, 0, 0, 0);
-        MoveToEx(dc, x + ui(7), y + ui(13), nullptr);
-        LineTo(dc, x + ui(14), y + ui(7));
-    } else if (index == 7) {
-        Ellipse(dc, x + ui(2), y + ui(2), x + ui(20), y + ui(20));
-        Ellipse(dc, x + ui(7), y + ui(6), x + ui(9), y + ui(8));
-        Ellipse(dc, x + ui(12), y + ui(6), x + ui(14), y + ui(8));
-        Ellipse(dc, x + ui(8), y + ui(12), x + ui(10), y + ui(14));
+        Gdiplus::GraphicsPath shield;
+        shield.AddLine(px(12.0f), py(3.0f), px(18.5f), py(5.5f));
+        shield.AddLine(px(18.5f), py(5.5f), px(18.5f), py(10.5f));
+        shield.AddBezier(px(18.5f), py(10.5f), px(18.5f), py(14.8f),
+                         px(16.0f), py(17.8f), px(12.0f), py(19.5f));
+        shield.AddBezier(px(12.0f), py(19.5f), px(8.0f), py(17.8f),
+                         px(5.5f), py(14.8f), px(5.5f), py(10.5f));
+        shield.AddLine(px(5.5f), py(10.5f), px(5.5f), py(5.5f));
+        shield.CloseFigure();
+        graphics.DrawPath(&pen, &shield);
+        Gdiplus::GraphicsPath lock;
+        addGdiRoundedRect(lock, Gdiplus::RectF(px(9.5f), py(10.0f),
+                                               5.0f * scale, 4.0f * scale), 1.0f * scale);
+        graphics.DrawPath(&pen, &lock);
+        Gdiplus::GraphicsPath shackle;
+        shackle.StartFigure();
+        shackle.AddLine(px(10.5f), py(10.0f), px(10.5f), py(8.5f));
+        shackle.AddBezier(px(10.5f), py(8.5f), px(10.5f), py(7.5f),
+                          px(11.0f), py(6.5f), px(12.0f), py(6.5f));
+        shackle.AddBezier(px(12.0f), py(6.5f), px(13.0f), py(6.5f),
+                          px(13.5f), py(7.5f), px(13.5f), py(8.5f));
+        shackle.AddLine(px(13.5f), py(8.5f), px(13.5f), py(10.0f));
+        graphics.DrawPath(&pen, &shackle);
     } else {
-        Ellipse(dc, x + ui(2), y + ui(2), x + ui(20), y + ui(20));
-        MoveToEx(dc, x + ui(10), y + ui(9), nullptr);
-        LineTo(dc, x + ui(10), y + ui(15));
-        Ellipse(dc, x + ui(9), y + ui(5), x + ui(11), y + ui(7));
+        graphics.DrawEllipse(&pen, px(4.0f), py(4.0f), 16.0f * scale, 16.0f * scale);
+        graphics.DrawLine(&pen, px(12.0f), py(11.5f), px(12.0f), py(15.5f));
+        Gdiplus::SolidBrush dot(makeGdiColor(color));
+        graphics.FillEllipse(&dot, px(11.5f), py(8.0f), scale, scale);
     }
-    SelectObject(dc, oldBrush);
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
 }
 
-void drawSettingsPreview(HDC dc, int x, int y, bool dark, bool split) {
-    const COLORREF background = dark ? RGB(33, 33, 33) : RGB(247, 248, 248);
-    const COLORREF panel = dark ? RGB(49, 49, 49) : RGB(255, 255, 255);
-    const COLORREF line = dark ? RGB(89, 89, 89) : RGB(215, 222, 222);
-    HBRUSH brush = CreateSolidBrush(background);
+void drawSettingsThemeIcon(HDC dc, int mode, int centerX, int centerY, COLORREF color) {
+    const wchar_t* glyphs[] = {L"\u25D0", L"\u2600", L"\u263E"};
+    HFONT font = CreateFontW(-ui(14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI Symbol");
+    if (!font) return;
+    HGDIOBJ oldFont = SelectObject(dc, font);
+    const int radius = ui(9);
+    RECT rect{centerX - radius, centerY - radius, centerX + radius, centerY + radius};
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, color);
+    DrawTextW(dc, glyphs[std::clamp(mode, 0, 2)], -1, &rect,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(dc, oldFont);
+    DeleteObject(font);
+}
+
+void drawSettingsAccentDot(HDC dc, int left, int top, int size,
+                           COLORREF color, bool selected, COLORREF ringColor) {
+    if (g_app && g_app->gdiplusToken != 0) {
+        auto makeColor = [](COLORREF value) {
+            return Gdiplus::Color(255, GetRValue(value), GetGValue(value), GetBValue(value));
+        };
+        Gdiplus::Graphics graphics(dc);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+        Gdiplus::SolidBrush brush(makeColor(color));
+        const Gdiplus::RectF dot(static_cast<float>(left) + 0.5f,
+                                 static_cast<float>(top) + 0.5f,
+                                 static_cast<float>(size) - 1.0f,
+                                 static_cast<float>(size) - 1.0f);
+        graphics.FillEllipse(&brush, dot);
+        if (selected) {
+            Gdiplus::Pen ring(makeColor(ringColor), 1.2f);
+            const Gdiplus::RectF outline(static_cast<float>(left) - 1.5f,
+                                         static_cast<float>(top) - 1.5f,
+                                         static_cast<float>(size) + 3.0f,
+                                         static_cast<float>(size) + 3.0f);
+            graphics.DrawEllipse(&ring, outline);
+        }
+        return;
+    }
+
+    HBRUSH brush = CreateSolidBrush(color);
     HGDIOBJ oldBrush = SelectObject(dc, brush);
-    Rectangle(dc, ui(x + 8), ui(y + 8), ui(x + 88), ui(y + 56));
+    HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+    Ellipse(dc, left, top, left + size, top + size);
+    SelectObject(dc, oldPen);
     SelectObject(dc, oldBrush);
     DeleteObject(brush);
-    HPEN pen = CreatePen(PS_SOLID, ui(1), line);
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    for (int row = 0; row < 3; ++row) {
-        MoveToEx(dc, ui(x + 16), ui(y + 18 + row * 9), nullptr);
-        LineTo(dc, ui(x + 45), ui(y + 18 + row * 9));
-        MoveToEx(dc, ui(x + 54), ui(y + 18 + row * 9), nullptr);
-        LineTo(dc, ui(x + 79), ui(y + 18 + row * 9));
+    if (selected) {
+        HPEN ring = CreatePen(PS_SOLID, ui(1), ringColor);
+        oldPen = SelectObject(dc, ring);
+        oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        Ellipse(dc, left - ui(2), top - ui(2), left + size + ui(2), top + size + ui(2));
+        SelectObject(dc, oldBrush);
+        SelectObject(dc, oldPen);
+        DeleteObject(ring);
     }
-    if (split) {
-        MoveToEx(dc, ui(x + 49), ui(y + 8), nullptr);
-        LineTo(dc, ui(x + 49), ui(y + 56));
-    }
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
-    (void)panel;
 }
 
 void refreshVisible() {
@@ -920,16 +1468,28 @@ void refreshVisible() {
     if (g_app->selected >= g_app->scrollOffset + visibleRows) {
         g_app->scrollOffset = g_app->selected - visibleRows + 1;
     }
-    InvalidateRect(g_app->popup, nullptr, FALSE);
+    g_app->scrollPosition = g_app->scrollOffset * popupScrollStride();
+    g_app->scrollAnimating = false;
+    KillTimer(g_app->popup, kPopupScrollTimer);
+    invalidatePopupList(g_app->popup);
+    invalidateFilterBar(g_app->popup);
+}
+
+void animatePopupScrollTo(int target) {
+    if (!g_app || !g_app->popup) return;
+    target = std::clamp(target, 0, popupMaxScrollPixels());
+    if (target == g_app->scrollPosition) return;
+    g_app->scrollAnimationFrom = g_app->scrollPosition;
+    g_app->scrollAnimationTo = target;
+    g_app->scrollAnimationStartTicks = settingsToggleClock();
+    g_app->scrollAnimating = true;
+    SetTimer(g_app->popup, kPopupScrollTimer, 8, nullptr);
 }
 
 void scrollPopup(int delta) {
     if (!g_app->popup || g_app->visible.empty()) return;
-    const int maxOffset = std::max(0, static_cast<int>(g_app->visible.size()) - popupVisibleRows());
-    const int nextOffset = std::clamp(g_app->scrollOffset + delta, 0, maxOffset);
-    if (nextOffset == g_app->scrollOffset) return;
-    g_app->scrollOffset = nextOffset;
-    InvalidateRect(g_app->popup, nullptr, FALSE);
+    const int base = g_app->scrollAnimating ? g_app->scrollAnimationTo : g_app->scrollPosition;
+    animatePopupScrollTo(base + delta);
 }
 
 void notifyPasteFailure() {
@@ -960,13 +1520,62 @@ bool drawImagePreview(HDC dc, const ClipItem& item, const RECT& rowRect) {
     const auto* bitmapInfo = reinterpret_cast<const BITMAPINFO*>(payload.data());
     const int width = rowRect.right - rowRect.left;
     const int height = rowRect.bottom - rowRect.top;
-    const int result = StretchDIBits(dc, rowRect.left, rowRect.top, width, height,
-                                     0, 0, header.biWidth, std::abs(header.biHeight),
-                                     payload.data() + bitsOffset, bitmapInfo, DIB_RGB_COLORS, SRCCOPY);
-    return result != GDI_ERROR;
+    const auto drawWithStretch = [&]() {
+        const float imageWidth = static_cast<float>(header.biWidth);
+        const float imageHeight = static_cast<float>(std::abs(header.biHeight));
+        const float scale = std::min(static_cast<float>(width) / imageWidth,
+                                     static_cast<float>(height) / imageHeight);
+        const int targetWidth = std::max(1, static_cast<int>(imageWidth * scale + 0.5f));
+        const int targetHeight = std::max(1, static_cast<int>(imageHeight * scale + 0.5f));
+        const int targetLeft = rowRect.left + (width - targetWidth) / 2;
+        const int targetTop = rowRect.top + (height - targetHeight) / 2;
+        const bool scrolling = g_app && (g_app->scrollAnimating || g_app->scrollDragging);
+        const int previousMode = SetStretchBltMode(dc, scrolling ? COLORONCOLOR : HALFTONE);
+        POINT previousOrigin{};
+        SetBrushOrgEx(dc, 0, 0, &previousOrigin);
+        const int result = StretchDIBits(dc, targetLeft, targetTop, targetWidth, targetHeight,
+                                         0, 0, header.biWidth, std::abs(header.biHeight),
+                                         payload.data() + bitsOffset, bitmapInfo,
+                                         DIB_RGB_COLORS, SRCCOPY);
+        SetBrushOrgEx(dc, previousOrigin.x, previousOrigin.y, nullptr);
+        SetStretchBltMode(dc, previousMode);
+        return result != GDI_ERROR;
+    };
+
+    if (!g_app || g_app->gdiplusToken == 0 || g_app->scrollAnimating || g_app->scrollDragging) {
+        return drawWithStretch();
+    }
+    HBITMAP bitmap = CreateDIBitmap(dc, &header, CBM_INIT,
+                                    payload.data() + bitsOffset, bitmapInfo, DIB_RGB_COLORS);
+    if (!bitmap) return drawWithStretch();
+    bool drawn = false;
+    {
+        Gdiplus::Bitmap source(bitmap, nullptr);
+        if (source.GetLastStatus() == Gdiplus::Ok) {
+            Gdiplus::Graphics graphics(dc);
+            configureGdiGraphics(graphics);
+            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
+            const float imageWidth = static_cast<float>(source.GetWidth());
+            const float imageHeight = static_cast<float>(source.GetHeight());
+            const float scale = std::min(static_cast<float>(width) / imageWidth,
+                                         static_cast<float>(height) / imageHeight);
+            const float targetWidth = imageWidth * scale;
+            const float targetHeight = imageHeight * scale;
+            const Gdiplus::RectF destination(
+                static_cast<float>(rowRect.left) + (static_cast<float>(width) - targetWidth) / 2.0f,
+                static_cast<float>(rowRect.top) + (static_cast<float>(height) - targetHeight) / 2.0f,
+                targetWidth, targetHeight);
+            drawn = graphics.DrawImage(&source, destination, 0.0f, 0.0f,
+                                       imageWidth, imageHeight, Gdiplus::UnitPixel) == Gdiplus::Ok;
+            graphics.Flush(Gdiplus::FlushIntentionSync);
+        }
+    }
+    DeleteObject(bitmap);
+    return drawn || drawWithStretch();
 }
 
-void sendPaste() {
+void sendPaste(PasteMode mode = PasteMode::Automatic) {
     if (!g_app->popup || g_app->visible.empty()) return;
     const int selected = std::clamp(g_app->selected, 0, static_cast<int>(g_app->visible.size()) - 1);
     const std::size_t index = g_app->visible[static_cast<std::size_t>(selected)];
@@ -976,16 +1585,24 @@ void sendPaste() {
         return;
     }
     const std::uint64_t hash = g_app->store.items()[index].hash;
-    if (!setClipboardDataForItem(g_app->store.items()[index], payload)) {
+    if (!setClipboardDataForItem(g_app->store.items()[index], payload, mode)) {
         notifyPasteFailure();
         return;
     }
     g_app->ignoredClipboardHash = hash;
     HWND target = g_app->targetWindow;
-    DestroyWindow(g_app->popup);
-    g_app->popup = nullptr;
-    g_app->searchEdit = nullptr;
-    if (!IsWindow(target)) return;
+    const bool keepPopup = g_app->popupPinned;
+    if (keepPopup) {
+        ShowWindow(g_app->popup, SW_HIDE);
+    } else {
+        DestroyWindow(g_app->popup);
+        g_app->popup = nullptr;
+        g_app->searchEdit = nullptr;
+    }
+    if (!IsWindow(target)) {
+        if (keepPopup && IsWindow(g_app->popup)) ShowWindow(g_app->popup, SW_SHOWNOACTIVATE);
+        return;
+    }
     SetForegroundWindow(target);
     Sleep(25);
     INPUT inputs[4]{};
@@ -998,6 +1615,10 @@ void sendPaste() {
     inputs[3] = inputs[0];
     inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
     SendInput(4, inputs, sizeof(INPUT));
+    if (keepPopup && IsWindow(g_app->popup)) {
+        SetWindowPos(g_app->popup, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    }
 }
 
 HICON clipLiteIcon();
@@ -1014,6 +1635,8 @@ void showPopup() {
     g_app->query.clear();
     g_app->selected = 0;
     g_app->scrollOffset = 0;
+    g_app->scrollPosition = 0;
+    g_app->scrollAnimating = false;
     g_app->filterScrollOffset = 0;
     g_app->filterType = 0;
     g_app->pinnedOnly = false;
@@ -1036,21 +1659,34 @@ void showPopup() {
     x = std::max(x, static_cast<int>(info.rcWork.left));
     y = std::max(y, static_cast<int>(info.rcWork.top));
     g_app->popup = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"ClipLitePopup",
-                                   L"ClipLite", WS_POPUP, x, y, width, height,
+                                   L"ClipLite", WS_POPUP | WS_CLIPCHILDREN, x, y, width, height,
                                    nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!g_app->popup) return;
     SendMessageW(g_app->popup, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(clipLiteIcon()));
     SendMessageW(g_app->popup, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(clipLiteIcon()));
-    SetWindowRgn(g_app->popup, CreateRoundRectRgn(0, 0, width + 1, height + 1,
+    SetWindowRgn(g_app->popup, CreateRoundRectRgn(0, 0, width, height,
                                                   ui(8), ui(8)), TRUE);
     ShowWindow(g_app->popup, SW_SHOWNOACTIVATE);
     SetForegroundWindow(g_app->popup);
 }
 
 void closePopup() {
-    if (g_app->popup) DestroyWindow(g_app->popup);
+    if (g_app->popup) {
+        KillTimer(g_app->popup, kPopupScrollTimer);
+        DestroyWindow(g_app->popup);
+    }
     g_app->popup = nullptr;
     g_app->searchEdit = nullptr;
+}
+
+void setPopupPinned(bool pinned) {
+    if (!g_app) return;
+    g_app->popupPinned = pinned;
+    if (!g_app->popup) return;
+    SetWindowPos(g_app->popup, pinned ? HWND_TOPMOST : HWND_NOTOPMOST,
+                 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    if (pinned) SetForegroundWindow(g_app->popup);
+    InvalidateRect(g_app->popup, nullptr, FALSE);
 }
 
 HICON clipLiteIcon() {
@@ -1129,14 +1765,35 @@ LRESULT CALLBACK lowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
     return CallNextHookEx(nullptr, code, wParam, lParam);
 }
 
+bool registerConfiguredHotkey(int id, const ShortcutBinding& binding) {
+    if (!g_app || !g_app->hidden || binding.modifiers == 0 || binding.virtualKey == 0) return false;
+    return RegisterHotKey(g_app->hidden, id, binding.modifiers | MOD_NOREPEAT,
+                          binding.virtualKey) != FALSE;
+}
+
 void registerHotkeys() {
     UnregisterHotKey(g_app->hidden, kHotkeyAltV);
     UnregisterHotKey(g_app->hidden, kHotkeyWinV);
+    UnregisterHotKey(g_app->hidden, kHotkeySettings);
+    UnregisterHotKey(g_app->hidden, kHotkeyPause);
     if (g_app->keyboardHook) {
         UnhookWindowsHookEx(g_app->keyboardHook);
         g_app->keyboardHook = nullptr;
     }
-    RegisterHotKey(g_app->hidden, kHotkeyAltV, MOD_ALT | MOD_NOREPEAT, 'V');
+    g_app->shortcutRegistrationWarning = false;
+    auto registerWithFallback = [&](int id, ShortcutBinding& binding,
+                                     const ShortcutBinding& fallback) {
+        if (registerConfiguredHotkey(id, binding)) return;
+        g_app->shortcutRegistrationWarning = true;
+        binding = fallback;
+        registerConfiguredHotkey(id, binding);
+    };
+    registerWithFallback(kHotkeyAltV, g_app->settingsData.historyHotkey,
+                         ShortcutBinding{MOD_ALT, 'V'});
+    registerWithFallback(kHotkeySettings, g_app->settingsData.settingsHotkey,
+                         ShortcutBinding{MOD_CONTROL | MOD_ALT, 'S'});
+    registerWithFallback(kHotkeyPause, g_app->settingsData.pauseHotkey,
+                         ShortcutBinding{MOD_CONTROL | MOD_SHIFT, 'P'});
     if (g_app->settingsData.winV) {
         if (!RegisterHotKey(g_app->hidden, kHotkeyWinV, MOD_WIN | MOD_NOREPEAT, 'V')) {
             g_app->keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, lowLevelKeyboardProc,
@@ -1149,7 +1806,12 @@ void registerHotkeys() {
             }
         }
     }
+    if (g_app->shortcutRegistrationWarning && g_app->settings) {
+        InvalidateRect(g_app->settings, nullptr, FALSE);
+    }
 }
+
+bool shortcutMatches(const ShortcutBinding& binding, UINT virtualKey);
 
 LRESULT CALLBACK editProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     if (message == WM_SETCURSOR) {
@@ -1162,31 +1824,20 @@ LRESULT CALLBACK editProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         if (g_app->popup) InvalidateRect(g_app->popup, nullptr, FALSE);
         return result;
     }
-    if (message == WM_PAINT) {
-        const LRESULT result = CallWindowProcW(g_app->oldEditProc, hwnd, message, wParam, lParam);
-        if (GetWindowTextLengthW(hwnd) == 0 && GetFocus() != hwnd) {
-            HDC dc = GetDC(hwnd);
-            if (dc) {
-                SetBkMode(dc, TRANSPARENT);
-                SetTextColor(dc, g_app->settingsData.dark ? RGB(150, 158, 168) : RGB(160, 160, 160));
-                RECT client{};
-                GetClientRect(hwnd, &client);
-                client.left = ui(2);
-                client.top = ui(2);
-                client.bottom -= ui(2);
-                DrawTextW(dc, tr(L"Search content...", L"搜索内容..."), -1, &client,
-                          DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-                ReleaseDC(hwnd, dc);
-            }
-        }
-        return result;
-    }
     if (message == WM_KEYDOWN) {
-        if (wParam == VK_RETURN) {
+        if (shortcutMatches(g_app->settingsData.popupPlainPasteHotkey, static_cast<UINT>(wParam))) {
+            sendPaste(PasteMode::PlainText);
+            return 0;
+        }
+        if (shortcutMatches(g_app->settingsData.popupRichPasteHotkey, static_cast<UINT>(wParam))) {
+            sendPaste(PasteMode::RichText);
+            return 0;
+        }
+        if (shortcutMatches(g_app->settingsData.popupPasteHotkey, static_cast<UINT>(wParam))) {
             sendPaste();
             return 0;
         }
-        if (wParam == VK_ESCAPE) {
+        if (shortcutMatches(g_app->settingsData.popupCloseHotkey, static_cast<UINT>(wParam))) {
             closePopup();
             return 0;
         }
@@ -1194,7 +1845,7 @@ LRESULT CALLBACK editProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
             SetFocus(g_app->popup);
             return 0;
         }
-        if (wParam == VK_F10) {
+        if (shortcutMatches(g_app->settingsData.popupSettingsHotkey, static_cast<UINT>(wParam))) {
             openSettings();
             return 0;
         }
@@ -1208,12 +1859,11 @@ int automaticFilterCommand(int slot) {
     if (slot == 2) return kFilterText;
     if (slot == 3) return kFilterImage;
     if (slot == 4) return kFilterFiles;
-    if (slot == 5) return kFilterHtml;
     return kFilterOther;
 }
 
 RECT automaticFilterRect(int slot, int scrollOffset = 0) {
-    static const int widths[] = {44, 44, 44, 46, 56, 44, 44};
+    static const int widths[] = {44, 44, 44, 46, 56, 44};
     int left = ui(16);
     for (int i = 0; i < slot; ++i) left += ui(widths[i] + 6);
     left -= scrollOffset;
@@ -1221,7 +1871,7 @@ RECT automaticFilterRect(int slot, int scrollOffset = 0) {
 }
 
 int filterContentWidth() {
-    static const int widths[] = {44, 44, 44, 46, 56, 44, 44};
+    static const int widths[] = {44, 44, 44, 46, 56, 44};
     int width = 0;
     for (const int value : widths) width += ui(value + 6);
     return width - ui(6);
@@ -1248,238 +1898,227 @@ bool isAutomaticFilterActive(int slot) {
     const int command = automaticFilterCommand(slot);
     if (command == kFilterPinned) return g_app->pinnedOnly;
     if (command == kFilterAll) return g_app->filterType == 0 && !g_app->pinnedOnly;
-    if (command == kFilterOther) return g_app->filterType == 5 && !g_app->pinnedOnly;
-    return g_app->filterType == command - kFilterText + 1 && !g_app->pinnedOnly;
-}
-
-void paintSettingsDraft(HWND hwnd, HDC dc) {
-    RECT client{};
-    GetClientRect(hwnd, &client);
-    const bool dark = g_app->settingsData.dark;
-    const COLORREF background = dark ? RGB(28, 32, 38) : RGB(239, 246, 244);
-    const COLORREF sidebar = dark ? RGB(33, 38, 44) : RGB(232, 241, 239);
-    const COLORREF card = dark ? RGB(38, 44, 51) : RGB(249, 253, 252);
-    const COLORREF line = dark ? RGB(52, 59, 67) : RGB(225, 234, 232);
-    const COLORREF text = dark ? RGB(240, 243, 247) : RGB(24, 35, 35);
-    const COLORREF secondary = dark ? RGB(166, 176, 186) : RGB(104, 119, 119);
-    const COLORREF accent = dark ? RGB(72, 166, 164) : RGB(63, 154, 153);
-    HBRUSH backgroundBrush = CreateSolidBrush(background);
-    FillRect(dc, &client, backgroundBrush);
-    DeleteObject(backgroundBrush);
-    HBRUSH sidebarBrush = CreateSolidBrush(sidebar);
-    RECT sidebarRect{0, 0, ui(kSettingsSidebarWidth), client.bottom};
-    FillRect(dc, &sidebarRect, sidebarBrush);
-    DeleteObject(sidebarBrush);
-
-    HPEN separatorPen = CreatePen(PS_SOLID, ui(1), line);
-    HGDIOBJ oldPen = SelectObject(dc, separatorPen);
-    MoveToEx(dc, ui(kSettingsSidebarWidth), 0, nullptr);
-    LineTo(dc, ui(kSettingsSidebarWidth), client.bottom);
-    SelectObject(dc, oldPen);
-    DeleteObject(separatorPen);
-
-    HFONT navFont = CreateFontW(-ui(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
-    HFONT titleFont = CreateFontW(-ui(26), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                  CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
-    HFONT sectionFont = CreateFontW(-ui(18), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                    CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
-    HFONT bodyFont = CreateFontW(-ui(14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                 CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
-    SetBkMode(dc, TRANSPARENT);
-    const wchar_t* navLabels[] = {L"通用", L"存储管理", L"安全与隐私", L"关于 ClipLite"};
-    HBRUSH activeBrush = CreateSolidBrush(dark ? RGB(53, 61, 68) : RGB(216, 224, 221));
-    HGDIOBJ oldBrush = SelectObject(dc, activeBrush);
-    HGDIOBJ oldNavPen = SelectObject(dc, GetStockObject(NULL_PEN));
-    const int activeTop = 28 + g_app->settingsTab * 52;
-    RoundRect(dc, ui(10), ui(activeTop), ui(190), ui(activeTop + 52), ui(10), ui(10));
-    SelectObject(dc, oldNavPen);
-    SelectObject(dc, oldBrush);
-    DeleteObject(activeBrush);
-    HGDIOBJ oldFont = SelectObject(dc, navFont);
-    for (int i = 0; i < 4; ++i) {
-        const int top = 36 + i * 52;
-        SetTextColor(dc, text);
-        drawSettingsNavIcon(dc, i, ui(20), ui(top + 3), text);
-        RECT labelRect{ui(48), ui(top), ui(190), ui(top + 30)};
-        DrawTextW(dc, navLabels[i], -1, &labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    }
-
-    const int contentLeft = ui(232);
-    const int contentRight = client.right - ui(24);
-    if (g_app->settingsTab != 0) {
-        const wchar_t* pageTitles[] = {L"通用", L"存储管理", L"安全与隐私", L"关于 ClipLite"};
-        SelectObject(dc, titleFont);
-        SetTextColor(dc, text);
-        RECT pageTitle{contentLeft, ui(26), contentRight, ui(68)};
-        DrawTextW(dc, pageTitles[g_app->settingsTab], -1, &pageTitle,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        HPEN pageLine = CreatePen(PS_SOLID, ui(1), line);
-        HGDIOBJ oldPagePen = SelectObject(dc, pageLine);
-        MoveToEx(dc, ui(kSettingsSidebarWidth), ui(86), nullptr);
-        LineTo(dc, client.right, ui(86));
-        SelectObject(dc, oldPagePen);
-        DeleteObject(pageLine);
-
-        HBRUSH pageCard = CreateSolidBrush(card);
-        HGDIOBJ oldPageBrush = SelectObject(dc, pageCard);
-        HGDIOBJ oldPageCardPen = SelectObject(dc, GetStockObject(NULL_PEN));
-        RoundRect(dc, ui(216), ui(112), contentRight, ui(g_app->settingsTab == 3 ? 560 : 360),
-                  ui(10), ui(10));
-        if (g_app->settingsTab == 1) {
-            RoundRect(dc, ui(216), ui(380), contentRight, ui(620), ui(10), ui(10));
-        }
-        SelectObject(dc, oldPageCardPen);
-        SelectObject(dc, oldPageBrush);
-        DeleteObject(pageCard);
-        SelectObject(dc, sectionFont);
-        SetTextColor(dc, text);
-        const wchar_t* pageSection = g_app->settingsTab == 1 ? L"数据保留策略" :
-            g_app->settingsTab == 2 ? L"隐私保护" : L"应用信息";
-        RECT pageSectionRect{contentLeft, ui(126), contentRight, ui(158)};
-        DrawTextW(dc, pageSection, -1, &pageSectionRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        SelectObject(dc, bodyFont);
-        if (g_app->settingsTab == 1) {
-            const wchar_t* labels[] = {L"最大记录数", L"保留天数（0 = 永久）", L"最大磁盘空间（MB）"};
-            for (int i = 0; i < 3; ++i) {
-                RECT row{contentLeft, ui(174 + i * 36), contentRight - ui(120), ui(202 + i * 36)};
-                DrawTextW(dc, labels[i], -1, &row, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-            }
-            SelectObject(dc, sectionFont);
-            RECT statTitle{contentLeft, ui(394), contentRight, ui(426)};
-            DrawTextW(dc, L"历史记录统计", -1, &statTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-            SelectObject(dc, bodyFont);
-            wchar_t stats[256]{};
-            swprintf_s(stats, L"当前历史：%zu 条记录，%llu 字节",
-                       g_app->store.activeCount(), g_app->store.diskBytes());
-            RECT statRect{contentLeft, ui(440), contentRight, ui(468)};
-            DrawTextW(dc, stats, -1, &statRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        } else if (g_app->settingsTab == 2) {
-            RECT privacy{contentLeft, ui(174), contentRight - ui(120), ui(224)};
-            DrawTextW(dc, L"使用 Windows 用户加密保护历史", -1, &privacy,
-                      DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-            SetTextColor(dc, secondary);
-            RECT description{contentLeft, ui(250), contentRight - ui(20), ui(300)};
-            DrawTextW(dc, L"启用后，历史内容使用当前 Windows 用户凭据保护。", -1,
-                      &description, DT_LEFT | DT_WORDBREAK);
-        } else {
-            const wchar_t* about[] = {L"应用名称    ClipLite", L"版本        0.1.0 x64",
-                                      L"数据目录    %LOCALAPPDATA%\\ClipLite",
-                                      L"存储格式    v3（兼容 v1/v2）"};
-            for (int i = 0; i < 4; ++i) {
-                RECT aboutRect{contentLeft, ui(174 + i * 38), contentRight, ui(202 + i * 38)};
-                DrawTextW(dc, about[i], -1, &aboutRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-            }
-        }
-        SelectObject(dc, oldFont);
-        DeleteObject(navFont);
-        DeleteObject(titleFont);
-        DeleteObject(sectionFont);
-        DeleteObject(bodyFont);
-        return;
-    }
-    SelectObject(dc, titleFont);
-    SetTextColor(dc, text);
-    RECT titleRect{contentLeft, ui(26), contentRight, ui(68)};
-    DrawTextW(dc, L"通用", -1, &titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    HPEN contentLine = CreatePen(PS_SOLID, ui(1), line);
-    oldPen = SelectObject(dc, contentLine);
-    MoveToEx(dc, ui(kSettingsSidebarWidth), ui(86), nullptr);
-    LineTo(dc, client.right, ui(86));
-    SelectObject(dc, oldPen);
-    DeleteObject(contentLine);
-
-    SelectObject(dc, sectionFont);
-    const wchar_t* sectionLabels[] = {L"窗口预览", L"外观设置", L"剪贴板行为", L"历史存储"};
-    const int sectionY[] = {106, 250, 394, 696};
-    for (int i = 0; i < 4; ++i) {
-        RECT sectionRect{contentLeft, ui(sectionY[i]), contentRight, ui(sectionY[i] + 32)};
-        DrawTextW(dc, sectionLabels[i], -1, &sectionRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    }
-
-    HBRUSH cardBrush = CreateSolidBrush(card);
-    oldBrush = SelectObject(dc, cardBrush);
-    HGDIOBJ oldCardPen = SelectObject(dc, GetStockObject(NULL_PEN));
-    RoundRect(dc, ui(216), ui(140), contentRight, ui(230), ui(10), ui(10));
-    RoundRect(dc, ui(216), ui(284), contentRight, ui(374), ui(10), ui(10));
-    RoundRect(dc, ui(216), ui(428), contentRight, ui(666), ui(10), ui(10));
-    RoundRect(dc, ui(216), ui(730), contentRight, ui(890), ui(10), ui(10));
-    SelectObject(dc, oldCardPen);
-    SelectObject(dc, oldBrush);
-    DeleteObject(cardBrush);
-
-    SelectObject(dc, bodyFont);
-    SetTextColor(dc, secondary);
-    const wchar_t* modeLabels[] = {L"历史窗口", L"设置窗口"};
-    for (int i = 0; i < 2; ++i) {
-        const int x = 230 + i * 112;
-        const bool active = i == 0;
-        HPEN previewPen = CreatePen(PS_SOLID, ui(active ? 2 : 1), active ? accent : line);
-        HGDIOBJ oldPreviewPen = SelectObject(dc, previewPen);
-        HGDIOBJ oldPreviewBrush = SelectObject(dc, GetStockObject(WHITE_BRUSH));
-        RoundRect(dc, ui(x), ui(152), ui(x + 96), ui(218), ui(6), ui(6));
-        SelectObject(dc, oldPreviewBrush);
-        SelectObject(dc, oldPreviewPen);
-        DeleteObject(previewPen);
-        drawSettingsPreview(dc, x, 152, false, false);
-        RECT modeRect{ui(x), ui(218), ui(x + 96), ui(244)};
-        DrawTextW(dc, modeLabels[i], -1, &modeRect, DT_CENTER | DT_TOP | DT_SINGLELINE);
-    }
-    const wchar_t* themeLabels[] = {L"白天", L"夜间", L"跟随系统"};
-    for (int i = 0; i < 3; ++i) {
-        const int x = 230 + i * 112;
-        const bool active = (i == 2 && !dark) || (i == 1 && dark);
-        HPEN previewPen = CreatePen(PS_SOLID, ui(active ? 2 : 1), active ? accent : line);
-        HGDIOBJ oldPreviewPen = SelectObject(dc, previewPen);
-        HGDIOBJ oldPreviewBrush = SelectObject(dc, GetStockObject(WHITE_BRUSH));
-        RoundRect(dc, ui(x), ui(296), ui(x + 96), ui(360), ui(6), ui(6));
-        SelectObject(dc, oldPreviewBrush);
-        SelectObject(dc, oldPreviewPen);
-        DeleteObject(previewPen);
-        drawSettingsPreview(dc, x, 296, i == 1, i == 2);
-        RECT themeRect{ui(x), ui(360), ui(x + 96), ui(386)};
-        DrawTextW(dc, themeLabels[i], -1, &themeRect, DT_CENTER | DT_TOP | DT_SINGLELINE);
-    }
-    const wchar_t* rowLabels[] = {L"历史快捷键", L"界面语言", L"暂停剪贴板监听", L"随 Windows 启动",
-                                  L"使用 Windows 用户加密保护历史", L"最大记录数", L"保留天数", L"最大磁盘空间（MB）"};
-    const int rowY[] = {448, 492, 536, 576, 616, 748, 784, 820};
-    for (int i = 0; i < 8; ++i) {
-        RECT rowRect{ui(232), ui(rowY[i]), contentRight - ui(8), ui(rowY[i] + 30)};
-        SetTextColor(dc, text);
-        DrawTextW(dc, rowLabels[i], -1, &rowRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        if (i < 5) {
-            HPEN rowPen = CreatePen(PS_SOLID, ui(1), line);
-            HGDIOBJ oldRowPen = SelectObject(dc, rowPen);
-            MoveToEx(dc, ui(232), ui(rowY[i] + 38), nullptr);
-            LineTo(dc, contentRight - ui(8), ui(rowY[i] + 38));
-            SelectObject(dc, oldRowPen);
-            DeleteObject(rowPen);
-        }
-    }
-    SelectObject(dc, oldFont);
-    DeleteObject(navFont);
-    DeleteObject(titleFont);
-    DeleteObject(sectionFont);
-    DeleteObject(bodyFont);
+    if (command == kFilterOther) return g_app->filterType == 4 && !g_app->pinnedOnly;
+    if (command == kFilterText) return g_app->filterType == 1 && !g_app->pinnedOnly;
+    if (command == kFilterImage) return g_app->filterType == 2 && !g_app->pinnedOnly;
+    if (command == kFilterFiles) return g_app->filterType == 3 && !g_app->pinnedOnly;
+    return false;
 }
 
 void paintSettingsEditBorders(HWND hwnd, HDC dc);
 
-void paintSettings(HWND hwnd, HDC dc) {
+struct SettingsRowLayout {
+    const wchar_t* label = nullptr;
+    int top = 0;
+    int height = 0;
+    std::vector<int> controlIds;
+    std::vector<int> controlWidths;
+    std::vector<int> controlHeights;
+    std::vector<int> controlX;
+};
+
+struct SettingsCardLayout {
+    const wchar_t* title = nullptr;
+    int top = 0;
+    int bottom = 0;
+    std::vector<SettingsRowLayout> rows;
+};
+
+struct SettingsLayout {
+    std::vector<SettingsCardLayout> cards;
+    int contentBottom = 0;
+};
+
+int settingsTextHeight(HWND hwnd, const wchar_t* text, int width) {
+    if (!hwnd || !text || !*text) return 16;
+    HDC dc = GetDC(hwnd);
+    if (!dc) return 16;
+    HFONT font = g_app->settingsFont;
+    HGDIOBJ oldFont = font ? SelectObject(dc, font) : nullptr;
+    RECT rect{0, 0, ui(std::max(1, width)), 0};
+    DrawTextW(dc, text, -1, &rect, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+    if (oldFont) SelectObject(dc, oldFont);
+    ReleaseDC(hwnd, dc);
+    return std::max(16, MulDiv(rect.bottom, 96, static_cast<int>(g_uiDpi)));
+}
+
+SettingsRowLayout makeSettingsRow(HWND hwnd, const wchar_t* label,
+                                  std::initializer_list<int> ids,
+                                  std::initializer_list<int> widths,
+                                  std::initializer_list<int> heights,
+                                  int contentWidth) {
+    SettingsRowLayout row;
+    row.label = label;
+    row.controlIds.assign(ids.begin(), ids.end());
+    row.controlWidths.assign(widths.begin(), widths.end());
+    row.controlHeights.assign(heights.begin(), heights.end());
+    for (std::size_t i = 0; i < row.controlIds.size(); ++i) {
+        if (HWND control = GetDlgItem(hwnd, row.controlIds[i])) {
+            RECT controlRect{};
+            GetClientRect(control, &controlRect);
+            const int widthInLogicalUnits = MulDiv(controlRect.right, 96, static_cast<int>(g_uiDpi));
+            const int heightInLogicalUnits = MulDiv(controlRect.bottom, 96, static_cast<int>(g_uiDpi));
+            if (widthInLogicalUnits > 0) row.controlWidths[i] = widthInLogicalUnits;
+            if (heightInLogicalUnits > 0) row.controlHeights[i] = heightInLogicalUnits;
+        }
+    }
+    int controlsWidth = 0;
+    for (std::size_t i = 0; i < row.controlWidths.size(); ++i) {
+        controlsWidth += row.controlWidths[i];
+        if (i > 0) controlsWidth += 8;
+    }
+    const int labelWidth = std::max(80, contentWidth - controlsWidth - 28);
+    int height = settingsTextHeight(hwnd, label, labelWidth) + 12;
+    for (const int controlHeight : row.controlHeights) height = std::max(height, controlHeight + 12);
+    row.height = std::max(42, height);
+    return row;
+}
+
+void placeSettingsCard(SettingsCardLayout& card, int& cursor) {
+    card.top = cursor;
+    cursor += 40;
+    for (SettingsRowLayout& row : card.rows) {
+        row.top = cursor;
+        cursor += row.height;
+    }
+    card.bottom = cursor + 12;
+    cursor = card.bottom + 12;
+}
+
+SettingsLayout buildSettingsLayout(HWND hwnd) {
+    SettingsLayout layout;
     RECT client{};
     GetClientRect(hwnd, &client);
-    const bool dark = g_app->settingsData.dark;
-    COLORREF windowBackground = dark ? RGB(31, 35, 41) : RGB(242, 244, 247);
-    COLORREF sidebarBackground = dark ? RGB(38, 43, 49) : RGB(248, 249, 250);
-    COLORREF cardBackground = dark ? RGB(34, 39, 46) : RGB(250, 253, 252);
-    COLORREF line = dark ? RGB(67, 75, 84) : RGB(234, 234, 234);
-    COLORREF text = dark ? RGB(238, 241, 245) : RGB(31, 41, 55);
-    COLORREF secondary = dark ? RGB(163, 174, 185) : RGB(107, 114, 128);
-    COLORREF accent = RGB(39, 124, 97);
+    const int clientWidth = std::max(1, MulDiv(client.right, 96, static_cast<int>(g_uiDpi)));
+    const int contentWidth = std::max(1, clientWidth - kSettingsSidebarWidth - 40);
+    int cursor = 74;
+    auto makeCard = [&](const wchar_t* title, std::vector<SettingsRowLayout> rows,
+                        int extraHeight = 0) {
+        SettingsCardLayout card;
+        card.title = title;
+        card.rows = std::move(rows);
+        placeSettingsCard(card, cursor);
+        if (extraHeight > 0) {
+            card.bottom += extraHeight;
+            cursor += extraHeight;
+        }
+        layout.cards.push_back(std::move(card));
+    };
+    if (g_app->settingsTab == 0) {
+        makeCard(L"界面与交互", {
+            makeSettingsRow(hwnd, L"深色主题", {kSettingDark}, {36}, {20}, contentWidth),
+            makeSettingsRow(hwnd, L"语言", {kSettingLanguage}, {150}, {30}, contentWidth)
+        });
+        makeCard(L"系统与集成", {
+            makeSettingsRow(hwnd, L"暂停剪贴板监听", {kSettingPause}, {36}, {20}, contentWidth),
+            makeSettingsRow(hwnd, L"随 Windows 启动", {kSettingStartup}, {36}, {20}, contentWidth)
+        });
+    } else if (g_app->settingsTab == kSettingsShortcutPage) {
+        makeCard(L"重要系统快捷键", {
+            makeSettingsRow(hwnd, L"强制替换 Win + V", {kSettingWinV}, {36}, {20}, contentWidth)
+        });
+        makeCard(L"全局快捷键", {
+            makeSettingsRow(hwnd, L"打开剪贴板历史", {kSettingShortcutHistory}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, L"打开设置", {kSettingShortcutSettings}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, L"暂停/恢复剪贴板监听", {kSettingShortcutPause}, {150}, {30}, contentWidth)
+        });
+        makeCard(L"历史窗口快捷键", {
+            makeSettingsRow(hwnd, L"粘贴选中项目", {kSettingShortcutPaste}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, L"粘贴为纯文本", {kSettingShortcutPastePlain}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, L"粘贴为富文本", {kSettingShortcutPasteRich}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, L"关闭历史窗口", {kSettingShortcutClosePopup}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, L"在历史窗口打开设置", {kSettingShortcutPopupSettings}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, L"清除历史筛选", {kSettingShortcutClearFilter}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, L"删除选中记录", {kSettingShortcutDelete}, {150}, {30}, contentWidth)
+        });
+        makeCard(L"注册状态", {}, 48);
+    } else if (g_app->settingsTab == 2) {
+        makeCard(L"数据保留策略", {
+            makeSettingsRow(hwnd, L"最大记录数", {kSettingMaxItems}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, L"保留天数（0 = 永久）", {kSettingRetentionDays}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, L"最大磁盘空间（MB）", {kSettingMaxDiskMb}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, L"单条内容上限（MB）", {kSettingMaxContentMb}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, L"缓存目录", {kSettingDataDirectory, kSettingBrowseDataDirectory},
+                            {360, 64}, {30, 30}, contentWidth)
+        });
+        const wchar_t* labels[] = {L"文本", L"图片", L"文件"};
+        const int clearIds[] = {kSettingClearText, kSettingClearImage, kSettingClearFiles};
+        std::vector<SettingsRowLayout> categoryRows;
+        for (int i = 0; i < kStorageCategoryCount; ++i) {
+            categoryRows.push_back(makeSettingsRow(hwnd, labels[i],
+                                                    {kSettingCategoryMaxBase + i,
+                                                     kSettingCategoryDiskBase + i, clearIds[i]},
+                                                    {70, 70, 64}, {30, 30, 30}, contentWidth));
+        }
+        makeCard(L"分类存储设置", std::move(categoryRows), 34);
+        SettingsCardLayout& categoryCard = layout.cards.back();
+        for (SettingsRowLayout& row : categoryCard.rows) row.top += 20;
+        categoryCard.bottom += 20;
+        cursor += 20;
+        SettingsCardLayout stats;
+        stats.title = L"历史记录统计";
+        stats.top = cursor;
+        stats.bottom = cursor + 160;
+        SettingsRowLayout statsAction = makeSettingsRow(
+            hwnd, nullptr, {kSettingClear}, {100}, {30}, contentWidth);
+        statsAction.top = stats.top + 110;
+        stats.rows.push_back(std::move(statsAction));
+        layout.cards.push_back(std::move(stats));
+        cursor += 172;
+    } else if (g_app->settingsTab == 3) {
+        makeCard(L"隐私保护", {
+            makeSettingsRow(hwnd, L"使用 Windows 用户加密保护历史", {kSettingEncrypt}, {36}, {20}, contentWidth),
+            makeSettingsRow(hwnd, L"忽略应用（每行一个来源名称）", {kSettingIgnoredApps}, {150}, {60}, contentWidth),
+            makeSettingsRow(hwnd, L"敏感内容过期时间（小时，0 = 关闭）", {kSettingSensitiveExpiry}, {150}, {30}, contentWidth)
+        }, 28);
+        makeCard(L"保护范围", {}, 48);
+    } else {
+        makeCard(L"关于 ClipLite", {}, 150);
+    }
+    const int controlRight = clientWidth - 20 - 14;
+    for (SettingsCardLayout& card : layout.cards) {
+        for (SettingsRowLayout& row : card.rows) {
+            int totalWidth = 0;
+            for (std::size_t i = 0; i < row.controlWidths.size(); ++i) {
+                totalWidth += row.controlWidths[i];
+                if (i > 0) totalWidth += 8;
+            }
+            int x = controlRight - totalWidth;
+            row.controlX.clear();
+            for (std::size_t i = 0; i < row.controlWidths.size(); ++i) {
+                row.controlX.push_back(x);
+                x += row.controlWidths[i] + 8;
+            }
+        }
+    }
+    layout.contentBottom = std::max(300, cursor - 12);
+    return layout;
+}
+
+int settingsScrollMax(HWND hwnd) {
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const int viewport = std::max(0, static_cast<int>(client.bottom) - ui(kSettingsHeaderHeight));
+    const int contentHeight = buildSettingsLayout(hwnd).contentBottom;
+    return std::max(0, ui(contentHeight) - viewport);
+}
+
+int settingsContentY(int logicalY) {
+    const bool scrollable = g_app->settingsTab == 0 ||
+        g_app->settingsTab == kSettingsShortcutPage || g_app->settingsTab == 2;
+    return ui(logicalY) - ui(scrollable ? g_app->settingsScrollOffset : 0);
+}
+
+void paintSettingsContent(HWND hwnd, HDC dc) {
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    COLORREF windowBackground = settingsThemeColor(RGB(240, 244, 248), RGB(21, 26, 34));
+    COLORREF sidebarBackground = settingsThemeColor(RGB(232, 238, 245), RGB(26, 33, 44));
+    COLORREF cardBackground = settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
+    COLORREF line = settingsThemeColor(RGB(200, 211, 222), RGB(46, 57, 71));
+    COLORREF text = settingsThemeColor(RGB(30, 41, 59), RGB(226, 232, 240));
+    COLORREF secondary = settingsThemeColor(RGB(95, 113, 131), RGB(143, 161, 179));
+    COLORREF accent = settingsAccentColor();
     if (highContrastEnabled()) {
         windowBackground = GetSysColor(COLOR_WINDOW);
         sidebarBackground = GetSysColor(COLOR_BTNFACE);
@@ -1497,6 +2136,57 @@ void paintSettings(HWND hwnd, HDC dc) {
     FillRect(dc, &sidebarRect, sidebarBrush);
     DeleteObject(sidebarBrush);
 
+    RECT topbarRect{ui(kSettingsSidebarWidth), 0, client.right, ui(kSettingsHeaderHeight)};
+    HBRUSH topbarBrush = CreateSolidBrush(cardBackground);
+    FillRect(dc, &topbarRect, topbarBrush);
+    DeleteObject(topbarBrush);
+
+    const int contentLeft = ui(kSettingsSidebarWidth + 20);
+    const int contentRight = client.right - ui(20);
+    auto drawRounded = [&](RECT rect, COLORREF fill, COLORREF border, int radiusLogical = 10) {
+        if (g_app->gdiplusToken != 0) {
+            auto makeColor = [](COLORREF value) {
+                return Gdiplus::Color(255, GetRValue(value), GetGValue(value), GetBValue(value));
+            };
+            Gdiplus::Graphics graphics(dc);
+            graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+            graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+            const Gdiplus::RectF box(static_cast<float>(rect.left) + 0.5f,
+                                     static_cast<float>(rect.top) + 0.5f,
+                                     static_cast<float>(rect.right - rect.left - 1),
+                                     static_cast<float>(rect.bottom - rect.top - 1));
+            const float radius = std::min(static_cast<float>(ui(radiusLogical)),
+                                          std::min(box.Width, box.Height) / 2.0f);
+            const float diameter = radius * 2.0f;
+            Gdiplus::GraphicsPath path;
+            path.AddArc(box.X, box.Y, diameter, diameter, 180.0f, 90.0f);
+            path.AddArc(box.X + box.Width - diameter, box.Y, diameter, diameter, 270.0f, 90.0f);
+            path.AddArc(box.X + box.Width - diameter, box.Y + box.Height - diameter,
+                        diameter, diameter, 0.0f, 90.0f);
+            path.AddArc(box.X, box.Y + box.Height - diameter, diameter, diameter, 90.0f, 90.0f);
+            path.CloseFigure();
+            Gdiplus::SolidBrush brush(makeColor(fill));
+            Gdiplus::Pen pen(makeColor(border), 1.0f);
+            graphics.FillPath(&brush, &path);
+            graphics.DrawPath(&pen, &path);
+            return;
+        }
+        HBRUSH brush = CreateSolidBrush(fill);
+        HPEN pen = CreatePen(PS_SOLID, ui(1), border);
+        HGDIOBJ oldBrush = SelectObject(dc, brush);
+        HGDIOBJ oldPen = SelectObject(dc, pen);
+        RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom,
+                  ui(radiusLogical), ui(radiusLogical));
+        SelectObject(dc, oldPen);
+        SelectObject(dc, oldBrush);
+        DeleteObject(pen);
+        DeleteObject(brush);
+    };
+
+    drawGdiLine(dc, ui(kSettingsSidebarWidth), 0, ui(kSettingsSidebarWidth), client.bottom, line);
+    drawGdiLine(dc, ui(kSettingsSidebarWidth), ui(kSettingsHeaderHeight - 1),
+                client.right, ui(kSettingsHeaderHeight - 1), line);
+
     HFONT navFont = CreateFontW(-ui(13), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                 CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
@@ -1510,164 +2200,289 @@ void paintSettings(HWND hwnd, HDC dc) {
                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                  CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
     SetBkMode(dc, TRANSPARENT);
-    const wchar_t* navLabels[] = {L"通用", L"存储管理", L"安全与隐私", L"关于 ClipLite"};
+    const wchar_t* navLabels[] = {L"通用", L"快捷键", L"存储管理", L"安全与隐私", L"关于 ClipLite"};
     const int activeTop = 50 + g_app->settingsTab * 38;
-    HBRUSH activeBrush = CreateSolidBrush(dark ? RGB(57, 69, 67) : RGB(224, 242, 239));
-    HGDIOBJ oldBrush = SelectObject(dc, activeBrush);
-    HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
-    RoundRect(dc, ui(12), ui(activeTop), ui(168), ui(activeTop + 34), ui(6), ui(6));
-    SelectObject(dc, oldPen);
-    SelectObject(dc, oldBrush);
-    DeleteObject(activeBrush);
+    drawRounded(RECT{ui(12), ui(activeTop), ui(168), ui(activeTop + 34)},
+                settingsAccentSoftColor(), settingsAccentSoftColor(), 6);
     if (g_app->hoveredSettingsTab >= 0 && g_app->hoveredSettingsTab != g_app->settingsTab) {
         const int hoverTop = 50 + g_app->hoveredSettingsTab * 38;
-        HBRUSH hoverBrush = CreateSolidBrush(dark ? RGB(48, 57, 63) : RGB(240, 247, 245));
-        HGDIOBJ previousBrush = SelectObject(dc, hoverBrush);
-        HGDIOBJ previousPen = SelectObject(dc, GetStockObject(NULL_PEN));
-        RoundRect(dc, ui(12), ui(hoverTop), ui(168), ui(hoverTop + 34), ui(6), ui(6));
-        SelectObject(dc, previousPen);
-        SelectObject(dc, previousBrush);
-        DeleteObject(hoverBrush);
+        drawRounded(RECT{ui(12), ui(hoverTop), ui(168), ui(hoverTop + 34)},
+                    settingsAccentSoftColor(), settingsAccentSoftColor(), 6);
     }
     SelectObject(dc, navFont);
     SetTextColor(dc, secondary);
     RECT menuTitle{ui(24), ui(22), ui(156), ui(42)};
     DrawTextW(dc, L"ClipLite", -1, &menuTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 5; ++i) {
         const int top = 54 + i * 38;
         const bool active = i == g_app->settingsTab;
         const bool hovered = i == g_app->hoveredSettingsTab;
         const COLORREF navColor = active || hovered ? accent : secondary;
         SetTextColor(dc, navColor);
-        drawSettingsNavIcon(dc, i, ui(24), ui(top + 6), navColor);
+        drawSettingsNavIcon(dc, i, ui(24), ui(top + 3), navColor);
         RECT label{ui(52), ui(top), ui(168), ui(top + 30)};
         DrawTextW(dc, navLabels[i], -1, &label, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
-    const int contentLeft = ui(204);
-    const int contentRight = client.right - ui(24);
     SelectObject(dc, titleFont);
     SetTextColor(dc, text);
-    const wchar_t* titles[] = {L"通用设置", L"存储管理", L"安全与隐私", L"关于 ClipLite"};
+    const wchar_t* titles[] = {L"通用设置", L"快捷键", L"存储管理", L"安全与隐私", L"关于 ClipLite"};
     RECT pageTitle{contentLeft, ui(20), contentRight, ui(48)};
     DrawTextW(dc, titles[g_app->settingsTab], -1, &pageTitle,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
+    const int themeWidth = ui(kSettingsThemeWidth);
+    const int themeLeft = contentRight - themeWidth;
+    const int themeTop = ui(14);
+    const int accentGap = ui(6);
+    const int accentSize = ui(14);
+    const int accentRight = themeLeft - ui(14);
+    const int accentLeft = accentRight - accentSize * 4 - accentGap * 3;
+    SelectObject(dc, bodyFont);
+    SetTextColor(dc, g_app->settingsActionFeedback.empty()
+        ? secondary
+        : (g_app->settingsActionFeedbackSuccess ? accent : RGB(185, 28, 28)));
+    RECT saveState{accentLeft - ui(86), ui(20), accentLeft - ui(8), ui(42)};
+    const wchar_t* saveLabel = g_app->settingsActionFeedback.empty()
+        ? L"已自动保存" : g_app->settingsActionFeedback.c_str();
+    DrawTextW(dc, saveLabel, -1, &saveState,
+              DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    const COLORREF themeSurface = settingsThemeColor(RGB(232, 238, 245), RGB(26, 33, 44));
+    const COLORREF themeLine = settingsThemeColor(RGB(200, 211, 222), RGB(46, 57, 71));
+    drawRounded(RECT{themeLeft, themeTop, themeLeft + themeWidth, themeTop + ui(30)},
+                themeSurface, themeLine, 15);
+    const int themeMode = std::clamp(g_app->settingsData.themeMode, 0, 2);
+    const int themeSegmentWidth = ui(kSettingsThemeSegmentWidth);
+    for (int i = 0; i < 3; ++i) {
+        RECT modeRect{themeLeft + ui(3) + i * themeSegmentWidth, themeTop + ui(3),
+                      themeLeft + ui(3) + (i + 1) * themeSegmentWidth, themeTop + ui(27)};
+        const bool selected = themeMode == i;
+        const bool hovered = g_app->hoveredSettingsThemeMode == i;
+        if (selected || hovered) {
+            const COLORREF segmentBackground = selected ? accent : settingsAccentSoftColor();
+            drawRounded(modeRect, segmentBackground, segmentBackground, 12);
+        }
+        const COLORREF iconColor = selected ? RGB(255, 255, 255) :
+            (hovered ? accent : secondary);
+        drawSettingsThemeIcon(dc, i,
+                              (modeRect.left + modeRect.right) / 2,
+                              (modeRect.top + modeRect.bottom) / 2,
+                              iconColor);
+    }
+    const COLORREF accentColors[] = {
+        RGB(37, 99, 235), RGB(124, 58, 237), RGB(39, 124, 97), RGB(217, 119, 6)
+    };
+    for (int i = 0; i < kStorageCategoryCount; ++i) {
+        const int left = accentLeft + i * (accentSize + accentGap);
+        drawSettingsAccentDot(dc, left, themeTop + ui(7), accentSize,
+                              accentColors[i], g_app->settingsData.accent == i, text);
+    }
+
     auto drawCard = [&](int top, int bottom) {
-        HBRUSH cardBrush = CreateSolidBrush(cardBackground);
-        HPEN cardPen = CreatePen(PS_SOLID, ui(1), line);
-        HGDIOBJ previousBrush = SelectObject(dc, cardBrush);
-        HGDIOBJ previousPen = SelectObject(dc, cardPen);
-        RoundRect(dc, contentLeft, ui(top), contentRight, ui(bottom), ui(8), ui(8));
-        SelectObject(dc, previousPen);
-        SelectObject(dc, previousBrush);
-        DeleteObject(cardPen);
-        DeleteObject(cardBrush);
+        RECT rect{contentLeft, settingsContentY(top), contentRight, settingsContentY(bottom)};
+        drawRounded(rect, cardBackground, line);
     };
     auto drawCardTitle = [&](const wchar_t* label, int top) {
         SelectObject(dc, cardTitleFont);
         SetTextColor(dc, text);
-        RECT title{contentLeft + ui(16), ui(top), contentRight - ui(16), ui(top + 24)};
+        RECT title{contentLeft + ui(14), settingsContentY(top), contentRight - ui(14),
+                   settingsContentY(top + 20)};
         DrawTextW(dc, label, -1, &title, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        drawGdiLine(dc, contentLeft + ui(14), settingsContentY(top + 27),
+                    contentRight - ui(14), settingsContentY(top + 27), line);
     };
-    auto drawRow = [&](const wchar_t* label, int top, bool divider = true) {
+    auto drawLayoutRow = [&](const SettingsRowLayout& row) {
+        if (!row.label) return;
         SelectObject(dc, bodyFont);
         SetTextColor(dc, text);
-        RECT row{contentLeft + ui(16), ui(top), contentRight - ui(16), ui(top + 28)};
-        DrawTextW(dc, label, -1, &row, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        if (divider) {
-            HPEN rowPen = CreatePen(PS_SOLID, ui(1), line);
-            HGDIOBJ previous = SelectObject(dc, rowPen);
-            MoveToEx(dc, contentLeft + ui(16), ui(top + 34), nullptr);
-            LineTo(dc, contentRight - ui(16), ui(top + 34));
-            SelectObject(dc, previous);
-            DeleteObject(rowPen);
-        }
+        const int labelRight = row.controlX.empty() ? contentRight - ui(14) : ui(row.controlX.front() - 8);
+        const int labelLeftLogical = kSettingsSidebarWidth + 20 + 14;
+        const int labelRightLogical = row.controlX.empty()
+            ? MulDiv(client.right, 96, static_cast<int>(g_uiDpi)) - 20 - 14
+            : row.controlX.front() - 8;
+        const int labelHeight = settingsTextHeight(hwnd, row.label,
+                                                    std::max(1, labelRightLogical - labelLeftLogical));
+        const int labelTop = row.top + std::max(0, (row.height - labelHeight) / 2);
+        RECT label{contentLeft + ui(14), settingsContentY(labelTop), labelRight,
+                   settingsContentY(labelTop + labelHeight)};
+        DrawTextW(dc, row.label, -1, &label,
+                  DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
     };
-
-    if (g_app->settingsTab == 0) {
-        drawCard(70, 212);
-        drawCardTitle(L"界面与交互", 84);
-        drawRow(L"强制替换 Win+V", 112);
-        drawRow(L"语言", 147);
-        drawRow(L"深色主题", 182, false);
-        drawCard(222, 380);
-        drawCardTitle(L"系统与集成", 236);
-        drawRow(L"暂停剪贴板监听", 264);
-        drawRow(L"随 Windows 启动", 299);
-        drawRow(L"使用 Windows 用户加密保护历史", 334, false);
-    } else if (g_app->settingsTab == 1) {
-        drawCard(70, 214);
-        drawCardTitle(L"数据保留策略", 84);
-        drawRow(L"最大记录数", 112);
-        drawRow(L"保留天数（0 = 永久）", 147);
-        drawRow(L"最大磁盘空间（MB）", 182);
-        drawRow(L"单条内容上限（MB）", 217, false);
-        drawCard(259, 445);
-        drawCardTitle(L"历史记录统计", 273);
-        wchar_t stats[160]{};
-        swprintf_s(stats, L"当前历史总计：%zu 条记录，%llu 字节",
+    auto drawStats = [&](int top) {
+        const std::size_t textCount = g_app->store.countType(ClipType::Text);
+        const std::size_t imageCount = g_app->store.countType(ClipType::Image);
+        const std::size_t fileCount = g_app->store.countType(ClipType::Files);
+        std::size_t pinnedCount = 0;
+        for (const ClipItem& item : g_app->store.items()) {
+            if (item.pinned) ++pinnedCount;
+        }
+        wchar_t summary[192]{};
+        swprintf_s(summary, L"当前历史总计：%zu 条记录，%llu 字节",
                    g_app->store.activeCount(), g_app->store.diskBytes());
         SelectObject(dc, bodyFont);
         SetTextColor(dc, secondary);
-        RECT statsRect{contentLeft + ui(16), ui(305), contentRight - ui(16), ui(331)};
-        DrawTextW(dc, stats, -1, &statsRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        const wchar_t* categories[] = {L"文本", L"图片", L"文件", L"富文本", L"其他"};
-        const ClipType categoryTypes[] = {ClipType::Text, ClipType::Image, ClipType::Files,
-                                          ClipType::Html, ClipType::Text};
-        for (int i = 0; i < 5; ++i) {
-            wchar_t categoryLabel[96]{};
-            const std::size_t count = i == 4
-                ? g_app->store.activeCount() - g_app->store.countType(ClipType::Text) -
-                    g_app->store.countType(ClipType::Image) - g_app->store.countType(ClipType::Files) -
-                    g_app->store.countType(ClipType::Html)
-                : g_app->store.countType(categoryTypes[i]);
-            swprintf_s(categoryLabel, L"%s  %zu 条", categories[i], count);
-            RECT categoryRect{contentLeft + ui(16 + (i % 2) * 170),
-                              ui(341 + (i / 2) * 28), contentLeft + ui(160 + (i % 2) * 170),
-                              ui(365 + (i / 2) * 28)};
-            DrawTextW(dc, categoryLabel, -1, &categoryRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        RECT summaryRect{contentLeft + ui(14), settingsContentY(top + 37), contentRight - ui(14),
+                         settingsContentY(top + 61)};
+        DrawTextW(dc, summary, -1, &summaryRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        const wchar_t* labels[] = {L"文本", L"图片", L"文件", L"置顶"};
+        const std::size_t counts[] = {textCount, imageCount, fileCount, pinnedCount};
+        for (int i = 0; i < 4; ++i) {
+            wchar_t value[64]{};
+            swprintf_s(value, L"%zu", counts[i]);
+            const int x = contentLeft + ui(16 + (i % 2) * 190);
+            const int y = top + 68 + (i / 2) * 23;
+            SetTextColor(dc, secondary);
+            RECT labelRect{x, settingsContentY(y), x + ui(42), settingsContentY(y + 20)};
+            DrawTextW(dc, labels[i], -1, &labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            SetTextColor(dc, text);
+            RECT valueRect{x + ui(50), settingsContentY(y), x + ui(100), settingsContentY(y + 20)};
+            DrawTextW(dc, value, -1, &valueRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         }
-    } else if (g_app->settingsTab == 2) {
-        drawCard(70, 300);
-        drawCardTitle(L"隐私保护", 84);
-        drawRow(L"使用 Windows 用户加密保护历史", 116, false);
-        drawRow(L"忽略应用（每行一个来源名称）", 151, false);
-        drawRow(L"敏感内容过期时间（小时，0 = 关闭）", 235, false);
+    };
+
+    const SettingsLayout layout = buildSettingsLayout(hwnd);
+    const int bodyClip = SaveDC(dc);
+    IntersectClipRect(dc, ui(kSettingsSidebarWidth), ui(kSettingsHeaderHeight), client.right, client.bottom);
+    for (const SettingsCardLayout& card : layout.cards) {
+        drawCard(card.top, card.bottom);
+        drawCardTitle(card.title, card.top + 12);
+        for (const SettingsRowLayout& row : card.rows) drawLayoutRow(row);
+    }
+    if (g_app->settingsTab == 2 && layout.cards.size() >= 3) {
+        drawStats(layout.cards[2].top);
+        const SettingsCardLayout& categoryCard = layout.cards[1];
+        if (categoryCard.rows.size() >= kStorageCategoryCount) {
+            SelectObject(dc, bodyFont);
+            SetTextColor(dc, secondary);
+            const SettingsRowLayout& firstRow = categoryCard.rows.front();
+            RECT maxHeader{ui(firstRow.controlX[0]), settingsContentY(categoryCard.top + 40),
+                           ui(firstRow.controlX[0] + 70), settingsContentY(categoryCard.top + 54)};
+            RECT diskHeader{ui(firstRow.controlX[1]), settingsContentY(categoryCard.top + 40),
+                            ui(firstRow.controlX[1] + 70), settingsContentY(categoryCard.top + 54)};
+            DrawTextW(dc, L"记录", -1, &maxHeader, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawTextW(dc, L"空间 MB", -1, &diskHeader, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            const ClipType types[] = {ClipType::Text, ClipType::Image, ClipType::Files};
+            for (int i = 0; i < kStorageCategoryCount; ++i) {
+                const SettingsRowLayout& row = categoryCard.rows[static_cast<std::size_t>(i)];
+                wchar_t count[64]{};
+                swprintf_s(count, L"当前 %zu 条 · %llu B", g_app->store.countType(types[i]),
+                           g_app->store.bytesType(types[i]));
+                RECT countRect{contentLeft + ui(62), settingsContentY(row.top),
+                               ui(row.controlX.front() - 8), settingsContentY(row.top + row.height)};
+                SetTextColor(dc, secondary);
+                DrawTextW(dc, count, -1, &countRect,
+                          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            }
+            RECT note{contentLeft + ui(14), settingsContentY(categoryCard.bottom - 48),
+                      contentRight - ui(14), settingsContentY(categoryCard.bottom - 22)};
+            DrawTextW(dc, L"设置为 0 表示不限；置顶记录不会被自动清理。", -1, &note,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        }
+    } else if (g_app->settingsTab == kSettingsShortcutPage && !layout.cards.empty()) {
         SelectObject(dc, bodyFont);
         SetTextColor(dc, secondary);
-    } else {
-        drawCard(70, 300);
-        drawCardTitle(L"关于 ClipLite", 84);
+        const SettingsCardLayout& card = layout.cards.back();
+        RECT description{contentLeft + ui(14), settingsContentY(card.bottom - 38), contentRight - ui(14),
+                         settingsContentY(card.bottom - 12)};
+        DrawTextW(dc, g_app->shortcutRegistrationWarning
+                      ? L"部分快捷键注册失败，请更换组合键。"
+                      : L"自定义快捷键至少需要一个修饰键。",
+                  -1, &description, DT_LEFT | DT_WORDBREAK);
+    } else if (g_app->settingsTab == 3 && layout.cards.size() >= 2) {
+        SelectObject(dc, bodyFont);
+        SetTextColor(dc, secondary);
+        const SettingsCardLayout& card = layout.cards.back();
+        RECT description{contentLeft + ui(14), settingsContentY(card.bottom - 38), contentRight - ui(14),
+                         settingsContentY(card.bottom - 12)};
+        DrawTextW(dc, L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。", -1, &description,
+                  DT_LEFT | DT_WORDBREAK);
+    } else if (g_app->settingsTab == 4 && !layout.cards.empty()) {
         SelectObject(dc, bodyFont);
         SetTextColor(dc, text);
         const wchar_t* about[] = {L"应用名称    ClipLite", L"版本        0.1.0 x64",
-                                  L"存储格式    v3（兼容 v1/v2）",
+                                  L"存储格式    v4",
                                   L"数据目录    %LOCALAPPDATA%\\ClipLite"};
         for (int i = 0; i < 4; ++i) {
-            RECT aboutRect{contentLeft + ui(16), ui(122 + i * 34), contentRight - ui(16), ui(148 + i * 34)};
+            RECT aboutRect{contentLeft + ui(14), settingsContentY(layout.cards.front().top + 50 + i * 34),
+                           contentRight - ui(14), settingsContentY(layout.cards.front().top + 76 + i * 34)};
             DrawTextW(dc, about[i], -1, &aboutRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         }
     }
-    SelectObject(dc, oldBrush);
+    RestoreDC(dc, bodyClip);
+
+#ifdef _DEBUG
+    {
+        HPEN debugPen = CreatePen(PS_DASH, ui(1), RGB(220, 70, 70));
+        HGDIOBJ debugPreviousPen = SelectObject(dc, debugPen);
+        HGDIOBJ debugPreviousBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        RECT headerRect{ui(kSettingsSidebarWidth), 0, client.right, ui(kSettingsHeaderHeight)};
+        Rectangle(dc, headerRect.left, headerRect.top, headerRect.right, headerRect.bottom);
+        auto drawDebugCard = [&](int top, int bottom) {
+            Rectangle(dc, contentLeft, settingsContentY(top), contentRight,
+                      settingsContentY(bottom));
+        };
+        const SettingsLayout debugLayout = buildSettingsLayout(hwnd);
+        for (const SettingsCardLayout& card : debugLayout.cards) {
+            drawDebugCard(card.top, card.bottom);
+        }
+        SelectObject(dc, debugPreviousBrush);
+        SelectObject(dc, debugPreviousPen);
+        DeleteObject(debugPen);
+        HFONT debugFont = CreateFontW(-ui(10), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                      CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Consolas");
+        HFONT oldDebugFont = reinterpret_cast<HFONT>(SelectObject(dc, debugFont));
+        SetBkMode(dc, OPAQUE);
+        SetBkColor(dc, RGB(255, 250, 210));
+        SetTextColor(dc, RGB(140, 30, 30));
+        wchar_t marker[96]{};
+        swprintf_s(marker, L"DEBUG body=%d scroll=%d", kSettingsHeaderHeight,
+                   g_app->settingsScrollOffset);
+        RECT markerRect{contentLeft + ui(4), ui(2), contentRight, ui(16)};
+        DrawTextW(dc, marker, -1, &markerRect, DT_LEFT | DT_SINGLELINE);
+        paintSettingsEditBorders(hwnd, dc);
+        SelectObject(dc, oldDebugFont);
+        DeleteObject(debugFont);
+    }
+#endif
     DeleteObject(navFont);
     DeleteObject(titleFont);
     DeleteObject(cardTitleFont);
     DeleteObject(bodyFont);
 }
 
+void paintSettings(HWND hwnd, HDC dc) {
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const int width = client.right - client.left;
+    const int height = client.bottom - client.top;
+    HDC buffer = CreateCompatibleDC(dc);
+    HBITMAP bitmap = buffer ? CreateCompatibleBitmap(dc, width, height) : nullptr;
+    if (!buffer || !bitmap) {
+        if (bitmap) DeleteObject(bitmap);
+        if (buffer) DeleteDC(buffer);
+        paintSettingsContent(hwnd, dc);
+        return;
+    }
+    HGDIOBJ previousBitmap = SelectObject(buffer, bitmap);
+    paintSettingsContent(hwnd, buffer);
+    BitBlt(dc, 0, 0, width, height, buffer, 0, 0, SRCCOPY);
+    SelectObject(buffer, previousBitmap);
+    DeleteObject(bitmap);
+    DeleteDC(buffer);
+}
+
 void paintPopupContent(HWND hwnd, HDC dc) {
     RECT client{};
     GetClientRect(hwnd, &client);
-    const bool dark = g_app->settingsData.dark;
-    COLORREF background = dark ? RGB(38, 42, 48) : RGB(242, 244, 247);
-    COLORREF text = dark ? RGB(240, 243, 247) : RGB(26, 26, 26);
-    COLORREF secondary = dark ? RGB(175, 183, 193) : RGB(102, 102, 102);
-    COLORREF border = dark ? RGB(75, 83, 92) : RGB(209, 213, 219);
-    COLORREF card = dark ? RGB(48, 53, 60) : RGB(255, 255, 255);
-    COLORREF cardBorder = dark ? RGB(67, 74, 82) : RGB(234, 234, 234);
-    COLORREF chip = dark ? RGB(55, 61, 69) : RGB(255, 255, 255);
-    COLORREF accent = dark ? RGB(53, 137, 107) : RGB(39, 124, 97);
+    COLORREF background = settingsThemeColor(RGB(242, 244, 247), RGB(38, 42, 48));
+    COLORREF text = settingsThemeColor(RGB(26, 26, 26), RGB(240, 243, 247));
+    COLORREF secondary = settingsThemeColor(RGB(102, 102, 102), RGB(175, 183, 193));
+    COLORREF border = settingsThemeColor(RGB(209, 213, 219), RGB(75, 83, 92));
+    COLORREF card = settingsThemeColor(RGB(255, 255, 255), RGB(48, 53, 60));
+    COLORREF cardBorder = settingsThemeColor(RGB(234, 234, 234), RGB(67, 74, 82));
+    COLORREF chip = settingsThemeColor(RGB(255, 255, 255), RGB(55, 61, 69));
+    COLORREF accent = settingsAccentColor();
     if (highContrastEnabled()) {
         background = GetSysColor(COLOR_WINDOW);
         text = GetSysColor(COLOR_WINDOWTEXT);
@@ -1681,13 +2496,11 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     HBRUSH brush = CreateSolidBrush(background);
     FillRect(dc, &client, brush);
     DeleteObject(brush);
-    HPEN borderPen = CreatePen(PS_SOLID, 1, border);
-    HGDIOBJ oldBorderPen = SelectObject(dc, borderPen);
-    HGDIOBJ oldBorderBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-    RoundRect(dc, 0, 0, client.right, client.bottom, ui(8), ui(8));
-    SelectObject(dc, oldBorderBrush);
-    SelectObject(dc, oldBorderPen);
-    DeleteObject(borderPen);
+    const int popupBorderInset = ui(1);
+    drawGdiRoundedSurface(dc,
+                          RECT{popupBorderInset, popupBorderInset,
+                               client.right - popupBorderInset, client.bottom - popupBorderInset},
+                          background, border, 8);
 
     SetBkMode(dc, TRANSPARENT);
     HFONT titleFont = CreateFontW(-ui(13), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
@@ -1708,68 +2521,60 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     SetTextColor(dc, text);
     RECT titleRect{ui(16), ui(14), ui(82), ui(46)};
     if (g_app->hoveredHeader) {
-        HBRUSH headerBrush = CreateSolidBrush(dark ? RGB(52, 59, 68) : RGB(232, 242, 239));
-        HGDIOBJ oldHeaderBrush = SelectObject(dc, headerBrush);
-        HGDIOBJ oldHeaderPen = SelectObject(dc, GetStockObject(NULL_PEN));
-        RoundRect(dc, ui(12), ui(10), ui(86), ui(50), ui(4), ui(4));
-        SelectObject(dc, oldHeaderPen);
-        SelectObject(dc, oldHeaderBrush);
-        DeleteObject(headerBrush);
+        drawGdiRoundedSurface(dc, RECT{ui(12), ui(10), ui(86), ui(50)},
+                              settingsAccentSoftColor(), settingsAccentSoftColor(), 4);
     }
     DrawTextW(dc, tr(L"Clipboard history", L"剪贴板历史"), -1, &titleRect,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    HBRUSH searchBrush = CreateSolidBrush(dark ? RGB(48, 53, 60) : RGB(255, 255, 255));
     const COLORREF searchBorder = g_app->searchEdit && GetFocus() == g_app->searchEdit
         ? accent : border;
-    HPEN searchPen = CreatePen(PS_SOLID, ui(1), searchBorder);
-    HGDIOBJ oldSearchBrush = SelectObject(dc, searchBrush);
-    HGDIOBJ oldSearchPen = SelectObject(dc, searchPen);
-    RoundRect(dc, ui(90), ui(14), ui(266), ui(46), ui(4), ui(4));
-    SelectObject(dc, oldSearchPen);
-    SelectObject(dc, oldSearchBrush);
-    DeleteObject(searchPen);
-    DeleteObject(searchBrush);
+    const RECT searchRect{ui(kPopupSearchLeft), ui(12), ui(kPopupSearchRight), ui(48)};
+    drawGdiRoundedSurface(dc, searchRect,
+                          settingsThemeColor(RGB(255, 255, 255), RGB(48, 53, 60)),
+                          searchBorder, 6);
+    drawSearchIcon(dc, ui(kPopupSearchLeft + 14), ui(30),
+                   g_app->searchEdit && GetFocus() == g_app->searchEdit ? accent : secondary);
     const wchar_t* clearLabel = tr(L"Clear", L"清空");
     SelectObject(dc, filterFont);
-    RECT clearRect{ui(270), ui(14), client.right - ui(16), ui(46)};
+    RECT clearRect{ui(kPopupClearLeft), ui(14), ui(kPopupClearRight), ui(46)};
     if (g_app->hoveredFilter == 7) {
-        HBRUSH clearHoverBrush = CreateSolidBrush(dark ? RGB(62, 71, 80) : RGB(231, 242, 239));
-        HGDIOBJ oldClearBrush = SelectObject(dc, clearHoverBrush);
-        HGDIOBJ oldClearPen = SelectObject(dc, GetStockObject(NULL_PEN));
-        RoundRect(dc, clearRect.left, clearRect.top, clearRect.right, clearRect.bottom,
-                  ui(4), ui(4));
-        SelectObject(dc, oldClearPen);
-        SelectObject(dc, oldClearBrush);
-        DeleteObject(clearHoverBrush);
+        drawGdiRoundedSurface(dc, clearRect, settingsAccentSoftColor(),
+                              settingsAccentSoftColor(), 4);
     }
     SetTextColor(dc, g_app->hoveredFilter == 7 ? accent : secondary);
     DrawTextW(dc, clearLabel, -1, &clearRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    const RECT pinRect{ui(kPopupPinLeft), ui(14), ui(kPopupPinRight), ui(46)};
+    const RECT closeRect{ui(kPopupCloseLeft), ui(14), client.right - ui(16), ui(46)};
+    if (g_app->hoveredFilter == 8 && !g_app->popupPinned) {
+        drawGdiRoundedSurface(dc, pinRect, settingsAccentSoftColor(),
+                              settingsAccentSoftColor(), 4);
+    }
+    if (g_app->hoveredFilter == 9) {
+        drawGdiRoundedSurface(dc, closeRect, settingsAccentSoftColor(),
+                              settingsAccentSoftColor(), 4);
+    }
+    const COLORREF pinColor = g_app->popupPinned ? RGB(245, 158, 11) :
+        (g_app->hoveredFilter == 8 ? accent : secondary);
+    drawPinIcon(dc, ui(kPopupPinRight - 2), ui(30), pinColor, g_app->popupPinned);
+    drawDeleteIcon(dc, ui(kPopupCloseLeft + 5), ui(25),
+                   g_app->hoveredFilter == 9 ? RGB(220, 38, 38) : secondary);
 
     const wchar_t* filterLabels[] = {
         tr(L"All", L"全部"), tr(L"Pinned", L"置顶"), tr(L"Text", L"文本"),
-        tr(L"Images", L"图片"), tr(L"Files", L"文件"), tr(L"Rich", L"富文本"),
-        tr(L"Other", L"其他")
+        tr(L"Images", L"图片"), tr(L"Files", L"文件"), tr(L"Other", L"其他")
     };
     SelectObject(dc, filterFont);
     const int filterClip = SaveDC(dc);
     IntersectClipRect(dc, ui(16), ui(kPopupFilterTop),
                       client.right - ui(16), ui(kPopupFilterBottom));
-    for (int slot = 0; slot < 7; ++slot) {
+    for (int slot = 0; slot < 6; ++slot) {
         const RECT chipRect = automaticFilterRect(slot, g_app->filterScrollOffset);
         const bool active = isAutomaticFilterActive(slot);
         const bool hovered = slot == g_app->hoveredFilter;
         const COLORREF chipBackground = active ? accent :
-            (hovered ? (dark ? RGB(67, 78, 88) : RGB(231, 242, 239)) : chip);
+            (hovered ? settingsThemeColor(RGB(231, 242, 239), RGB(67, 78, 88)) : chip);
         const COLORREF chipBorder = active ? accent : (hovered ? accent : border);
-        HBRUSH chipBrush = CreateSolidBrush(chipBackground);
-        HPEN chipPen = CreatePen(PS_SOLID, 1, chipBorder);
-        HGDIOBJ oldChipBrush = SelectObject(dc, chipBrush);
-        HGDIOBJ oldChipPen = SelectObject(dc, chipPen);
-        RoundRect(dc, chipRect.left, chipRect.top, chipRect.right, chipRect.bottom, ui(4), ui(4));
-        SelectObject(dc, oldChipPen);
-        SelectObject(dc, oldChipBrush);
-        DeleteObject(chipPen);
-        DeleteObject(chipBrush);
+        drawGdiRoundedSurface(dc, chipRect, chipBackground, chipBorder, 4);
         SetTextColor(dc, active || hovered ? (active ? RGB(255, 255, 255) : accent) : secondary);
         DrawTextW(dc, filterLabels[slot], -1, const_cast<RECT*>(&chipRect),
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -1777,8 +2582,13 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     RestoreDC(dc, filterClip);
 
     const int listBottom = client.bottom - ui(kPopupBottomPadding);
-    int y = ui(kPopupListTop);
-    for (int row = g_app->scrollOffset;
+    const int listClip = SaveDC(dc);
+    IntersectClipRect(dc, ui(12), ui(kPopupListTop), client.right - ui(1), listBottom);
+    const int scrollStride = popupScrollStride();
+    const int firstVisibleRow = g_app->scrollPosition / std::max(1, scrollStride);
+    const int scrollRemainder = g_app->scrollPosition % std::max(1, scrollStride);
+    int y = ui(kPopupListTop) - scrollRemainder;
+    for (int row = firstVisibleRow;
          row < static_cast<int>(g_app->visible.size()); ++row) {
         const ClipItem& item = g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]];
         const int height = popupCardHeight(item);
@@ -1790,16 +2600,17 @@ void paintPopupContent(HWND hwnd, HDC dc) {
             continue;
         }
         const bool rowHovered = row == g_app->hoveredRow;
-        HBRUSH cardBrush = CreateSolidBrush(rowHovered
-            ? (dark ? RGB(57, 64, 73) : RGB(247, 251, 250)) : card);
-        HPEN cardPen = CreatePen(PS_SOLID, 1, rowHovered ? accent : cardBorder);
-        HGDIOBJ oldCardBrush = SelectObject(dc, cardBrush);
-        HGDIOBJ oldCardPen = SelectObject(dc, cardPen);
-        RoundRect(dc, rowRect.left, rowRect.top, rowRect.right, rowRect.bottom, ui(6), ui(6));
-        SelectObject(dc, oldCardPen);
-        SelectObject(dc, oldCardBrush);
-        DeleteObject(cardPen);
-        DeleteObject(cardBrush);
+        const bool rowSelected = row == g_app->selected;
+        drawGdiRoundedSurface(dc, rowRect,
+                              rowSelected ? settingsAccentSoftColor() :
+                                  (rowHovered ? settingsThemeColor(RGB(247, 251, 250), RGB(57, 64, 73)) : card),
+                              rowSelected || rowHovered ? accent : cardBorder, 6);
+        if (rowSelected) {
+            drawGdiRoundedSurface(dc,
+                                  RECT{rowRect.left + ui(4), rowRect.top + ui(12),
+                                        rowRect.left + ui(7), rowRect.bottom - ui(12)},
+                                  accent, accent, 2);
+        }
         const bool image = isImageType(item.type);
             if (image && drawImagePreview(dc, item, RECT{rowRect.left + ui(12), y + ui(12),
                                                      rowRect.left + ui(56), y + ui(56)})) {
@@ -1818,30 +2629,30 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         const std::wstring source = item.source.empty()
             ? std::wstring(tr(L"Clipboard", L"剪贴板")) : utf8ToWide(item.source);
         const int metadataTop = y + height - ui(24);
-        RECT sourceRect{rowRect.left + ui(12), metadataTop,
-                        rowRect.left + ui(84), metadataTop + ui(16)};
-        drawMetadataTag(dc, sourceRect, source, RGB(240, 244, 248), RGB(229, 231, 235),
-                        RGB(75, 85, 99), 3);
-        RECT typeRect{rowRect.left + ui(92), metadataTop,
-                      rowRect.left + ui(140), metadataTop + ui(16)};
-        drawMetadataTag(dc, typeRect, kind, RGB(239, 241, 243), RGB(239, 241, 243),
-                        RGB(85, 85, 85), 2);
-        const std::wstring time = formatRelativeTime(item.timestamp);
-        RECT timeRect{rowRect.right - ui(92), metadataTop,
-                      rowRect.right - ui(44), metadataTop + ui(16)};
-        SetTextColor(dc, RGB(136, 136, 136));
-        DrawTextW(dc, time.c_str(), -1, &timeRect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
-        RECT pinRect{rowRect.right - ui(38), metadataTop - ui(2),
-                     rowRect.right - ui(12), metadataTop + ui(18)};
-        const bool pinHovered = row == g_app->hoveredPinRow;
-        if (item.pinned) {
-            drawMetadataTag(dc, pinRect, L"", RGB(255, 243, 224), RGB(255, 243, 224),
-                            pinHovered ? RGB(217, 119, 6) : RGB(245, 158, 11), 4);
-            drawPinIcon(dc, rowRect.right - ui(31), metadataTop,
-                        pinHovered ? RGB(217, 119, 6) : RGB(245, 158, 11));
-        } else {
-            drawPinIcon(dc, rowRect.right - ui(31), metadataTop,
-                        pinHovered ? accent : RGB(176, 176, 176));
+        const bool metadataVisible = metadataTop >= ui(kPopupListTop) &&
+            metadataTop + ui(16) <= listBottom;
+        if (metadataVisible) {
+            RECT sourceRect{rowRect.left + ui(12), metadataTop,
+                            rowRect.left + ui(84), metadataTop + ui(16)};
+            drawMetadataTag(dc, sourceRect, source, RGB(240, 244, 248), RGB(229, 231, 235),
+                            RGB(75, 85, 99), 3);
+            RECT typeRect{rowRect.left + ui(92), metadataTop,
+                          rowRect.left + ui(140), metadataTop + ui(16)};
+            drawMetadataTag(dc, typeRect, kind, RGB(239, 241, 243), RGB(239, 241, 243),
+                            RGB(85, 85, 85), 2);
+            const std::wstring time = formatRelativeTime(item.timestamp);
+            RECT timeRect{rowRect.right - ui(92), metadataTop,
+                          rowRect.right - ui(44), metadataTop + ui(16)};
+            SetTextColor(dc, RGB(136, 136, 136));
+            DrawTextW(dc, time.c_str(), -1, &timeRect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+            const bool pinHovered = row == g_app->hoveredPinRow;
+            if (item.pinned) {
+                drawPinIcon(dc, rowRect.right - ui(10), metadataTop + ui(8),
+                            pinHovered ? RGB(217, 119, 6) : RGB(245, 158, 11), true);
+            } else if (rowHovered) {
+                drawPinIcon(dc, rowRect.right - ui(10), metadataTop + ui(8),
+                            pinHovered ? accent : RGB(176, 176, 176));
+            }
         }
         if (rowHovered) {
             drawDeleteIcon(dc, rowRect.right - ui(20), y + ui(9),
@@ -1855,26 +2666,22 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         const int centerX = client.right / 2;
         const int emptyTop = ui(kPopupListTop + 54);
         drawEmptyClipboardIcon(dc, centerX, emptyTop,
-                               dark ? RGB(115, 126, 138) : RGB(178, 187, 194));
+                                settingsThemeColor(RGB(178, 187, 194), RGB(115, 126, 138)));
         RECT emptyRect{ui(24), emptyTop + ui(48), client.right - ui(24), emptyTop + ui(72)};
         DrawTextW(dc, empty, -1, &emptyRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
-    if (g_app->visible.size() > static_cast<std::size_t>(popupVisibleRows())) {
-        const int trackTop = ui(kPopupListTop);
-        const int trackBottom = listBottom;
-        const int trackHeight = trackBottom - trackTop;
-        const int thumbHeight = std::max(ui(24), trackHeight * popupVisibleRows() /
-                                                   static_cast<int>(g_app->visible.size()));
-        const int maxOffset = static_cast<int>(g_app->visible.size()) - popupVisibleRows();
-        const int thumbTop = trackTop + (trackHeight - thumbHeight) * g_app->scrollOffset /
-                                       std::max(1, maxOffset);
-        HBRUSH scrollBrush = CreateSolidBrush(dark ? RGB(103, 113, 124) : RGB(192, 192, 192));
-        HGDIOBJ oldScrollBrush = SelectObject(dc, scrollBrush);
-        RoundRect(dc, client.right - ui(5), thumbTop, client.right - ui(2),
-                  thumbTop + thumbHeight, ui(3), ui(3));
-        SelectObject(dc, oldScrollBrush);
-        DeleteObject(scrollBrush);
+    int trackTop = 0;
+    int trackBottom = 0;
+    int thumbTop = 0;
+    int thumbHeight = 0;
+    int maxOffset = 0;
+    if (popupScrollMetrics(trackTop, trackBottom, thumbTop, thumbHeight, maxOffset)) {
+        const RECT scrollRect{client.right - ui(5), thumbTop, client.right - ui(2),
+                               thumbTop + thumbHeight};
+        const COLORREF scrollColor = settingsThemeColor(RGB(192, 192, 192), RGB(103, 113, 124));
+        drawGdiRoundedSurface(dc, scrollRect, scrollColor, scrollColor, 3);
     }
+    RestoreDC(dc, listClip);
     SelectObject(dc, old);
     DeleteObject(titleFont);
     DeleteObject(filterFont);
@@ -1910,136 +2717,132 @@ int settingsLanguageSelection(HWND hwnd);
 void setSettingsLanguageSelection(HWND hwnd, int selection);
 void configureSettingsEdit(HWND hwnd);
 
-void createSettingsControls(HWND hwnd) {
-    const bool zh = languageIsChinese();
-    CreateWindowW(L"STATIC", zh ? L"ClipLite 设置" : L"ClipLite Settings",
-                  WS_CHILD | WS_VISIBLE, 20, 18, 420, 28, hwnd, nullptr,
-                  GetModuleHandleW(nullptr), nullptr);
-    HWND win = CreateWindowW(L"BUTTON", zh ? L"强制替换 Win+V" : L"Force replace Win+V",
-                               WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_CHECKBOX | BS_OWNERDRAW,
-                              20, 62, 400, 30,
-                             hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingWinV)), GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(win, BM_SETCHECK, g_app->settingsData.winV ? BST_CHECKED : BST_UNCHECKED, 0);
-    setSettingsToggleValue(win, g_app->settingsData.winV);
-    HWND dark = CreateWindowW(L"BUTTON", zh ? L"深色主题" : L"Dark theme",
-                               WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_CHECKBOX | BS_OWNERDRAW,
-                               20, 94, 400, 30,
-                              hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingDark)), GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(dark, BM_SETCHECK, g_app->settingsData.dark ? BST_CHECKED : BST_UNCHECKED, 0);
-    setSettingsToggleValue(dark, g_app->settingsData.dark);
-    CreateWindowW(L"STATIC", zh ? L"语言" : L"Language", WS_CHILD | WS_VISIBLE,
-                  20, 132, 80, 24, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
-    HWND language = CreateWindowW(L"COMBOBOX", L"",
-                                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST |
-                                      CBS_OWNERDRAWFIXED | CBS_HASSTRINGS,
-                                  100, 128, 180, 120, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingLanguage)),
-                                  GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(language, CB_SETMINVISIBLE, 3, 0);
-    SendMessageW(language, CB_SETITEMHEIGHT, static_cast<WPARAM>(-1), 26);
-    SendMessageW(language, CB_SETITEMHEIGHT, 0, 24);
-    SendMessageW(language, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(zh ? L"自动" : L"Auto"));
-    SendMessageW(language, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"English"));
-    SendMessageW(language, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"简体中文"));
-    const int languageSelection = g_app->settingsData.language < 0
-        ? 0 : g_app->settingsData.language + 1;
-    SendMessageW(language, CB_SETCURSEL, languageSelection, 0);
-    CreateWindowW(L"STATIC", zh ? L"数据保留" : L"Data retention",
-                  WS_CHILD | WS_VISIBLE, 20, 176, 180, 24, hwnd, nullptr,
-                  GetModuleHandleW(nullptr), nullptr);
-    CreateWindowW(L"STATIC", zh ? L"最大记录数" : L"Maximum records",
-                  WS_CHILD | WS_VISIBLE, 20, 208, 220, 24, hwnd, nullptr,
-                  GetModuleHandleW(nullptr), nullptr);
-    wchar_t value[32]{};
-    swprintf_s(value, L"%d", g_app->settingsData.maxItems);
-    CreateWindowExW(0, L"EDIT", value,
-                    WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
-                    250, 204, 150, 26, hwnd,
-                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingMaxItems)),
-                    GetModuleHandleW(nullptr), nullptr);
-    CreateWindowW(L"STATIC", zh ? L"保留天数（0 = 永久）" : L"Retention days (0 = forever)",
-                  WS_CHILD | WS_VISIBLE, 20, 242, 220, 24, hwnd, nullptr,
-                  GetModuleHandleW(nullptr), nullptr);
-    swprintf_s(value, L"%d", g_app->settingsData.retentionDays);
-    CreateWindowExW(0, L"EDIT", value,
-                    WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
-                    250, 238, 150, 26, hwnd,
-                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingRetentionDays)),
-                    GetModuleHandleW(nullptr), nullptr);
-    CreateWindowW(L"STATIC", zh ? L"最大磁盘空间（MB）" : L"Max disk space (MB)",
-                  WS_CHILD | WS_VISIBLE, 20, 276, 220, 24, hwnd, nullptr,
-                  GetModuleHandleW(nullptr), nullptr);
-    swprintf_s(value, L"%d", g_app->settingsData.maxDiskMb);
-    CreateWindowExW(0, L"EDIT", value,
-                    WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
-                    250, 272, 150, 26, hwnd,
-                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingMaxDiskMb)),
-                    GetModuleHandleW(nullptr), nullptr);
-    HWND pause = CreateWindowW(L"BUTTON", zh ? L"暂停剪贴板监听" : L"Pause clipboard monitoring",
-                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_CHECKBOX | BS_OWNERDRAW,
-                               20, 308, 400, 30, hwnd,
-                               reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingPause)),
-                               GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(pause, BM_SETCHECK, g_app->settingsData.pauseMonitoring ? BST_CHECKED : BST_UNCHECKED, 0);
-    setSettingsToggleValue(pause, g_app->settingsData.pauseMonitoring);
-    HWND startup = CreateWindowW(L"BUTTON", zh ? L"随 Windows 启动" : L"Start with Windows",
-                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_CHECKBOX | BS_OWNERDRAW,
-                                  20, 334, 400, 30, hwnd,
-                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingStartup)),
-                                 GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(startup, BM_SETCHECK, g_app->settingsData.startWithWindows ? BST_CHECKED : BST_UNCHECKED, 0);
-    setSettingsToggleValue(startup, g_app->settingsData.startWithWindows);
-    HWND encrypt = CreateWindowW(L"BUTTON", zh ? L"使用 Windows 用户加密保护历史" : L"Protect history with Windows encryption",
-                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_CHECKBOX | BS_OWNERDRAW,
-                                  20, 360, 400, 30, hwnd,
-                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingEncrypt)),
-                                 GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(encrypt, BM_SETCHECK, g_app->settingsData.encryptData ? BST_CHECKED : BST_UNCHECKED, 0);
-    setSettingsToggleValue(encrypt, g_app->settingsData.encryptData);
-    CreateWindowW(L"STATIC", zh ? L"当前历史" : L"Current history",
-                  WS_CHILD | WS_VISIBLE, 20, 390, 100, 24, hwnd, nullptr,
-                  GetModuleHandleW(nullptr), nullptr);
-    wchar_t count[128]{};
-    swprintf_s(count, zh ? L"%zu 条记录，%llu 字节" : L"%zu records, %llu bytes",
-               g_app->store.activeCount(), g_app->store.diskBytes());
-    CreateWindowW(L"STATIC", count, WS_CHILD | WS_VISIBLE, 120, 390, 250, 24, hwnd, nullptr,
-                  GetModuleHandleW(nullptr), nullptr);
-    std::size_t textCount = 0, htmlCount = 0, imageCount = 0, fileCount = 0, otherCount = 0;
-    std::size_t pinnedCount = 0;
-    for (const ClipItem& item : g_app->store.items()) {
-        if (item.type == ClipType::Text) ++textCount;
-        else if (item.type == ClipType::Html) ++htmlCount;
-        else if (item.type == ClipType::Files) ++fileCount;
-        else if (isImageType(item.type)) ++imageCount;
-        else ++otherCount;
-        if (item.pinned) ++pinnedCount;
+bool isSettingsShortcut(int id) {
+    return id >= kSettingShortcutHistory && id <= kSettingShortcutDelete;
+}
+
+ShortcutBinding* settingsShortcutBinding(Settings& settings, int id) {
+    if (id == kSettingShortcutHistory) return &settings.historyHotkey;
+    if (id == kSettingShortcutSettings) return &settings.settingsHotkey;
+    if (id == kSettingShortcutPause) return &settings.pauseHotkey;
+    if (id == kSettingShortcutPaste) return &settings.popupPasteHotkey;
+    if (id == kSettingShortcutPastePlain) return &settings.popupPlainPasteHotkey;
+    if (id == kSettingShortcutPasteRich) return &settings.popupRichPasteHotkey;
+    if (id == kSettingShortcutClosePopup) return &settings.popupCloseHotkey;
+    if (id == kSettingShortcutPopupSettings) return &settings.popupSettingsHotkey;
+    if (id == kSettingShortcutClearFilter) return &settings.popupClearFilterHotkey;
+    if (id == kSettingShortcutDelete) return &settings.popupDeleteHotkey;
+    return nullptr;
+}
+
+std::wstring shortcutKeyName(UINT virtualKey) {
+    if (virtualKey >= 'A' && virtualKey <= 'Z') {
+        return std::wstring(1, static_cast<wchar_t>(virtualKey));
     }
-    wchar_t details[256]{};
-    swprintf_s(details, zh ? L"文本 %zu  图片 %zu  文件 %zu  HTML %zu  其他 %zu  置顶 %zu"
-                           : L"Text %zu  Images %zu  Files %zu  HTML %zu  Other %zu  Pinned %zu",
-               textCount, imageCount, fileCount, htmlCount, otherCount, pinnedCount);
-    CreateWindowW(L"STATIC", details, WS_CHILD | WS_VISIBLE, 20, 412, 420, 24, hwnd, nullptr,
-                  GetModuleHandleW(nullptr), nullptr);
-    CreateWindowW(L"STATIC", zh ? L"自动分类" : L"Automatic categories",
-                  WS_CHILD | WS_VISIBLE, 20, 458, 180, 24, hwnd, nullptr,
-                  GetModuleHandleW(nullptr), nullptr);
-    const wchar_t* automaticCategories[] = {
-        zh ? L"文本" : L"Text", zh ? L"图片" : L"Images",
-        zh ? L"文件" : L"Files", L"HTML", zh ? L"其他" : L"Other"
-    };
-    const std::size_t automaticCounts[] = {textCount, imageCount, fileCount, htmlCount, otherCount};
-    for (int i = 0; i < 5; ++i) {
-        wchar_t categoryValue[64]{};
-        swprintf_s(categoryValue, L"%ls  %zu", automaticCategories[i], automaticCounts[i]);
-        CreateWindowW(L"STATIC", categoryValue, WS_CHILD | WS_VISIBLE,
-                      20 + (i % 2) * 200, 484 + (i / 2) * 32, 180, 24, hwnd, nullptr,
-                      GetModuleHandleW(nullptr), nullptr);
+    if (virtualKey >= '0' && virtualKey <= '9') {
+        return std::wstring(1, static_cast<wchar_t>(virtualKey));
     }
-    CreateWindowW(L"BUTTON", zh ? L"清空历史" : L"Clear history",
-                  WS_CHILD | WS_VISIBLE, 20, 630, 120, 28, hwnd,
-                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingClear)), GetModuleHandleW(nullptr), nullptr);
-    CreateWindowW(L"BUTTON", zh ? L"保存" : L"Save",
-                  WS_CHILD | WS_VISIBLE, 330, 630, 90, 28, hwnd,
-                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingSave)), GetModuleHandleW(nullptr), nullptr);
+    if (virtualKey >= VK_F1 && virtualKey <= VK_F24) {
+        return L"F" + std::to_wstring(virtualKey - VK_F1 + 1);
+    }
+    if (virtualKey == VK_SPACE) return L"Space";
+    if (virtualKey == VK_ESCAPE) return L"Esc";
+    if (virtualKey == VK_RETURN) return L"Enter";
+    if (virtualKey == VK_TAB) return L"Tab";
+    if (virtualKey == VK_OEM_MINUS) return L"-";
+    if (virtualKey == VK_OEM_PLUS) return L"+";
+    wchar_t name[64]{};
+    const UINT scanCode = MapVirtualKeyW(virtualKey, MAPVK_VK_TO_VSC);
+    if (scanCode != 0 && GetKeyNameTextW(static_cast<LONG>(scanCode << 16), name,
+                                         static_cast<int>(sizeof(name) / sizeof(name[0]))) > 0) {
+        return name;
+    }
+    return L"VK " + std::to_wstring(virtualKey);
+}
+
+std::wstring formatShortcut(const ShortcutBinding& binding) {
+    std::wstring result;
+    if (binding.modifiers & MOD_CONTROL) result += L"Ctrl + ";
+    if (binding.modifiers & MOD_ALT) result += L"Alt + ";
+    if (binding.modifiers & MOD_SHIFT) result += L"Shift + ";
+    if (binding.modifiers & MOD_WIN) result += L"Win + ";
+    result += shortcutKeyName(binding.virtualKey);
+    return result;
+}
+
+void refreshSettingsShortcutControls(HWND hwnd) {
+    if (!hwnd) return;
+    const int ids[] = {kSettingShortcutHistory, kSettingShortcutSettings, kSettingShortcutPause,
+                       kSettingShortcutPaste, kSettingShortcutPastePlain, kSettingShortcutPasteRich,
+                       kSettingShortcutClosePopup, kSettingShortcutPopupSettings,
+                       kSettingShortcutClearFilter, kSettingShortcutDelete};
+    for (const int id : ids) {
+        HWND control = GetDlgItem(hwnd, id);
+        ShortcutBinding* binding = settingsShortcutBinding(g_app->settingsData, id);
+        if (control && binding) SetWindowTextW(control, formatShortcut(*binding).c_str());
+    }
+}
+
+UINT shortcutModifiersFromKeyboard() {
+    UINT modifiers = 0;
+    if (GetKeyState(VK_CONTROL) & 0x8000) modifiers |= MOD_CONTROL;
+    if (GetKeyState(VK_MENU) & 0x8000) modifiers |= MOD_ALT;
+    if (GetKeyState(VK_SHIFT) & 0x8000) modifiers |= MOD_SHIFT;
+    if ((GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000) modifiers |= MOD_WIN;
+    return modifiers;
+}
+
+bool shortcutMatches(const ShortcutBinding& binding, UINT virtualKey) {
+    return binding.virtualKey == virtualKey &&
+           shortcutModifiersFromKeyboard() == binding.modifiers;
+}
+
+bool isShortcutModifierKey(UINT virtualKey) {
+    return virtualKey == VK_CONTROL || virtualKey == VK_LCONTROL || virtualKey == VK_RCONTROL ||
+           virtualKey == VK_MENU || virtualKey == VK_LMENU || virtualKey == VK_RMENU ||
+           virtualKey == VK_SHIFT || virtualKey == VK_LSHIFT || virtualKey == VK_RSHIFT ||
+           virtualKey == VK_LWIN || virtualKey == VK_RWIN;
+}
+
+void cancelSettingsShortcutCapture(HWND hwnd) {
+    if (!g_app || !g_app->shortcutCaptureControl) return;
+    g_app->shortcutCaptureControl = nullptr;
+    refreshSettingsShortcutControls(hwnd);
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void beginSettingsShortcutCapture(HWND hwnd, HWND control) {
+    if (!hwnd || !control) return;
+    g_app->shortcutCaptureControl = control;
+    SetFocus(control);
+    SetWindowTextW(control, tr(L"Press shortcut", L"按下组合键"));
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void captureSettingsShortcut(HWND hwnd, HWND control, UINT virtualKey) {
+    if (!hwnd || !control || g_app->shortcutCaptureControl != control) return;
+    if (virtualKey == VK_ESCAPE) {
+        cancelSettingsShortcutCapture(hwnd);
+        return;
+    }
+    if (isShortcutModifierKey(virtualKey)) return;
+    const UINT modifiers = shortcutModifiersFromKeyboard();
+    const int id = GetDlgCtrlID(control);
+    const bool modifierless = id == kSettingShortcutPaste || id == kSettingShortcutClosePopup ||
+        id == kSettingShortcutPopupSettings || id == kSettingShortcutDelete;
+    if (modifiers == 0 && !modifierless) {
+        SetWindowTextW(control, tr(L"Need modifier", L"需要修饰键"));
+        return;
+    }
+    ShortcutBinding* binding = settingsShortcutBinding(g_app->settingsData, GetDlgCtrlID(control));
+    if (!binding) return;
+    binding->modifiers = modifiers;
+    binding->virtualKey = virtualKey;
+    g_app->shortcutCaptureControl = nullptr;
+    registerHotkeys();
+    refreshSettingsShortcutControls(hwnd);
+    saveSettings(g_app->settingsData);
+    InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 void createSettingsControlsModern(HWND hwnd) {
@@ -2048,11 +2851,19 @@ void createSettingsControlsModern(HWND hwnd) {
         HWND control = CreateWindowW(L"BUTTON", L"",
                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP |
                                          BS_CHECKBOX | BS_OWNERDRAW,
-                                     ui(x), ui(y), ui(60), ui(30), hwnd,
+                                      ui(x), ui(y), ui(kSettingsToggleWidth), ui(kSettingsToggleHeight), hwnd,
                                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
                                      GetModuleHandleW(nullptr), nullptr);
         SendMessageW(control, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
         setSettingsToggleValue(control, checked);
+        return control;
+    };
+    auto createShortcut = [hwnd](int id, int y, const ShortcutBinding& binding) {
+        HWND control = CreateWindowW(L"BUTTON", formatShortcut(binding).c_str(),
+                                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                                     ui(520), ui(y), ui(150), ui(30), hwnd,
+                                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+                                     GetModuleHandleW(nullptr), nullptr);
         return control;
     };
 
@@ -2061,6 +2872,16 @@ void createSettingsControlsModern(HWND hwnd) {
     createToggle(kSettingPause, 640, 264, g_app->settingsData.pauseMonitoring);
     createToggle(kSettingStartup, 640, 299, g_app->settingsData.startWithWindows);
     createToggle(kSettingEncrypt, 640, 116, g_app->settingsData.encryptData);
+    createShortcut(kSettingShortcutHistory, 110, g_app->settingsData.historyHotkey);
+    createShortcut(kSettingShortcutSettings, 154, g_app->settingsData.settingsHotkey);
+    createShortcut(kSettingShortcutPause, 198, g_app->settingsData.pauseHotkey);
+    createShortcut(kSettingShortcutPaste, 242, g_app->settingsData.popupPasteHotkey);
+    createShortcut(kSettingShortcutPastePlain, 286, g_app->settingsData.popupPlainPasteHotkey);
+    createShortcut(kSettingShortcutPasteRich, 330, g_app->settingsData.popupRichPasteHotkey);
+    createShortcut(kSettingShortcutClosePopup, 374, g_app->settingsData.popupCloseHotkey);
+    createShortcut(kSettingShortcutPopupSettings, 418, g_app->settingsData.popupSettingsHotkey);
+    createShortcut(kSettingShortcutClearFilter, 462, g_app->settingsData.popupClearFilterHotkey);
+    createShortcut(kSettingShortcutDelete, 506, g_app->settingsData.popupDeleteHotkey);
 
     HWND language = CreateWindowW(L"STATIC", L"",
                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | SS_NOTIFY,
@@ -2074,28 +2895,40 @@ void createSettingsControlsModern(HWND hwnd) {
     wchar_t value[32]{};
     swprintf_s(value, L"%d", g_app->settingsData.maxItems);
     CreateWindowExW(0, L"EDIT", value,
-                    WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
-                    ui(520), ui(112), ui(180), ui(28), hwnd,
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
+                     ui(520), ui(112), ui(150), ui(30), hwnd,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingMaxItems)),
                     GetModuleHandleW(nullptr), nullptr);
     swprintf_s(value, L"%d", g_app->settingsData.retentionDays);
     CreateWindowExW(0, L"EDIT", value,
-                    WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
-                    ui(520), ui(147), ui(180), ui(28), hwnd,
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
+                     ui(520), ui(147), ui(150), ui(30), hwnd,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingRetentionDays)),
                     GetModuleHandleW(nullptr), nullptr);
     swprintf_s(value, L"%d", g_app->settingsData.maxDiskMb);
     CreateWindowExW(0, L"EDIT", value,
-                    WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
-                    ui(520), ui(182), ui(180), ui(28), hwnd,
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
+                     ui(520), ui(182), ui(150), ui(30), hwnd,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingMaxDiskMb)),
                     GetModuleHandleW(nullptr), nullptr);
     swprintf_s(value, L"%d", g_app->settingsData.maxContentMb);
     CreateWindowExW(0, L"EDIT", value,
-                    WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
-                    ui(520), ui(217), ui(180), ui(28), hwnd,
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
+                     ui(520), ui(217), ui(150), ui(30), hwnd,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingMaxContentMb)),
                     GetModuleHandleW(nullptr), nullptr);
+    const std::wstring dataDirectory = g_app->settingsData.dataDirectory.empty()
+        ? clipLiteDataDirectory() : utf8ToWide(g_app->settingsData.dataDirectory);
+    CreateWindowExW(0, L"EDIT", dataDirectory.c_str(),
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL,
+                    ui(520), ui(252), ui(360), ui(30), hwnd,
+                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingDataDirectory)),
+                    GetModuleHandleW(nullptr), nullptr);
+    CreateWindowW(L"BUTTON", zh ? L"浏览" : L"Browse",
+                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                  ui(888), ui(252), ui(64), ui(30), hwnd,
+                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingBrowseDataDirectory)),
+                  GetModuleHandleW(nullptr), nullptr);
 
     std::wstring ignoredApps;
     for (const std::string& app : g_app->settingsData.ignoredApps) {
@@ -2104,28 +2937,38 @@ void createSettingsControlsModern(HWND hwnd) {
     }
     CreateWindowExW(0, L"EDIT", ignoredApps.c_str(),
                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL,
-                    ui(520), ui(151), ui(180), ui(78), hwnd,
+                     ui(520), ui(151), ui(150), ui(60), hwnd,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingIgnoredApps)),
                     GetModuleHandleW(nullptr), nullptr);
     swprintf_s(value, L"%d", g_app->settingsData.sensitiveExpiryHours);
     CreateWindowExW(0, L"EDIT", value,
-                    WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
-                    ui(520), ui(235), ui(180), ui(28), hwnd,
-                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingSensitiveExpiry)),
-                    GetModuleHandleW(nullptr), nullptr);
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
+                     ui(520), ui(235), ui(150), ui(30), hwnd,
+                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingSensitiveExpiry)),
+                     GetModuleHandleW(nullptr), nullptr);
+    for (int i = 0; i < kStorageCategoryCount; ++i) {
+        const CategoryLimit& limit = g_app->settingsData.categoryLimits[static_cast<std::size_t>(i)];
+        swprintf_s(value, L"%d", limit.maxItems);
+        CreateWindowExW(0, L"EDIT", value,
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
+                        ui(520), ui(285 + i * 48), ui(70), ui(30), hwnd,
+                        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingCategoryMaxBase + i)),
+                        GetModuleHandleW(nullptr), nullptr);
+        swprintf_s(value, L"%d", limit.maxDiskMb);
+        CreateWindowExW(0, L"EDIT", value,
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
+                        ui(598), ui(285 + i * 48), ui(70), ui(30), hwnd,
+                        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingCategoryDiskBase + i)),
+                        GetModuleHandleW(nullptr), nullptr);
+    }
 
     CreateWindowW(L"BUTTON", zh ? L"清空历史" : L"Clear history",
                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, ui(232), ui(360), ui(120), ui(30), hwnd,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingClear)),
                   GetModuleHandleW(nullptr), nullptr);
-    CreateWindowW(L"BUTTON", zh ? L"保存" : L"Save",
-                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, ui(600), ui(460), ui(100), ui(30), hwnd,
-                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingSave)),
-                  GetModuleHandleW(nullptr), nullptr);
-    const int clearIds[] = {kSettingClearText, kSettingClearImage, kSettingClearFiles,
-                            kSettingClearHtml, kSettingClearOther};
-    const wchar_t* clearLabels[] = {L"文本", L"图片", L"文件", L"富文本", L"其他"};
-    for (int i = 0; i < 5; ++i) {
+    const int clearIds[] = {kSettingClearText, kSettingClearImage, kSettingClearFiles};
+    const wchar_t* clearLabels[] = {L"文本", L"图片", L"文件"};
+    for (int i = 0; i < kStorageCategoryCount; ++i) {
         const std::wstring clearLabel = zh
             ? std::wstring(L"清理") + clearLabels[i] : std::wstring(clearLabels[i]);
         CreateWindowW(L"BUTTON", clearLabel.c_str(),
@@ -2138,51 +2981,101 @@ void createSettingsControlsModern(HWND hwnd) {
 
 void updateSettingsTabControls(HWND hwnd) {
     g_app->hoveredSettingsControl = 0;
+    if (g_app->shortcutCaptureControl) cancelSettingsShortcutCapture(hwnd);
+    g_app->settingsScrollOffset = std::clamp(g_app->settingsScrollOffset, 0, settingsScrollMax(hwnd));
     if (g_app->languageDropdown) {
         DestroyWindow(g_app->languageDropdown);
         KillTimer(hwnd, kSettingsDropdownTimer);
     }
     const int ids[] = {kSettingDark, kSettingWinV, kSettingLanguage, kSettingPause,
-                       kSettingStartup, kSettingEncrypt, kSettingMaxItems,
-                       kSettingRetentionDays, kSettingMaxDiskMb, kSettingMaxContentMb,
-                       kSettingIgnoredApps, kSettingSensitiveExpiry, kSettingClear, kSettingSave,
-                       kSettingClearText, kSettingClearImage, kSettingClearFiles,
-                       kSettingClearHtml, kSettingClearOther};
-    for (const int id : ids) ShowWindow(GetDlgItem(hwnd, id), SW_HIDE);
-    auto show = [hwnd](int id, int x, int y, int width, int height) {
+                        kSettingStartup, kSettingEncrypt, kSettingMaxItems,
+                        kSettingRetentionDays, kSettingMaxDiskMb, kSettingMaxContentMb,
+                        kSettingDataDirectory, kSettingBrowseDataDirectory,
+                         kSettingIgnoredApps, kSettingSensitiveExpiry, kSettingClear,
+                           kSettingClearText, kSettingClearImage, kSettingClearFiles,
+                           kSettingShortcutHistory,
+                         kSettingShortcutSettings, kSettingShortcutPause,
+                         kSettingShortcutPaste, kSettingShortcutPastePlain,
+                         kSettingShortcutPasteRich, kSettingShortcutClosePopup,
+                         kSettingShortcutPopupSettings, kSettingShortcutClearFilter,
+                         kSettingShortcutDelete,
+                        kSettingCategoryMaxBase, kSettingCategoryMaxBase + 1,
+                        kSettingCategoryMaxBase + 2,
+                        kSettingCategoryDiskBase, kSettingCategoryDiskBase + 1,
+                        kSettingCategoryDiskBase + 2};
+    const bool tabChanged = g_app->settingsControlsTab != g_app->settingsTab;
+    if (tabChanged) {
+        for (const int id : ids) {
+            if (HWND control = GetDlgItem(hwnd, id)) ShowWindow(control, SW_HIDE);
+        }
+        g_app->settingsControlsTab = g_app->settingsTab;
+    }
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const int bodyTop = ui(kSettingsHeaderHeight);
+    const int scrollOffset = (g_app->settingsTab == 0 ||
+                              g_app->settingsTab == kSettingsShortcutPage ||
+                              g_app->settingsTab == 2)
+        ? ui(g_app->settingsScrollOffset) : 0;
+    HDWP defer = BeginDeferWindowPos(static_cast<int>(sizeof(ids) / sizeof(ids[0])));
+    auto show = [&, hwnd, client, bodyTop, scrollOffset, tabChanged](int id, int x, int y,
+                                                                   int width, int height,
+                                                                   bool fixed = false) {
         HWND control = GetDlgItem(hwnd, id);
+        if (!control) return;
         wchar_t className[32]{};
         GetClassNameW(control, className, static_cast<int>(sizeof(className) / sizeof(className[0])));
         const bool edit = std::wcscmp(className, L"Edit") == 0;
-        SetWindowPos(control, nullptr, ui(x), ui(y), ui(width), ui(height), SWP_NOZORDER);
-        ShowWindow(control, SW_SHOW);
-        if (edit) configureSettingsEdit(control);
+        const int top = ui(y) - (fixed ? 0 : scrollOffset);
+        const bool visible = fixed || (top >= bodyTop && top + ui(height) <= client.bottom);
+        RECT current{};
+        GetWindowRect(control, &current);
+        MapWindowPoints(nullptr, hwnd, reinterpret_cast<POINT*>(&current), 2);
+        const bool resized = current.right - current.left != ui(width) ||
+            current.bottom - current.top != ui(height);
+        const bool moved = current.left != ui(x) || current.top != top;
+        if (moved || resized || static_cast<bool>(IsWindowVisible(control)) != visible) {
+            UINT flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOREDRAW;
+            if (!moved) flags |= SWP_NOMOVE;
+            if (!resized) flags |= SWP_NOSIZE;
+            if (visible) flags |= SWP_SHOWWINDOW;
+            else flags |= SWP_HIDEWINDOW;
+            if (defer) {
+                HDWP next = DeferWindowPos(defer, control, nullptr, ui(x), top,
+                                           ui(width), ui(height), flags);
+                if (next) {
+                    defer = next;
+                } else {
+                    EndDeferWindowPos(defer);
+                    defer = nullptr;
+                }
+            }
+            if (!defer) {
+                SetWindowPos(control, nullptr, ui(x), top, ui(width), ui(height), flags);
+            }
+        }
+        if (edit && (resized || tabChanged)) configureSettingsEdit(control);
     };
-    if (g_app->settingsTab == 0) {
-        show(kSettingDark, 640, 182, 60, 30);
-        show(kSettingWinV, 640, 112, 60, 30);
-        show(kSettingLanguage, 520, 147, 180, 30);
-        show(kSettingPause, 640, 264, 60, 30);
-        show(kSettingStartup, 640, 299, 60, 30);
-        show(kSettingSave, 600, 460, 100, 30);
-    } else if (g_app->settingsTab == 1) {
-        show(kSettingMaxItems, 520, 112, 180, 28);
-        show(kSettingRetentionDays, 520, 147, 180, 28);
-        show(kSettingMaxDiskMb, 520, 182, 180, 28);
-        show(kSettingMaxContentMb, 520, 217, 180, 28);
-        show(kSettingClearText, 232, 324, 76, 26);
-        show(kSettingClearImage, 314, 324, 76, 26);
-        show(kSettingClearFiles, 396, 324, 76, 26);
-        show(kSettingClearHtml, 478, 324, 76, 26);
-        show(kSettingClearOther, 560, 324, 76, 26);
-        show(kSettingClear, 232, 360, 120, 30);
-        show(kSettingSave, 600, 360, 100, 30);
-    } else if (g_app->settingsTab == 2) {
-        show(kSettingEncrypt, 640, 116, 60, 30);
-        show(kSettingIgnoredApps, 520, 151, 180, 78);
-        show(kSettingSensitiveExpiry, 520, 235, 180, 28);
-        show(kSettingSave, 600, 300, 100, 30);
+    const SettingsLayout layout = buildSettingsLayout(hwnd);
+    for (const SettingsCardLayout& card : layout.cards) {
+        for (const SettingsRowLayout& row : card.rows) {
+            for (std::size_t i = 0; i < row.controlIds.size(); ++i) {
+                const int controlHeight = row.controlHeights[i];
+                const int top = row.top + (row.height - controlHeight) / 2;
+                show(row.controlIds[i], row.controlX[i], top,
+                     row.controlWidths[i], controlHeight);
+            }
+        }
     }
+    if (defer) EndDeferWindowPos(defer);
+    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+}
+
+void appendPasteMenu(HMENU menu, const ClipItem& item) {
+    AppendMenuW(menu, MF_STRING, kMenuPaste, tr(L"Paste", L"粘贴"));
+    AppendMenuW(menu, MF_STRING, kMenuPastePlain, tr(L"Paste as plain text", L"粘贴为纯文本"));
+    AppendMenuW(menu, MF_STRING | (item.type == ClipType::Html ? 0 : MF_GRAYED),
+                kMenuPasteRich, tr(L"Paste as rich text", L"粘贴为富文本"));
 }
 
 void appendFilterMenu(HMENU menu) {
@@ -2192,7 +3085,6 @@ void appendFilterMenu(HMENU menu) {
     AppendMenuW(filters, MF_STRING, kFilterText, tr(L"Text", L"文本"));
     AppendMenuW(filters, MF_STRING, kFilterImage, tr(L"Images", L"图片"));
     AppendMenuW(filters, MF_STRING, kFilterFiles, tr(L"Files", L"文件"));
-    AppendMenuW(filters, MF_STRING, kFilterHtml, tr(L"Rich text", L"富文本"));
     AppendMenuW(filters, MF_STRING, kFilterOther, tr(L"Other", L"其他"));
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(filters),
                 tr(L"Filter", L"筛选"));
@@ -2202,14 +3094,20 @@ void applyFilterCommand(int command) {
     if (command == kFilterAll) {
         g_app->filterType = 0;
         g_app->pinnedOnly = false;
-    } else if (command >= kFilterText && command <= kFilterHtml) {
-        g_app->filterType = command - kFilterText + 1;
+    } else if (command == kFilterText) {
+        g_app->filterType = 1;
+        g_app->pinnedOnly = false;
+    } else if (command == kFilterImage) {
+        g_app->filterType = 2;
+        g_app->pinnedOnly = false;
+    } else if (command == kFilterFiles) {
+        g_app->filterType = 3;
         g_app->pinnedOnly = false;
     } else if (command == kFilterPinned) {
         g_app->filterType = 0;
         g_app->pinnedOnly = true;
     } else if (command == kFilterOther) {
-        g_app->filterType = 5;
+        g_app->filterType = 4;
         g_app->pinnedOnly = false;
     }
 }
@@ -2223,13 +3121,12 @@ void applyFontToChildren(HWND parent, HFONT font) {
 void refreshSettingsBrushes() {
     if (!g_app->settings) return;
     const bool highContrast = highContrastEnabled();
-    const bool dark = g_app->settingsData.dark;
     const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW) :
-        (dark ? RGB(25, 29, 34) : RGB(239, 246, 244));
+        settingsThemeColor(RGB(240, 244, 248), RGB(21, 26, 34));
     const COLORREF card = highContrast ? GetSysColor(COLOR_WINDOW) :
-        (dark ? RGB(34, 39, 46) : RGB(250, 253, 252));
+        settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
     const COLORREF input = highContrast ? GetSysColor(COLOR_WINDOW) :
-        (dark ? RGB(43, 47, 54) : RGB(255, 255, 255));
+        settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
     if (g_app->settingsBackgroundBrush) DeleteObject(g_app->settingsBackgroundBrush);
     if (g_app->settingsCardBrush) DeleteObject(g_app->settingsCardBrush);
     if (g_app->settingsInputBrush) DeleteObject(g_app->settingsInputBrush);
@@ -2238,22 +3135,119 @@ void refreshSettingsBrushes() {
     g_app->settingsInputBrush = CreateSolidBrush(input);
 }
 
+void appendPopupPinMenu(HMENU menu) {
+    AppendMenuW(menu, MF_STRING | (g_app->popupPinned ? MF_CHECKED : 0),
+                kMenuPopupPinned,
+                g_app->popupPinned
+                    ? tr(L"Unpin history window", L"取消历史窗口置顶")
+                    : tr(L"Pin history window", L"置顶历史窗口"));
+}
+
+void refreshPopupBrush() {
+    if (!g_app->popup) return;
+    if (g_app->popupInputBrush) DeleteObject(g_app->popupInputBrush);
+    const COLORREF input = highContrastEnabled()
+        ? GetSysColor(COLOR_WINDOW)
+        : settingsThemeColor(RGB(255, 255, 255), RGB(43, 47, 54));
+    g_app->popupInputBrush = CreateSolidBrush(input);
+}
+
+void refreshSettingsFrame(HWND hwnd) {
+    if (!hwnd) return;
+    const DWMNCRENDERINGPOLICY policy = DWMNCRP_USEWINDOWSTYLE;
+    DwmSetWindowAttribute(hwnd, DWMWA_NCRENDERING_POLICY, &policy, sizeof(policy));
+    const COLORREF border = highContrastEnabled()
+        ? GetSysColor(COLOR_WINDOW)
+        : settingsThemeColor(RGB(240, 244, 248), RGB(21, 26, 34));
+    DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border, sizeof(border));
+    const COLORREF caption = highContrastEnabled()
+        ? GetSysColor(COLOR_WINDOW)
+        : settingsThemeColor(RGB(240, 244, 248), RGB(21, 26, 34));
+    const COLORREF captionText = highContrastEnabled()
+        ? GetSysColor(COLOR_WINDOWTEXT)
+        : settingsThemeColor(RGB(30, 41, 59), RGB(226, 232, 240));
+    DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &caption, sizeof(caption));
+    DwmSetWindowAttribute(hwnd, DWMWA_TEXT_COLOR, &captionText, sizeof(captionText));
+}
+
 bool isSettingsToggle(int id) {
     return id == kSettingWinV || id == kSettingDark || id == kSettingPause ||
            id == kSettingStartup || id == kSettingEncrypt;
 }
 
 int settingsToggleAtPoint(int tab, int x, int y) {
-    if (x < ui(636) || x >= ui(704)) return 0;
-    if (tab == 0) {
-        if (y >= ui(108) && y < ui(146)) return kSettingWinV;
-        if (y >= ui(178) && y < ui(216)) return kSettingDark;
-        if (y >= ui(260) && y < ui(298)) return kSettingPause;
-        if (y >= ui(295) && y < ui(333)) return kSettingStartup;
-    } else if (tab == 2 && y >= ui(112) && y < ui(150)) {
-        return kSettingEncrypt;
+    if (!g_app || !g_app->settings || g_app->settingsTab != tab) return 0;
+    const SettingsLayout layout = buildSettingsLayout(g_app->settings);
+    const int scroll = (tab == 0 || tab == kSettingsShortcutPage || tab == 2)
+        ? ui(g_app->settingsScrollOffset) : 0;
+    for (const SettingsCardLayout& card : layout.cards) {
+        for (const SettingsRowLayout& row : card.rows) {
+            for (std::size_t i = 0; i < row.controlIds.size(); ++i) {
+                if (!isSettingsToggle(row.controlIds[i])) continue;
+                const int left = ui(row.controlX[i]);
+                const int top = ui(row.top) + (ui(row.height) - ui(row.controlHeights[i])) / 2 - scroll;
+                const int right = left + ui(row.controlWidths[i]);
+                const int bottom = top + ui(row.controlHeights[i]);
+                if (x >= left && x < right && y >= top && y < bottom) return row.controlIds[i];
+            }
+        }
     }
     return 0;
+}
+
+int settingsThemeModeAtPoint(HWND hwnd, int x, int y) {
+    if (!hwnd || y < ui(14) || y >= ui(44)) return -1;
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const int left = client.right - ui(20) - ui(kSettingsThemeWidth);
+    const int segmentLeft = left + ui(3);
+    const int segmentRight = segmentLeft + ui(kSettingsThemeSegmentWidth) * 3;
+    if (x < segmentLeft || x >= segmentRight) return -1;
+    return (x - segmentLeft) / ui(kSettingsThemeSegmentWidth);
+}
+
+int settingsAccentAtPoint(HWND hwnd, int x, int y) {
+    if (!hwnd || y < ui(20) || y >= ui(38)) return -1;
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const int themeLeft = client.right - ui(20) - ui(kSettingsThemeWidth);
+    const int right = themeLeft - ui(14);
+    const int left = right - ui(14 * 4 + 6 * 3);
+    if (x < left - ui(2) || x >= right + ui(2)) return -1;
+    return std::clamp((x - left) / ui(20), 0, 3);
+}
+
+void invalidateSettingsTheme(HWND hwnd) {
+    if (!hwnd) return;
+    refreshSettingsBrushes();
+    refreshPopupBrush();
+    for (HWND child = GetWindow(hwnd, GW_CHILD); child;
+         child = GetWindow(child, GW_HWNDNEXT)) {
+        InvalidateRect(child, nullptr, FALSE);
+    }
+    InvalidateRect(hwnd, nullptr, FALSE);
+    if (g_app->popup) InvalidateRect(g_app->popup, nullptr, FALSE);
+}
+
+void setSettingsThemeMode(HWND hwnd, int mode) {
+    if (!hwnd || !g_app) return;
+    mode = std::clamp(mode, 0, 2);
+    const bool fromDark = g_app->settingsData.dark;
+    const bool toDark = mode == 2 || (mode == 0 && systemThemeIsDark());
+    g_app->settingsData.themeMode = mode;
+    g_app->settingsData.dark = toDark;
+    setSettingsToggleValue(GetDlgItem(hwnd, kSettingDark), toDark);
+    if (fromDark != toDark) animateSettingsTheme(hwnd, fromDark, toDark);
+    invalidateSettingsTheme(hwnd);
+    refreshSettingsFrame(hwnd);
+    saveSettings(g_app->settingsData);
+}
+
+void setSettingsAccent(HWND hwnd, int accent) {
+    if (!hwnd || !g_app) return;
+    g_app->settingsData.accent = std::clamp(accent, 0, 3);
+    invalidateSettingsTheme(hwnd);
+    saveSettings(g_app->settingsData);
 }
 
 bool settingsToggleValue(HWND hwnd) {
@@ -2276,6 +3270,285 @@ void setSettingsLanguageSelection(HWND hwnd, int selection) {
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, std::clamp(selection, 0, 2));
 }
 
+std::wstring normalizeDataDirectory(const std::wstring& value) {
+    if (value.empty()) return {};
+    std::wstring input = value;
+    const std::size_t first = input.find_first_not_of(L" \t\r\n");
+    const std::size_t last = input.find_last_not_of(L" \t\r\n");
+    if (first == std::wstring::npos) return {};
+    input = input.substr(first, last - first + 1);
+    wchar_t fullPath[MAX_PATH]{};
+    const DWORD length = GetFullPathNameW(input.c_str(), MAX_PATH, fullPath, nullptr);
+    if (length == 0 || length >= MAX_PATH) return {};
+    std::wstring normalized(fullPath, length);
+    while (normalized.size() > 3 &&
+           (normalized.back() == L'\\' || normalized.back() == L'/')) {
+        normalized.pop_back();
+    }
+    return normalized;
+}
+
+std::wstring dataDirectoryFromStorePath(const std::wstring& filePath) {
+    const std::size_t slash = filePath.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? std::wstring{} : filePath.substr(0, slash);
+}
+
+bool migrateDataDirectory(HWND hwnd, const std::wstring& requested, std::string& persisted) {
+    const std::wstring defaultDirectory = normalizeDataDirectory(clipLiteDataDirectory());
+    const std::wstring targetDirectory = normalizeDataDirectory(requested.empty()
+        ? defaultDirectory : requested);
+    if (targetDirectory.empty()) {
+        MessageBoxW(hwnd, tr(L"Choose a valid cache directory.", L"请选择有效的缓存目录。"),
+                    L"ClipLite", MB_OK | MB_ICONWARNING);
+        return false;
+    }
+    if (SHCreateDirectoryExW(nullptr, targetDirectory.c_str(), nullptr) != ERROR_SUCCESS &&
+        GetLastError() != ERROR_ALREADY_EXISTS) {
+        MessageBoxW(hwnd, tr(L"Unable to create the cache directory.", L"无法创建缓存目录。"),
+                    L"ClipLite", MB_OK | MB_ICONWARNING);
+        return false;
+    }
+
+    const std::wstring currentFile = g_app->store.path();
+    const std::wstring currentDirectory = dataDirectoryFromStorePath(currentFile);
+    if (_wcsicmp(currentDirectory.c_str(), targetDirectory.c_str()) == 0) {
+        persisted = _wcsicmp(defaultDirectory.c_str(), targetDirectory.c_str()) == 0
+            ? std::string{} : wideToUtf8(targetDirectory.c_str(), targetDirectory.size());
+        return true;
+    }
+
+    const std::wstring targetFile = targetDirectory + L"\\history.bin";
+    const bool currentExists = GetFileAttributesW(currentFile.c_str()) != INVALID_FILE_ATTRIBUTES;
+    const bool targetExists = GetFileAttributesW(targetFile.c_str()) != INVALID_FILE_ATTRIBUTES;
+    if (currentExists && targetExists) {
+        MessageBoxW(hwnd,
+                    tr(L"The target directory already contains history. Choose an empty directory.",
+                       L"目标目录已有历史数据，请选择空目录。"),
+                    L"ClipLite", MB_OK | MB_ICONWARNING);
+        return false;
+    }
+
+    bool copied = false;
+    if (currentExists) {
+        if (!CopyFileW(currentFile.c_str(), targetFile.c_str(), TRUE)) {
+            MessageBoxW(hwnd, tr(L"Unable to migrate clipboard history.", L"无法迁移剪贴板历史。"),
+                        L"ClipLite", MB_OK | MB_ICONWARNING);
+            return false;
+        }
+        copied = true;
+    }
+    if (!g_app->store.setDataDirectory(targetDirectory) || !g_app->store.open()) {
+        DeleteFileW(targetFile.c_str());
+        g_app->store.setDataDirectory(currentDirectory);
+        g_app->store.open();
+        MessageBoxW(hwnd, tr(L"Unable to open the new cache directory.", L"无法打开新的缓存目录。"),
+                    L"ClipLite", MB_OK | MB_ICONWARNING);
+        return false;
+    }
+    if (copied) DeleteFileW(currentFile.c_str());
+    persisted = _wcsicmp(defaultDirectory.c_str(), targetDirectory.c_str()) == 0
+        ? std::string{} : wideToUtf8(targetDirectory.c_str(), targetDirectory.size());
+    return true;
+}
+
+void browseDataDirectory(HWND hwnd) {
+    wchar_t displayName[MAX_PATH]{};
+    BROWSEINFOW browse{ };
+    browse.hwndOwner = hwnd;
+    browse.pszDisplayName = displayName;
+    browse.lpszTitle = tr(L"Choose a cache directory", L"选择缓存目录");
+    browse.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    PIDLIST_ABSOLUTE item = SHBrowseForFolderW(&browse);
+    if (!item) return;
+    wchar_t path[MAX_PATH]{};
+    if (SHGetPathFromIDListW(item, path)) {
+        SetWindowTextW(GetDlgItem(hwnd, kSettingDataDirectory), path);
+        scheduleSettingsSync(hwnd);
+    }
+    CoTaskMemFree(item);
+}
+
+bool syncSettingsFromControls(HWND hwnd) {
+    if (!hwnd) return false;
+    HWND win = GetDlgItem(hwnd, kSettingWinV);
+    HWND dark = GetDlgItem(hwnd, kSettingDark);
+    HWND language = GetDlgItem(hwnd, kSettingLanguage);
+    HWND pause = GetDlgItem(hwnd, kSettingPause);
+    HWND maxItems = GetDlgItem(hwnd, kSettingMaxItems);
+    HWND retentionDays = GetDlgItem(hwnd, kSettingRetentionDays);
+    HWND maxDiskMb = GetDlgItem(hwnd, kSettingMaxDiskMb);
+    HWND maxContentMb = GetDlgItem(hwnd, kSettingMaxContentMb);
+    HWND dataDirectory = GetDlgItem(hwnd, kSettingDataDirectory);
+    HWND ignoredApps = GetDlgItem(hwnd, kSettingIgnoredApps);
+    HWND sensitiveExpiry = GetDlgItem(hwnd, kSettingSensitiveExpiry);
+    HWND startup = GetDlgItem(hwnd, kSettingStartup);
+    HWND encrypt = GetDlgItem(hwnd, kSettingEncrypt);
+    HWND categoryMax[kStorageCategoryCount]{};
+    HWND categoryDisk[kStorageCategoryCount]{};
+    for (int i = 0; i < kStorageCategoryCount; ++i) {
+        categoryMax[i] = GetDlgItem(hwnd, kSettingCategoryMaxBase + i);
+        categoryDisk[i] = GetDlgItem(hwnd, kSettingCategoryDiskBase + i);
+    }
+    if (!win || !dark || !language || !pause || !maxItems || !retentionDays || !maxDiskMb ||
+        !maxContentMb || !dataDirectory || !ignoredApps || !sensitiveExpiry || !startup || !encrypt) {
+        return false;
+    }
+    for (int i = 0; i < kStorageCategoryCount; ++i) {
+        if (!categoryMax[i] || !categoryDisk[i]) return false;
+    }
+
+    Settings next = g_app->settingsData;
+    next.winV = settingsToggleValue(win);
+    next.dark = settingsToggleValue(dark);
+    next.pauseMonitoring = settingsToggleValue(pause);
+    next.startWithWindows = settingsToggleValue(startup);
+    next.language = settingsLanguageSelection(language);
+    next.language = next.language <= 0 ? -1 : next.language - 1;
+
+    wchar_t value[32]{};
+    GetWindowTextW(maxItems, value, 32);
+    next.maxItems = static_cast<int>(std::clamp(std::wcstol(value, nullptr, 10), 0L, 100000L));
+    GetWindowTextW(retentionDays, value, 32);
+    next.retentionDays = static_cast<int>(std::clamp(std::wcstol(value, nullptr, 10), 0L, 36500L));
+    GetWindowTextW(maxDiskMb, value, 32);
+    next.maxDiskMb = static_cast<int>(std::clamp(std::wcstol(value, nullptr, 10), 0L, 102400L));
+    GetWindowTextW(maxContentMb, value, 32);
+    next.maxContentMb = static_cast<int>(std::clamp(std::wcstol(value, nullptr, 10), 1L, 32L));
+    const int dataDirectoryLength = GetWindowTextLengthW(dataDirectory);
+    std::wstring dataDirectoryText(static_cast<std::size_t>(dataDirectoryLength) + 1, L'\0');
+    GetWindowTextW(dataDirectory, dataDirectoryText.data(), dataDirectoryLength + 1);
+    dataDirectoryText.resize(static_cast<std::size_t>(dataDirectoryLength));
+    const std::wstring normalizedDataDirectory = normalizeDataDirectory(dataDirectoryText);
+    if (!dataDirectoryText.empty() && normalizedDataDirectory.empty()) {
+        MessageBoxW(hwnd, tr(L"Choose a valid cache directory.", L"请选择有效的缓存目录。"),
+                    L"ClipLite", MB_OK | MB_ICONWARNING);
+        return false;
+    }
+    const std::wstring defaultDataDirectory = normalizeDataDirectory(clipLiteDataDirectory());
+    next.dataDirectory = normalizedDataDirectory.empty() ||
+        _wcsicmp(normalizedDataDirectory.c_str(), defaultDataDirectory.c_str()) == 0
+        ? std::string{} : wideToUtf8(normalizedDataDirectory.c_str(), normalizedDataDirectory.size());
+    GetWindowTextW(sensitiveExpiry, value, 32);
+    next.sensitiveExpiryHours = static_cast<int>(std::clamp(std::wcstol(value, nullptr, 10), 0L, 720L));
+    for (int i = 0; i < kStorageCategoryCount; ++i) {
+        GetWindowTextW(categoryMax[i], value, 32);
+        next.categoryLimits[static_cast<std::size_t>(i)].maxItems =
+            static_cast<int>(std::clamp(std::wcstol(value, nullptr, 10), 0L, 100000L));
+        GetWindowTextW(categoryDisk[i], value, 32);
+        next.categoryLimits[static_cast<std::size_t>(i)].maxDiskMb =
+            static_cast<int>(std::clamp(std::wcstol(value, nullptr, 10), 0L, 102400L));
+    }
+
+    const int ignoredLength = GetWindowTextLengthW(ignoredApps);
+    std::wstring ignoredText(static_cast<std::size_t>(ignoredLength) + 1, L'\0');
+    GetWindowTextW(ignoredApps, ignoredText.data(), ignoredLength + 1);
+    ignoredText.resize(static_cast<std::size_t>(ignoredLength));
+    next.ignoredApps.clear();
+    std::size_t lineStart = 0;
+    while (lineStart <= ignoredText.size()) {
+        const std::size_t lineEnd = ignoredText.find_first_of(L"\r\n", lineStart);
+        std::wstring app = ignoredText.substr(lineStart, lineEnd == std::wstring::npos
+            ? std::wstring::npos : lineEnd - lineStart);
+        const std::size_t first = app.find_first_not_of(L" \t");
+        const std::size_t last = app.find_last_not_of(L" \t");
+        if (first != std::wstring::npos) {
+            app = app.substr(first, last - first + 1);
+            const std::string appUtf8 = wideToUtf8(app.c_str(), app.size());
+            bool duplicate = false;
+            for (const std::string& existing : next.ignoredApps) {
+                if (_stricmp(existing.c_str(), appUtf8.c_str()) == 0) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!appUtf8.empty() && !duplicate) next.ignoredApps.push_back(appUtf8);
+        }
+        if (lineEnd == std::wstring::npos) break;
+        lineStart = ignoredText.find_first_not_of(L"\r\n", lineEnd);
+        if (lineStart == std::wstring::npos) break;
+    }
+
+    const bool previousEncryption = g_app->store.encryptionEnabled();
+    const bool desiredEncryption = settingsToggleValue(encrypt);
+    if (desiredEncryption != previousEncryption && !g_app->store.rekey(desiredEncryption)) {
+        setSettingsToggleValue(encrypt, previousEncryption);
+        MessageBoxW(hwnd, tr(L"Unable to change history encryption.", L"无法更改历史加密设置。"),
+                    L"ClipLite", MB_OK | MB_ICONWARNING);
+        return false;
+    }
+    next.encryptData = desiredEncryption;
+
+    const Settings& previous = g_app->settingsData;
+    const bool dataDirectoryChanged = next.dataDirectory != previous.dataDirectory;
+    if (dataDirectoryChanged) {
+        if (!migrateDataDirectory(hwnd, normalizedDataDirectory, next.dataDirectory)) {
+            if (desiredEncryption != previousEncryption) {
+                g_app->store.rekey(previousEncryption);
+                setSettingsToggleValue(encrypt, previousEncryption);
+            }
+            return false;
+        }
+    }
+    if (next.dark != previous.dark) next.themeMode = next.dark ? 2 : 1;
+    const bool previousDark = previous.dark;
+    const bool darkChanged = next.dark != previous.dark;
+    const bool themeModeChanged = next.themeMode != previous.themeMode;
+    const bool winVChanged = next.winV != previous.winV;
+    const bool startupChanged = next.startWithWindows != previous.startWithWindows;
+    const bool maxItemsChanged = next.maxItems != previous.maxItems;
+    const bool retentionChanged = next.retentionDays != previous.retentionDays;
+    const bool maxDiskChanged = next.maxDiskMb != previous.maxDiskMb;
+    const bool maxContentChanged = next.maxContentMb != previous.maxContentMb;
+    const bool categoryLimitsChanged = next.categoryLimits != previous.categoryLimits;
+    const bool changed = darkChanged || themeModeChanged || winVChanged || startupChanged || maxItemsChanged ||
+        retentionChanged || maxDiskChanged || maxContentChanged || categoryLimitsChanged ||
+        next.pauseMonitoring != previous.pauseMonitoring ||
+        next.encryptData != previous.encryptData || next.language != previous.language ||
+        dataDirectoryChanged ||
+        next.sensitiveExpiryHours != previous.sensitiveExpiryHours ||
+        next.ignoredApps != previous.ignoredApps;
+    if (!changed) return true;
+
+    g_app->settingsData = std::move(next);
+    if (darkChanged) {
+        animateSettingsTheme(hwnd, previousDark, g_app->settingsData.dark);
+        invalidateSettingsTheme(hwnd);
+    }
+    if (maxContentChanged) {
+        g_app->store.setMaxPayloadBytes(static_cast<std::uint32_t>(g_app->settingsData.maxContentMb) *
+                                        1024u * 1024u);
+    }
+    if (maxItemsChanged) {
+        g_app->store.setMaxItems(static_cast<std::size_t>(g_app->settingsData.maxItems));
+    }
+    if (startupChanged) updateStartupRegistration(g_app->settingsData.startWithWindows);
+    if (winVChanged) registerHotkeys();
+    if (maxItemsChanged || retentionChanged || maxDiskChanged) {
+        const std::uint64_t cutoff = g_app->settingsData.retentionDays > 0
+            ? nowUnix() - static_cast<std::uint64_t>(g_app->settingsData.retentionDays) * 86400ULL
+            : 0;
+        g_app->store.prune(g_app->settingsData.maxItems,
+                           static_cast<std::uint64_t>(g_app->settingsData.maxDiskMb) * 1024ULL * 1024ULL,
+                           cutoff);
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    if (categoryLimitsChanged) {
+        const ClipType types[] = {ClipType::Text, ClipType::Image, ClipType::Files};
+        for (int i = 0; i < kStorageCategoryCount; ++i) {
+            const CategoryLimit& limit = g_app->settingsData.categoryLimits[static_cast<std::size_t>(i)];
+            g_app->store.pruneCategory(types[i], static_cast<std::size_t>(limit.maxItems),
+                                       static_cast<std::uint64_t>(limit.maxDiskMb) * 1024ULL * 1024ULL);
+        }
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    saveSettings(g_app->settingsData);
+    return true;
+}
+
+void scheduleSettingsSync(HWND hwnd) {
+    if (hwnd) SetTimer(hwnd, kSettingsSyncTimer, kSettingsSyncDelayMs, nullptr);
+}
+
 LONGLONG settingsToggleClock() {
     LARGE_INTEGER value{};
     QueryPerformanceCounter(&value);
@@ -2289,6 +3562,72 @@ LONGLONG settingsToggleClockFrequency() {
         return value.QuadPart > 0 ? value.QuadPart : 1LL;
     }();
     return frequency;
+}
+
+float settingsThemeProgress() {
+    if (!g_app || !g_app->settingsThemeAnimating) return 1.0f;
+    return g_app->settingsThemeProgressValue;
+}
+
+bool advanceSettingsThemeAnimation() {
+    if (!g_app || !g_app->settingsThemeAnimating) return true;
+    const LONGLONG elapsed = settingsToggleClock() - g_app->settingsThemeStartTicks;
+    const float linear = std::min(1.0f, static_cast<float>(elapsed) * 1000.0f /
+        static_cast<float>(settingsToggleClockFrequency() * kSettingsThemeAnimationMs));
+    g_app->settingsThemeProgressValue = linear * linear * (3.0f - 2.0f * linear);
+    return linear >= 1.0f;
+}
+
+COLORREF settingsThemeColor(COLORREF light, COLORREF dark) {
+    if (!g_app || !g_app->settingsThemeAnimating) {
+        return g_app && g_app->settingsData.dark ? dark : light;
+    }
+    const float progress = settingsThemeProgress();
+    const COLORREF from = g_app->settingsThemeFromDark ? dark : light;
+    const COLORREF to = g_app->settingsThemeToDark ? dark : light;
+    const auto blend = [progress](BYTE first, BYTE second) {
+        return static_cast<BYTE>(first + (second - first) * progress + 0.5f);
+    };
+    return RGB(blend(GetRValue(from), GetRValue(to)),
+               blend(GetGValue(from), GetGValue(to)),
+               blend(GetBValue(from), GetBValue(to)));
+}
+
+COLORREF settingsAccentColor() {
+    const bool dark = g_app && g_app->settingsData.dark;
+    const int accent = g_app ? std::clamp(g_app->settingsData.accent, 0, 3) : 0;
+    const COLORREF light[] = {
+        RGB(37, 99, 235), RGB(124, 58, 237), RGB(39, 124, 97), RGB(217, 119, 6)
+    };
+    const COLORREF darkColors[] = {
+        RGB(59, 130, 246), RGB(168, 85, 247), RGB(64, 157, 156), RGB(245, 158, 11)
+    };
+    return dark ? darkColors[accent] : light[accent];
+}
+
+COLORREF settingsAccentSoftColor() {
+    const bool dark = g_app && g_app->settingsData.dark;
+    const int accent = g_app ? std::clamp(g_app->settingsData.accent, 0, 3) : 0;
+    const COLORREF light[] = {
+        RGB(232, 240, 254), RGB(243, 237, 254), RGB(224, 242, 239), RGB(254, 243, 224)
+    };
+    const COLORREF darkColors[] = {
+        RGB(39, 55, 82), RGB(61, 48, 82), RGB(57, 69, 67), RGB(79, 63, 38)
+    };
+    return dark ? darkColors[accent] : light[accent];
+}
+
+void animateSettingsTheme(HWND hwnd, bool fromDark, bool toDark) {
+    if (!hwnd || fromDark == toDark) {
+        if (g_app) g_app->settingsThemeAnimating = false;
+        return;
+    }
+    g_app->settingsThemeAnimating = true;
+    g_app->settingsThemeFromDark = fromDark;
+    g_app->settingsThemeToDark = toDark;
+    g_app->settingsThemeProgressValue = 0.0f;
+    g_app->settingsThemeStartTicks = settingsToggleClock();
+    SetTimer(hwnd, kSettingsThemeTimer, 16, nullptr);
 }
 
 bool settingsToggleAnimationFinished() {
@@ -2386,11 +3725,10 @@ void toggleLanguageDropdown(HWND settings) {
         SetTimer(settings, kSettingsDropdownTimer, 8, nullptr);
         return;
     }
-    animateLanguageDropdown(settings, languageDropdownProgress() > 0.5f ? 0.0f : 1.0f);
+    animateLanguageDropdown(settings, g_app->languageDropdownTo > 0.5f ? 0.0f : 1.0f);
 }
 
 void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
-    const bool dark = g_app->settingsData.dark;
     const bool highContrast = highContrastEnabled();
     const bool hovered = g_app->hoveredSettingsControl == GetDlgCtrlID(item.hwndItem);
     const bool checked = settingsToggleValue(item.hwndItem);
@@ -2398,8 +3736,8 @@ void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
         auto makeColor = [](COLORREF value) {
             return Gdiplus::Color(255, GetRValue(value), GetGValue(value), GetBValue(value));
         };
-        auto addRoundedRect = [](Gdiplus::GraphicsPath& path, const Gdiplus::RectF& rect,
-                                 float radius) {
+        auto addCapsule = [](Gdiplus::GraphicsPath& path, const Gdiplus::RectF& rect) {
+            const float radius = std::min(rect.Width, rect.Height) / 2.0f;
             const float diameter = radius * 2.0f;
             path.AddArc(rect.X, rect.Y, diameter, diameter, 180.0f, 90.0f);
             path.AddArc(rect.X + rect.Width - diameter, rect.Y, diameter, diameter,
@@ -2410,25 +3748,28 @@ void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
                         90.0f, 90.0f);
             path.CloseFigure();
         };
-        const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW) :
-            (dark ? RGB(47, 53, 60) : RGB(255, 255, 255));
-        const COLORREF accent = highContrast ? GetSysColor(COLOR_HIGHLIGHT) :
-            (dark ? RGB(64, 157, 156) : RGB(39, 124, 97));
+        const COLORREF surface = highContrast ? GetSysColor(COLOR_WINDOW) :
+            settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
+        const COLORREF knobSurface = highContrast ? GetSysColor(COLOR_WINDOW) :
+            settingsThemeColor(RGB(255, 255, 255), RGB(47, 53, 60));
+        const COLORREF accent = highContrast ? GetSysColor(COLOR_HIGHLIGHT) : settingsAccentColor();
         const COLORREF track = checked
-            ? (hovered ? (dark ? RGB(82, 180, 177) : RGB(51, 145, 115)) : accent)
-            : (hovered ? (dark ? RGB(95, 105, 116) : RGB(174, 191, 187))
-                       : (dark ? RGB(75, 84, 95) : RGB(197, 208, 208)));
+            ? (hovered ? settingsThemeColor(RGB(51, 145, 115), RGB(82, 180, 177)) : accent)
+            : (hovered ? settingsThemeColor(RGB(174, 191, 187), RGB(95, 105, 116))
+                       : settingsThemeColor(RGB(197, 208, 208), RGB(75, 84, 95)));
         const COLORREF trackBorder = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-            (checked ? track : (dark ? RGB(112, 123, 135) : RGB(155, 171, 167)));
+            (checked ? track : settingsThemeColor(RGB(155, 171, 167), RGB(112, 123, 135)));
         const int centerY = (item.rcItem.top + item.rcItem.bottom) / 2;
-        const float trackWidth = static_cast<float>(ui(36));
-        const float trackHeight = static_cast<float>(ui(20));
-        const float trackRight = static_cast<float>(item.rcItem.right - ui(3));
+        const float trackWidth = static_cast<float>(ui(kSettingsTrackWidth));
+        const float trackHeight = static_cast<float>(ui(kSettingsTrackHeight));
+        const float trackRight = static_cast<float>(item.rcItem.right);
         const float trackLeft = std::max(static_cast<float>(item.rcItem.left),
                                          trackRight - trackWidth);
-        const Gdiplus::RectF trackRect(trackLeft,
-                                       static_cast<float>(centerY) - trackHeight / 2.0f,
-                                       trackWidth, trackHeight);
+        const float trackInset = 0.5f;
+        const Gdiplus::RectF trackRect(trackLeft + trackInset,
+                                       static_cast<float>(centerY) - trackHeight / 2.0f + trackInset,
+                                       trackWidth - trackInset * 2.0f,
+                                       trackHeight - trackInset * 2.0f);
         const float knobSize = static_cast<float>(ui(16));
         const float knobMargin = static_cast<float>(ui(2));
         const float position = settingsTogglePosition(item.hwndItem);
@@ -2452,18 +3793,25 @@ void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
         graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
         graphics.TranslateTransform(static_cast<Gdiplus::REAL>(-item.rcItem.left),
                                     static_cast<Gdiplus::REAL>(-item.rcItem.top));
-        Gdiplus::SolidBrush backgroundBrush(makeColor(background));
-        graphics.FillRectangle(&backgroundBrush, static_cast<INT>(item.rcItem.left),
+        Gdiplus::SolidBrush surfaceBrush(makeColor(surface));
+        graphics.FillRectangle(&surfaceBrush, static_cast<INT>(item.rcItem.left),
                                static_cast<INT>(item.rcItem.top), bufferWidth, bufferHeight);
+        Gdiplus::GraphicsPath surfacePath;
+        const Gdiplus::RectF surfaceRect(static_cast<float>(item.rcItem.left),
+                                          static_cast<float>(item.rcItem.top),
+                                          static_cast<float>(bufferWidth),
+                                          static_cast<float>(bufferHeight));
+        addCapsule(surfacePath, surfaceRect);
+        graphics.FillPath(&surfaceBrush, &surfacePath);
         Gdiplus::SolidBrush trackBrush(makeColor(track));
         Gdiplus::Pen trackPen(makeColor(trackBorder), 1.0f);
         Gdiplus::GraphicsPath trackPath;
-        addRoundedRect(trackPath, trackRect, trackRect.Height / 2.0f);
+        addCapsule(trackPath, trackRect);
         graphics.FillPath(&trackBrush, &trackPath);
         graphics.DrawPath(&trackPen, &trackPath);
-        Gdiplus::SolidBrush knobBrush(makeColor(highContrast ? GetSysColor(COLOR_WINDOW) : RGB(255, 255, 255)));
-        Gdiplus::Pen knobPen(makeColor(highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-            (dark ? RGB(214, 220, 226) : RGB(224, 231, 228))), 1.0f);
+        Gdiplus::SolidBrush knobBrush(makeColor(knobSurface));
+         Gdiplus::Pen knobPen(makeColor(highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
+             settingsThemeColor(RGB(224, 231, 228), RGB(214, 220, 226))), 1.0f);
         graphics.FillEllipse(&knobBrush, knobRect);
         graphics.DrawEllipse(&knobPen, knobRect);
         if (bufferBitmap) {
@@ -2475,33 +3823,41 @@ void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
         }
         return;
     }
-    const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW) :
-        (dark ? RGB(47, 53, 60) : RGB(255, 255, 255));
-    const COLORREF accent = highContrast ? GetSysColor(COLOR_HIGHLIGHT) :
-        (dark ? RGB(64, 157, 156) : RGB(39, 124, 97));
-    HBRUSH backgroundBrush = CreateSolidBrush(background);
-    FillRect(item.hDC, &item.rcItem, backgroundBrush);
-    DeleteObject(backgroundBrush);
+    const COLORREF surface = highContrast ? GetSysColor(COLOR_WINDOW) :
+        settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
+    const COLORREF knobSurface = highContrast ? GetSysColor(COLOR_WINDOW) :
+        settingsThemeColor(RGB(255, 255, 255), RGB(47, 53, 60));
+    const COLORREF accent = highContrast ? GetSysColor(COLOR_HIGHLIGHT) : settingsAccentColor();
+    HBRUSH surfaceBrush = CreateSolidBrush(surface);
+    FillRect(item.hDC, &item.rcItem, surfaceBrush);
+    HGDIOBJ oldSurfaceBrush = SelectObject(item.hDC, surfaceBrush);
+    HGDIOBJ oldSurfacePen = SelectObject(item.hDC, GetStockObject(NULL_PEN));
+    RoundRect(item.hDC, item.rcItem.left, item.rcItem.top, item.rcItem.right, item.rcItem.bottom,
+              item.rcItem.bottom - item.rcItem.top, item.rcItem.bottom - item.rcItem.top);
+    SelectObject(item.hDC, oldSurfacePen);
+    SelectObject(item.hDC, oldSurfaceBrush);
+    DeleteObject(surfaceBrush);
     const COLORREF track = checked
-        ? (hovered ? (dark ? RGB(82, 180, 177) : RGB(51, 145, 115)) : accent)
-        : (hovered ? (dark ? RGB(95, 105, 116) : RGB(174, 191, 187))
-                   : (dark ? RGB(75, 84, 95) : RGB(197, 208, 208)));
+        ? (hovered ? settingsThemeColor(RGB(51, 145, 115), RGB(82, 180, 177)) : accent)
+        : (hovered ? settingsThemeColor(RGB(174, 191, 187), RGB(95, 105, 116))
+                   : settingsThemeColor(RGB(197, 208, 208), RGB(75, 84, 95)));
     const COLORREF trackBorder = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        (checked ? track : (dark ? RGB(112, 123, 135) : RGB(155, 171, 167)));
+        (checked ? track : settingsThemeColor(RGB(155, 171, 167), RGB(112, 123, 135)));
     RECT bounds = item.rcItem;
     const int centerY = (bounds.top + bounds.bottom) / 2;
-    const LONG trackWidth = static_cast<LONG>(ui(36));
-    const int trackHeight = ui(20);
-    const LONG trackRight = bounds.right - ui(3);
+    const LONG trackWidth = static_cast<LONG>(ui(kSettingsTrackWidth));
+    const int trackHeight = ui(kSettingsTrackHeight);
+    const LONG trackRight = bounds.right;
     const int trackLeft = std::max(bounds.left, trackRight - trackWidth);
-    RECT trackRect{trackLeft, centerY - trackHeight / 2,
-                   trackRight, centerY + (trackHeight + 1) / 2};
+    const int trackInset = 1;
+    RECT trackRect{trackLeft + trackInset, centerY - trackHeight / 2 + trackInset,
+                   trackRight - trackInset, centerY + (trackHeight + 1) / 2 - trackInset};
     HBRUSH trackBrush = CreateSolidBrush(track);
     HPEN trackPen = CreatePen(PS_SOLID, ui(1), trackBorder);
     HGDIOBJ oldBrush = SelectObject(item.hDC, trackBrush);
     HGDIOBJ oldPen = SelectObject(item.hDC, trackPen);
     RoundRect(item.hDC, trackRect.left, trackRect.top, trackRect.right, trackRect.bottom,
-              trackHeight, trackHeight);
+              trackHeight - trackInset * 2, trackHeight - trackInset * 2);
     SelectObject(item.hDC, oldPen);
     SelectObject(item.hDC, oldBrush);
     DeleteObject(trackPen);
@@ -2514,9 +3870,9 @@ void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
     const int knobLeft = trackRect.left + knobMargin + static_cast<int>(knobTravel * position);
     RECT knobRect{knobLeft, centerY - knobSize / 2,
                   knobLeft + knobSize, centerY + (knobSize + 1) / 2};
-    HBRUSH knobBrush = CreateSolidBrush(highContrast ? GetSysColor(COLOR_WINDOW) : RGB(255, 255, 255));
+    HBRUSH knobBrush = CreateSolidBrush(knobSurface);
     HPEN knobPen = CreatePen(PS_SOLID, ui(1), highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        (dark ? RGB(214, 220, 226) : RGB(224, 231, 228)));
+        settingsThemeColor(RGB(224, 231, 228), RGB(214, 220, 226)));
     HGDIOBJ previousBrush = SelectObject(item.hDC, knobBrush);
     HGDIOBJ previousPen = SelectObject(item.hDC, knobPen);
     Ellipse(item.hDC, knobRect.left, knobRect.top, knobRect.right, knobRect.bottom);
@@ -2527,49 +3883,138 @@ void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
 }
 
 bool isSettingsActionButton(int id) {
-    return id == kSettingClear || id == kSettingSave ||
-           (id >= kSettingClearText && id <= kSettingClearOther);
+    return id == kSettingClear || id == kSettingClearText ||
+           id == kSettingClearImage || id == kSettingClearFiles ||
+           id == kSettingBrowseDataDirectory;
+}
+
+bool isSettingsClearAction(int id) {
+    return id == kSettingClear || id == kSettingClearText ||
+           id == kSettingClearImage || id == kSettingClearFiles;
+}
+
+const wchar_t* settingsClearActionLabel(int id) {
+    switch (id) {
+    case kSettingClear: return tr(L"all history", L"全部历史");
+    case kSettingClearText: return tr(L"text", L"文本");
+    case kSettingClearImage: return tr(L"images", L"图片");
+    case kSettingClearFiles: return tr(L"files", L"文件");
+    default: return tr(L"history", L"历史");
+    }
+}
+
+std::size_t settingsClearActionCount(int id) {
+    if (id == kSettingClear) return g_app->store.activeCount();
+    const ClipType type = id == kSettingClearText ? ClipType::Text :
+        id == kSettingClearImage ? ClipType::Image :
+        id == kSettingClearFiles ? ClipType::Files :
+        ClipType::Html;
+    return g_app->store.countType(type);
+}
+
+bool confirmSettingsClear(HWND hwnd, int id, std::size_t count) {
+    if (count == 0) return true;
+    wchar_t message[256]{};
+    if (id == kSettingClear) {
+        swprintf_s(message, tr(L"This will permanently remove %zu clipboard records. Continue?",
+                               L"此操作将永久删除 %zu 条剪贴板记录，是否继续？"), count);
+    } else {
+        swprintf_s(message, tr(L"This will permanently remove %zu %ls records. Continue?",
+                               L"此操作将永久删除 %zu 条%ls记录，是否继续？"),
+                    count, settingsClearActionLabel(id));
+    }
+    return MessageBoxW(hwnd, message, tr(L"Confirm clear", L"确认清理"),
+                       MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
+}
+
+bool clearSettingsAction(int id) {
+    if (id == kSettingClear) return g_app->store.clear();
+    const ClipType type = id == kSettingClearText ? ClipType::Text :
+        id == kSettingClearImage ? ClipType::Image :
+        id == kSettingClearFiles ? ClipType::Files :
+        ClipType::Html;
+    return g_app->store.clearType(type);
+}
+
+void setSettingsActionFeedback(HWND hwnd, const std::wstring& message, bool success) {
+    g_app->settingsActionFeedback = message;
+    g_app->settingsActionFeedbackSuccess = success;
+    SetTimer(hwnd, kSettingsActionFeedbackTimer, kSettingsActionFeedbackMs, nullptr);
+    InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 void drawSettingsButton(const DRAWITEMSTRUCT& item) {
-    const bool dark = g_app->settingsData.dark;
     const int id = GetDlgCtrlID(item.hwndItem);
+    const bool browse = id == kSettingBrowseDataDirectory;
     const bool hovered = g_app->hoveredSettingsControl == id;
     const bool pressed = (item.itemState & ODS_SELECTED) != 0;
-    const bool primary = id == kSettingSave;
-    const COLORREF accent = dark ? RGB(64, 157, 156) : RGB(39, 124, 97);
-    const COLORREF background = primary
-        ? (pressed ? RGB(29, 101, 79) : hovered ? RGB(51, 145, 115) : accent)
-        : (hovered ? (dark ? RGB(57, 69, 77) : RGB(231, 242, 239))
-                   : (dark ? RGB(43, 49, 57) : RGB(247, 250, 249)));
-    const COLORREF border = primary ? background : (dark ? RGB(82, 92, 102) : RGB(205, 219, 215));
-    const COLORREF text = primary ? RGB(255, 255, 255) : (dark ? RGB(238, 241, 245) : RGB(39, 55, 52));
-    HBRUSH brush = CreateSolidBrush(background);
-    HPEN pen = CreatePen(PS_SOLID, ui(1), border);
-    HGDIOBJ oldBrush = SelectObject(item.hDC, brush);
-    HGDIOBJ oldPen = SelectObject(item.hDC, pen);
-    RoundRect(item.hDC, item.rcItem.left, item.rcItem.top, item.rcItem.right, item.rcItem.bottom,
-              ui(5), ui(5));
-    SelectObject(item.hDC, oldPen);
-    SelectObject(item.hDC, oldBrush);
-    DeleteObject(pen);
-    DeleteObject(brush);
+    const bool focused = (item.itemState & ODS_FOCUS) != 0 || GetFocus() == item.hwndItem;
+    const bool highContrast = highContrastEnabled();
+    const COLORREF background = browse
+        ? (highContrast ? GetSysColor(COLOR_BTNFACE) :
+           settingsThemeColor(pressed ? RGB(226, 232, 240) :
+                              (hovered ? RGB(239, 246, 255) : RGB(248, 250, 252)),
+                              pressed ? RGB(55, 65, 81) : RGB(30, 41, 59)))
+        : (highContrast ? GetSysColor(pressed ? COLOR_HIGHLIGHT : COLOR_BTNFACE) :
+           settingsThemeColor(pressed ? RGB(254, 226, 226) :
+                              (hovered ? RGB(254, 242, 242) : RGB(255, 247, 247)),
+                              pressed ? RGB(93, 42, 52) :
+                              (hovered ? RGB(67, 35, 42) : RGB(52, 42, 48))));
+    const COLORREF border = browse
+        ? (highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
+           (hovered || pressed ? settingsAccentColor() :
+                                 settingsThemeColor(RGB(200, 211, 222), RGB(74, 88, 104))))
+        : (highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
+           settingsThemeColor(hovered || pressed ? RGB(239, 68, 68) : RGB(252, 165, 165),
+                              hovered || pressed ? RGB(248, 113, 113) : RGB(139, 70, 80)));
+    const COLORREF text = browse
+        ? (highContrast ? GetSysColor(COLOR_WINDOWTEXT) : settingsAccentColor())
+        : (highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
+           settingsThemeColor(pressed ? RGB(153, 27, 27) : RGB(185, 28, 28),
+                              RGB(248, 160, 160)));
+    const int offset = pressed ? ui(1) : 0;
+    RECT buttonRect = item.rcItem;
+    OffsetRect(&buttonRect, 0, offset);
+    drawGdiRoundedSurface(item.hDC, buttonRect, background, border, 7);
     wchar_t label[256]{};
     GetWindowTextW(item.hwndItem, label, static_cast<int>(sizeof(label) / sizeof(label[0])));
     SetBkMode(item.hDC, TRANSPARENT);
     SetTextColor(item.hDC, text);
+    DrawTextW(item.hDC, label, -1, &buttonRect,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if (focused && !highContrast) {
+        RECT focusRect = buttonRect;
+        InflateRect(&focusRect, -ui(3), -ui(3));
+        DrawFocusRect(item.hDC, &focusRect);
+    }
+}
+
+void drawSettingsShortcut(const DRAWITEMSTRUCT& item) {
+    const bool capturing = g_app->shortcutCaptureControl == item.hwndItem;
+    const bool focused = (item.itemState & ODS_FOCUS) != 0 || GetFocus() == item.hwndItem;
+    const bool hovered = g_app->hoveredSettingsControl == GetDlgCtrlID(item.hwndItem);
+    const COLORREF background = settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
+    const COLORREF border = highContrastEnabled() ? GetSysColor(COLOR_WINDOWTEXT) :
+        (capturing || focused ? settingsAccentColor() :
+         hovered ? settingsAccentColor() :
+                   settingsThemeColor(RGB(200, 211, 222), RGB(74, 88, 104)));
+    drawGdiRoundedSurface(item.hDC, item.rcItem, background, border, 6);
+    wchar_t label[128]{};
+    GetWindowTextW(item.hwndItem, label, static_cast<int>(sizeof(label) / sizeof(label[0])));
+    SetBkMode(item.hDC, TRANSPARENT);
+    SetTextColor(item.hDC, capturing ? settingsAccentColor() :
+                                    settingsThemeColor(settingsAccentColor(), RGB(238, 241, 245)));
     DrawTextW(item.hDC, label, -1, const_cast<RECT*>(&item.rcItem),
               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 }
 
 void drawSettingsLanguage(const DRAWITEMSTRUCT& item) {
-    const bool dark = g_app->settingsData.dark;
-    const COLORREF input = dark ? RGB(43, 47, 54) : RGB(255, 255, 255);
-    const COLORREF selected = dark ? RGB(48, 84, 86) : RGB(224, 243, 241);
-    const COLORREF text = dark ? RGB(238, 241, 245) : RGB(30, 36, 46);
+    const COLORREF input = settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
+    const COLORREF selected = settingsAccentSoftColor();
+    const COLORREF text = settingsThemeColor(RGB(30, 36, 46), RGB(238, 241, 245));
     const bool hovered = g_app->hoveredSettingsControl == GetDlgCtrlID(item.hwndItem);
     HBRUSH brush = CreateSolidBrush((item.itemState & ODS_SELECTED) ? selected :
-                                    (hovered ? (dark ? RGB(57, 69, 77) : RGB(238, 248, 245)) : input));
+                                    (hovered ? settingsAccentSoftColor() : input));
     FillRect(item.hDC, &item.rcItem, brush);
     DeleteObject(brush);
     wchar_t value[64]{};
@@ -2600,16 +4045,14 @@ void paintLanguageDropdown(HWND hwnd, HDC dc) {
     HBITMAP bufferBitmap = bufferDc ? CreateCompatibleBitmap(dc, contentWidth, renderHeight) : nullptr;
     HGDIOBJ oldBitmap = bufferBitmap ? SelectObject(bufferDc, bufferBitmap) : nullptr;
     HDC renderDc = bufferBitmap ? bufferDc : dc;
-    const bool dark = g_app->settingsData.dark;
     const bool highContrast = highContrastEnabled();
     const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW) :
-        (dark ? RGB(38, 43, 49) : RGB(255, 255, 255));
+        settingsThemeColor(RGB(255, 255, 255), RGB(38, 43, 49));
     const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        (dark ? RGB(82, 92, 102) : RGB(205, 219, 215));
+        settingsThemeColor(RGB(205, 219, 215), RGB(82, 92, 102));
     const COLORREF text = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        (dark ? RGB(238, 241, 245) : RGB(30, 36, 46));
-    const COLORREF accent = highContrast ? GetSysColor(COLOR_HIGHLIGHT) :
-        (dark ? RGB(64, 157, 156) : RGB(39, 124, 97));
+        settingsThemeColor(RGB(30, 36, 46), RGB(238, 241, 245));
+    const COLORREF accent = highContrast ? GetSysColor(COLOR_HIGHLIGHT) : settingsAccentColor();
 
     if (g_app->gdiplusToken != 0) {
         auto makeColor = [](COLORREF value, BYTE alpha = 255) {
@@ -2705,19 +4148,18 @@ void paintSettingsLanguageCombo(HWND hwnd, HDC dc) {
     GetClientRect(hwnd, &client);
     const int width = client.right - client.left;
     const int height = client.bottom - client.top;
-    const bool dark = g_app->settingsData.dark;
     const bool highContrast = highContrastEnabled();
     const bool active = g_app->languageDropdown != nullptr;
     const bool hovered = g_app->hoveredSettingsControl == kSettingLanguage;
     const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW) :
-        (dark ? RGB(43, 47, 54) : RGB(255, 255, 255));
+        settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
     const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        ((active || hovered) ? (dark ? RGB(82, 180, 177) : RGB(39, 124, 97))
-                             : (dark ? RGB(82, 92, 102) : RGB(205, 219, 215)));
+        ((active || hovered) ? settingsAccentColor()
+                             : settingsThemeColor(RGB(205, 219, 215), RGB(82, 92, 102)));
     const COLORREF text = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        (dark ? RGB(238, 241, 245) : RGB(30, 36, 46));
+        settingsThemeColor(RGB(30, 36, 46), RGB(238, 241, 245));
     const COLORREF arrow = highContrast ? GetSysColor(COLOR_HIGHLIGHT) :
-        (dark ? RGB(190, 199, 207) : RGB(75, 85, 82));
+        settingsThemeColor(RGB(75, 85, 82), RGB(190, 199, 207));
     HDC bufferDc = CreateCompatibleDC(dc);
     HBITMAP bufferBitmap = bufferDc ? CreateCompatibleBitmap(dc, width, height) : nullptr;
     HGDIOBJ oldBitmap = bufferBitmap ? SelectObject(bufferDc, bufferBitmap) : nullptr;
@@ -2801,17 +4243,18 @@ void paintSettingsEditFrame(HWND hwnd) {
     const bool hovered = g_app->hoveredSettingsControl == GetDlgCtrlID(hwnd);
     const bool highContrast = highContrastEnabled();
     const COLORREF surface = highContrast ? GetSysColor(COLOR_WINDOW) :
-        (g_app->settingsData.dark ? RGB(34, 39, 46) : RGB(250, 253, 252));
+        settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
     const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        (focused ? (g_app->settingsData.dark ? RGB(82, 180, 177) : RGB(39, 124, 97)) :
-         hovered ? (g_app->settingsData.dark ? RGB(119, 132, 145) : RGB(120, 145, 137)) :
-                   (g_app->settingsData.dark ? RGB(82, 92, 102) : RGB(205, 219, 215)));
+        (focused ? settingsAccentColor() :
+         hovered ? settingsThemeColor(RGB(120, 145, 137), RGB(119, 132, 145)) :
+                   settingsThemeColor(RGB(205, 219, 215), RGB(82, 92, 102)));
     if (g_app->gdiplusToken != 0) {
         auto makeColor = [](COLORREF value) {
             return Gdiplus::Color(255, GetRValue(value), GetGValue(value), GetBValue(value));
         };
         Gdiplus::Graphics graphics(dc);
         graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
         auto addRoundedPath = [](Gdiplus::GraphicsPath& path,
                                  const Gdiplus::RectF& box, float radius) {
             const float diameter = radius * 2.0f;
@@ -2824,31 +4267,74 @@ void paintSettingsEditFrame(HWND hwnd) {
                         90.0f, 90.0f);
             path.CloseFigure();
         };
-        const float radius = static_cast<float>(ui(4));
+        const float radius = static_cast<float>(ui(6));
         const Gdiplus::RectF box(1.0f, 1.0f, static_cast<float>(rect.right - 2),
                                  static_cast<float>(rect.bottom - 2));
         Gdiplus::GraphicsPath path;
         addRoundedPath(path, box, radius);
         Gdiplus::Pen clearPen(makeColor(surface), 5.0f);
         graphics.DrawPath(&clearPen, &path);
-        Gdiplus::Pen pen(makeColor(border), 1.0f);
-        graphics.DrawPath(&pen, &path);
+        if (focused && !highContrast) {
+            const COLORREF shadowColor = settingsAccentColor();
+            Gdiplus::Color shadow(72, GetRValue(shadowColor), GetGValue(shadowColor),
+                                  GetBValue(shadowColor));
+            Gdiplus::Pen shadowPen(shadow, 2.0f);
+            graphics.DrawPath(&shadowPen, &path);
+        }
+        graphics.Flush(Gdiplus::FlushIntentionSync);
+        HPEN pen = CreatePen(PS_SOLID, 1, border);
+        HGDIOBJ oldPen = SelectObject(dc, pen);
+        HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        RoundRect(dc, 0, 0, rect.right, rect.bottom, ui(12), ui(12));
+        SelectObject(dc, oldBrush);
+        SelectObject(dc, oldPen);
+        DeleteObject(pen);
     } else {
         HPEN clearPen = CreatePen(PS_SOLID, 5, surface);
         HGDIOBJ previousPen = SelectObject(dc, clearPen);
         HGDIOBJ previousBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-        RoundRect(dc, 0, 0, rect.right, rect.bottom, ui(4), ui(4));
+        RoundRect(dc, 0, 0, rect.right, rect.bottom, ui(12), ui(12));
         SelectObject(dc, previousBrush);
         SelectObject(dc, previousPen);
         DeleteObject(clearPen);
+        if (focused && !highContrast) {
+            HPEN shadowPen = CreatePen(PS_SOLID, 2, settingsAccentColor());
+            HGDIOBJ oldShadowPen = SelectObject(dc, shadowPen);
+            HGDIOBJ oldShadowBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+            RoundRect(dc, 0, 0, rect.right, rect.bottom, ui(12), ui(12));
+            SelectObject(dc, oldShadowBrush);
+            SelectObject(dc, oldShadowPen);
+            DeleteObject(shadowPen);
+        }
         HPEN pen = CreatePen(PS_SOLID, 1, border);
         HGDIOBJ oldPen = SelectObject(dc, pen);
         HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-        RoundRect(dc, 0, 0, rect.right, rect.bottom, ui(4), ui(4));
+        RoundRect(dc, 0, 0, rect.right, rect.bottom, ui(12), ui(12));
         SelectObject(dc, oldBrush);
         SelectObject(dc, oldPen);
         DeleteObject(pen);
     }
+    ReleaseDC(hwnd, dc);
+}
+
+void paintSettingsEditPlaceholder(HWND hwnd) {
+    if (!hwnd || GetDlgCtrlID(hwnd) != kSettingIgnoredApps ||
+        GetWindowTextLengthW(hwnd) != 0 || GetFocus() == hwnd) {
+        return;
+    }
+    HDC dc = GetDC(hwnd);
+    if (!dc) return;
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    client.left = ui(10);
+    client.top = ui(8);
+    client.right -= ui(10);
+    client.bottom -= ui(8);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, highContrastEnabled() ? GetSysColor(COLOR_GRAYTEXT) :
+        settingsThemeColor(RGB(150, 160, 157), RGB(145, 155, 166)));
+    DrawTextW(dc, tr(L"One application per line", L"每行一个应用名称"), -1, &client,
+              DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
     ReleaseDC(hwnd, dc);
 }
 
@@ -2867,27 +4353,35 @@ void paintSettingsEdit(HWND hwnd, HDC dc, WNDPROC oldProc) {
         return;
     }
     HGDIOBJ oldBitmap = SelectObject(bufferDc, bufferBitmap);
-    const bool dark = g_app->settingsData.dark;
     const bool highContrast = highContrastEnabled();
     const int id = GetDlgCtrlID(hwnd);
     const bool focused = GetFocus() == hwnd;
     const bool hovered = g_app->hoveredSettingsControl == id;
     const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW) :
-        (dark ? RGB(43, 47, 54) : RGB(255, 255, 255));
+        settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
     const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        (focused ? (dark ? RGB(82, 180, 177) : RGB(39, 124, 97))
-                 : hovered ? (dark ? RGB(119, 132, 145) : RGB(143, 177, 167))
-                           : (dark ? RGB(82, 92, 102) : RGB(205, 219, 215)));
+        (focused ? settingsAccentColor()
+                 : hovered ? settingsAccentColor()
+                           : settingsThemeColor(RGB(200, 211, 222), RGB(74, 88, 104)));
     HBRUSH backgroundBrush = CreateSolidBrush(background);
     FillRect(bufferDc, &client, backgroundBrush);
     DeleteObject(backgroundBrush);
 
-    HRGN clip = CreateRoundRectRgn(0, 0, width + 1, height + 1, ui(8), ui(8));
+    HRGN clip = CreateRoundRectRgn(0, 0, width + 1, height + 1, ui(12), ui(12));
     SelectClipRgn(bufferDc, clip);
     CallWindowProcW(oldProc, hwnd, WM_PRINTCLIENT,
                     reinterpret_cast<WPARAM>(bufferDc), PRF_CLIENT);
     SelectClipRgn(bufferDc, nullptr);
     DeleteObject(clip);
+
+    if (id == kSettingIgnoredApps && GetWindowTextLengthW(hwnd) == 0 && !focused) {
+        RECT placeholder{ui(10), ui(8), width - ui(10), height - ui(8)};
+        SetBkMode(bufferDc, TRANSPARENT);
+        SetTextColor(bufferDc, highContrast ? GetSysColor(COLOR_GRAYTEXT) :
+            settingsThemeColor(RGB(150, 160, 157), RGB(145, 155, 166)));
+        DrawTextW(bufferDc, tr(L"One application per line", L"每行一个应用名称"), -1,
+                  &placeholder, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
 
     if (g_app->gdiplusToken != 0) {
         auto makeColor = [](COLORREF value) {
@@ -2898,7 +4392,7 @@ void paintSettingsEdit(HWND hwnd, HDC dc, WNDPROC oldProc) {
         Gdiplus::GraphicsPath path;
         const Gdiplus::RectF box(1.0f, 1.0f, static_cast<float>(width - 2),
                                  static_cast<float>(height - 2));
-        const float radius = static_cast<float>(ui(4));
+        const float radius = static_cast<float>(ui(6));
         const float diameter = radius * 2.0f;
         path.AddArc(box.X, box.Y, diameter, diameter, 180.0f, 90.0f);
         path.AddArc(box.X + box.Width - diameter, box.Y, diameter, diameter, 270.0f, 90.0f);
@@ -2906,13 +4400,125 @@ void paintSettingsEdit(HWND hwnd, HDC dc, WNDPROC oldProc) {
                     diameter, diameter, 0.0f, 90.0f);
         path.AddArc(box.X, box.Y + box.Height - diameter, diameter, diameter, 90.0f, 90.0f);
         path.CloseFigure();
-        Gdiplus::Pen pen(makeColor(border), static_cast<Gdiplus::REAL>(ui(1)));
-        graphics.DrawPath(&pen, &path);
+        if (focused && !highContrast) {
+            const COLORREF shadowColor = settingsAccentColor();
+            Gdiplus::Color shadow(72, GetRValue(shadowColor), GetGValue(shadowColor),
+                                  GetBValue(shadowColor));
+            Gdiplus::Pen shadowPen(shadow, 2.0f);
+            graphics.DrawPath(&shadowPen, &path);
+        }
+        graphics.Flush(Gdiplus::FlushIntentionSync);
+        HPEN pen = CreatePen(PS_SOLID, 1, border);
+        HGDIOBJ oldPen = SelectObject(bufferDc, pen);
+        HGDIOBJ oldBrush = SelectObject(bufferDc, GetStockObject(NULL_BRUSH));
+        RoundRect(bufferDc, 1, 1, width - 1, height - 1, ui(12), ui(12));
+        SelectObject(bufferDc, oldBrush);
+        SelectObject(bufferDc, oldPen);
+        DeleteObject(pen);
+    } else {
+        if (focused && !highContrast) {
+            HPEN shadowPen = CreatePen(PS_SOLID, 2, settingsAccentColor());
+            HGDIOBJ oldShadowPen = SelectObject(bufferDc, shadowPen);
+            HGDIOBJ oldShadowBrush = SelectObject(bufferDc, GetStockObject(NULL_BRUSH));
+            RoundRect(bufferDc, 1, 1, width - 1, height - 1, ui(12), ui(12));
+            SelectObject(bufferDc, oldShadowBrush);
+            SelectObject(bufferDc, oldShadowPen);
+            DeleteObject(shadowPen);
+        }
+        HPEN pen = CreatePen(PS_SOLID, 1, border);
+        HGDIOBJ oldPen = SelectObject(bufferDc, pen);
+        HGDIOBJ oldBrush = SelectObject(bufferDc, GetStockObject(NULL_BRUSH));
+        RoundRect(bufferDc, 1, 1, width - 1, height - 1, ui(12), ui(12));
+        SelectObject(bufferDc, oldBrush);
+        SelectObject(bufferDc, oldPen);
+        DeleteObject(pen);
     }
     BitBlt(dc, 0, 0, width, height, bufferDc, 0, 0, SRCCOPY);
     SelectObject(bufferDc, oldBitmap);
     DeleteObject(bufferBitmap);
     DeleteDC(bufferDc);
+}
+
+bool settingsNumericEditRange(int id, long& minimum, long& maximum) {
+    if (id == kSettingMaxItems ||
+        (id >= kSettingCategoryMaxBase && id < kSettingCategoryMaxBase + kStorageCategoryCount)) {
+        minimum = 0;
+        maximum = 100000;
+        return true;
+    }
+    if (id == kSettingRetentionDays) {
+        minimum = 0;
+        maximum = 36500;
+        return true;
+    }
+    if (id == kSettingMaxDiskMb ||
+        (id >= kSettingCategoryDiskBase && id < kSettingCategoryDiskBase + kStorageCategoryCount)) {
+        minimum = 0;
+        maximum = 102400;
+        return true;
+    }
+    if (id == kSettingMaxContentMb) {
+        minimum = 1;
+        maximum = 32;
+        return true;
+    }
+    if (id == kSettingSensitiveExpiry) {
+        minimum = 0;
+        maximum = 720;
+        return true;
+    }
+    return false;
+}
+
+bool normalizeSettingsNumericEdit(HWND hwnd) {
+    if (!hwnd) return false;
+    long minimum = 0;
+    long maximum = 0;
+    if (!settingsNumericEditRange(GetDlgCtrlID(hwnd), minimum, maximum)) return false;
+    wchar_t value[32]{};
+    GetWindowTextW(hwnd, value, static_cast<int>(sizeof(value) / sizeof(value[0])));
+    wchar_t* end = nullptr;
+    const long parsed = value[0] == L'\0' ? minimum : std::wcstol(value, &end, 10);
+    const long normalized = value[0] == L'\0' || end == value
+        ? minimum : std::clamp(parsed, minimum, maximum);
+    wchar_t normalizedText[32]{};
+    swprintf_s(normalizedText, L"%ld", normalized);
+    if (std::wcscmp(value, normalizedText) == 0) return false;
+    SetWindowTextW(hwnd, normalizedText);
+    return true;
+}
+
+void stripSettingsNumericLeadingZeros(HWND hwnd) {
+    if (!hwnd) return;
+    long minimum = 0;
+    long maximum = 0;
+    if (!settingsNumericEditRange(GetDlgCtrlID(hwnd), minimum, maximum)) return;
+    (void)minimum;
+    (void)maximum;
+    wchar_t value[64]{};
+    const int length = GetWindowTextW(hwnd, value,
+                                      static_cast<int>(sizeof(value) / sizeof(value[0])));
+    if (length <= 1) return;
+    DWORD selectionStart = 0;
+    DWORD selectionEnd = 0;
+    SendMessageW(hwnd, EM_GETSEL, reinterpret_cast<WPARAM>(&selectionStart),
+                 reinterpret_cast<LPARAM>(&selectionEnd));
+    if (selectionStart != selectionEnd) return;
+    int firstNonZero = 0;
+    while (firstNonZero < length && value[firstNonZero] == L'0') ++firstNonZero;
+    if (firstNonZero == 0) return;
+    if (firstNonZero == length) {
+        SetWindowTextW(hwnd, L"0");
+        SendMessageW(hwnd, EM_SETSEL, 1, 1);
+        return;
+    }
+    const int newLength = length - firstNonZero;
+    std::memmove(value, value + firstNonZero,
+                 static_cast<std::size_t>(newLength + 1) * sizeof(wchar_t));
+    SetWindowTextW(hwnd, value);
+    const DWORD caret = selectionStart > static_cast<DWORD>(firstNonZero)
+        ? selectionStart - static_cast<DWORD>(firstNonZero) : 0;
+    SendMessageW(hwnd, EM_SETSEL, caret, caret);
 }
 
 bool settingsEditBorderRect(HWND edit, HWND parent, RECT& rect) {
@@ -2932,7 +4538,6 @@ void invalidateSettingsEditBorder(HWND edit) {
 void paintSettingsEditBorders(HWND hwnd, HDC dc) {
     const int ids[] = {kSettingMaxItems, kSettingRetentionDays, kSettingMaxDiskMb,
                        kSettingMaxContentMb, kSettingIgnoredApps, kSettingSensitiveExpiry};
-    const bool dark = g_app->settingsData.dark;
     const bool highContrast = highContrastEnabled();
     for (const int id : ids) {
         HWND edit = GetDlgItem(hwnd, id);
@@ -2941,9 +4546,9 @@ void paintSettingsEditBorders(HWND hwnd, HDC dc) {
         const bool focused = GetFocus() == edit;
         const bool hovered = g_app->hoveredSettingsControl == id;
         const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-            (focused ? (dark ? RGB(82, 180, 177) : RGB(39, 124, 97)) :
-             hovered ? (dark ? RGB(119, 132, 145) : RGB(120, 145, 137)) :
-                       (dark ? RGB(82, 92, 102) : RGB(205, 219, 215)));
+            (focused ? settingsAccentColor() :
+             hovered ? settingsThemeColor(RGB(120, 145, 137), RGB(119, 132, 145)) :
+                       settingsThemeColor(RGB(205, 219, 215), RGB(82, 92, 102)));
         if (g_app->gdiplusToken != 0) {
             auto makeColor = [](COLORREF value) {
                 return Gdiplus::Color(255, GetRValue(value), GetGValue(value), GetBValue(value));
@@ -2982,11 +4587,26 @@ void paintSettingsEditBorders(HWND hwnd, HDC dc) {
 void configureSettingsEdit(HWND hwnd) {
     if (!hwnd) return;
     const int id = GetDlgCtrlID(hwnd);
+    UINT textLimit = 0;
+    if (id == kSettingMaxItems || id >= kSettingCategoryMaxBase &&
+        id < kSettingCategoryMaxBase + kStorageCategoryCount) {
+        textLimit = 6;
+    } else if (id == kSettingRetentionDays) {
+        textLimit = 5;
+    } else if (id == kSettingMaxDiskMb || id >= kSettingCategoryDiskBase &&
+               id < kSettingCategoryDiskBase + kStorageCategoryCount) {
+        textLimit = 6;
+    } else if (id == kSettingMaxContentMb) {
+        textLimit = 2;
+    } else if (id == kSettingSensitiveExpiry) {
+        textLimit = 3;
+    }
+    if (textLimit != 0) SendMessageW(hwnd, EM_LIMITTEXT, textLimit, 0);
     SendMessageW(hwnd, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
-                 MAKELPARAM(ui(10), ui(10)));
+                 MAKELPARAM(ui(8), ui(8)));
     RECT client{};
     GetClientRect(hwnd, &client);
-    RECT format{ui(10), ui(6), client.right - ui(10), client.bottom - ui(6)};
+    RECT format{ui(8), ui(5), client.right - ui(8), client.bottom - ui(5)};
     const LONG style = GetWindowLongW(hwnd, GWL_STYLE);
     if (id != kSettingIgnoredApps) {
         HDC dc = GetDC(hwnd);
@@ -3000,15 +4620,15 @@ void configureSettingsEdit(HWND hwnd) {
         }
         const int clientHeight = static_cast<int>(client.bottom);
         const int textHeight = std::max(ui(16), static_cast<int>(metrics.tmHeight));
-        const int top = std::max(ui(3), (clientHeight - textHeight) / 2);
+        const int top = std::max(ui(2), (clientHeight - textHeight) / 2);
         format.top = top;
         format.bottom = std::min(clientHeight - ui(3), top + textHeight + ui(2));
     } else if ((style & ES_MULTILINE) == 0) {
         format.top = 0;
         format.bottom = client.bottom;
     } else {
-        format.top = ui(8);
-        format.bottom = client.bottom - ui(8);
+        format.top = ui(6);
+        format.bottom = client.bottom - ui(6);
     }
     SendMessageW(hwnd, EM_SETRECT, 0, reinterpret_cast<LPARAM>(&format));
     InvalidateRect(hwnd, nullptr, FALSE);
@@ -3022,16 +4642,38 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
     wchar_t className[32]{};
     GetClassNameW(hwnd, className, static_cast<int>(sizeof(className) / sizeof(className[0])));
     if (std::wcscmp(className, L"Edit") == 0 && message == WM_ERASEBKGND) {
-        RECT client{};
-        GetClientRect(hwnd, &client);
-        HBRUSH brush = g_app->settingsCardBrush;
-        if (brush) {
-            FillRect(reinterpret_cast<HDC>(wParam), &client, brush);
-            return 1;
-        }
+        return 1;
     }
     if (isSettingsToggle(id) && message == WM_ERASEBKGND) return 1;
     if (id == kSettingLanguage && message == WM_ERASEBKGND) return 1;
+    if (isSettingsShortcut(id)) {
+        if (message == WM_LBUTTONDOWN) {
+            beginSettingsShortcutCapture(GetParent(hwnd), hwnd);
+            return 0;
+        }
+        if (message == WM_KEYDOWN || message == WM_SYSKEYDOWN) {
+            captureSettingsShortcut(GetParent(hwnd), hwnd, static_cast<UINT>(wParam));
+            return 0;
+        }
+        if (message == WM_KILLFOCUS && g_app->shortcutCaptureControl == hwnd) {
+            cancelSettingsShortcutCapture(GetParent(hwnd));
+            return 0;
+        }
+    }
+    if (message == WM_MOUSEWHEEL && id != kSettingIgnoredApps) {
+        SendMessageW(GetParent(hwnd), message, wParam, lParam);
+        return 0;
+    }
+    if (std::wcscmp(className, L"Edit") == 0 && id != kSettingIgnoredApps) {
+        if (message == WM_CHAR && wParam >= L'0' && wParam <= L'9') {
+            wchar_t value[8]{};
+            GetWindowTextW(hwnd, value, static_cast<int>(sizeof(value) / sizeof(value[0])));
+            if (std::wcscmp(value, L"0") == 0 && wParam == L'0') return 0;
+            stripSettingsNumericLeadingZeros(hwnd);
+        }
+        if ((message == WM_KEYDOWN || message == WM_SYSKEYDOWN) && wParam == VK_RETURN) return 0;
+        if (message == WM_CHAR && (wParam == VK_RETURN || wParam == L'\n')) return 0;
+    }
     if (id == kSettingLanguage && message == WM_PAINT) {
         PAINTSTRUCT ps{};
         HDC dc = BeginPaint(hwnd, &ps);
@@ -3045,9 +4687,14 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
         toggleLanguageDropdown(GetParent(hwnd));
         return 0;
     }
+    if (id == kSettingLanguage && message == WM_LBUTTONDBLCLK) {
+        SendMessageW(hwnd, CB_SHOWDROPDOWN, FALSE, 0);
+        SetFocus(hwnd);
+        toggleLanguageDropdown(GetParent(hwnd));
+        return 0;
+    }
     if (id == kSettingLanguage &&
-        (message == WM_LBUTTONUP || message == WM_LBUTTONDBLCLK ||
-         message == WM_NCLBUTTONDOWN || message == WM_NCLBUTTONDBLCLK)) {
+        (message == WM_LBUTTONUP || message == WM_NCLBUTTONDOWN || message == WM_NCLBUTTONDBLCLK)) {
         SendMessageW(hwnd, CB_SHOWDROPDOWN, FALSE, 0);
         return 0;
     }
@@ -3061,6 +4708,8 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
         animateLanguageDropdown(GetParent(hwnd), 0.0f);
     }
     if (message == WM_MOUSEMOVE) {
+        SetCursor(std::wcscmp(className, L"Edit") == 0
+            ? LoadCursorW(nullptr, IDC_IBEAM) : LoadCursorW(nullptr, IDC_HAND));
         if (g_app->hoveredSettingsControl != id) {
             const int previous = g_app->hoveredSettingsControl;
             g_app->hoveredSettingsControl = id;
@@ -3071,6 +4720,7 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
         TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};
         TrackMouseEvent(&tracking);
     } else if (message == WM_MOUSELEAVE) {
+        SetCursor(LoadCursorW(nullptr, IDC_ARROW));
         if (g_app->hoveredSettingsControl == id) {
             g_app->hoveredSettingsControl = 0;
             invalidateSettingsEditBorder(hwnd);
@@ -3081,12 +4731,19 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
             ? LoadCursorW(nullptr, IDC_IBEAM) : LoadCursorW(nullptr, IDC_HAND));
         return TRUE;
     } else if (message == WM_PAINT && std::wcscmp(className, L"Edit") == 0) {
-        const LRESULT result = CallWindowProcW(oldProc, hwnd, message, wParam, lParam);
-        paintSettingsEditFrame(hwnd);
-        return result;
+        PAINTSTRUCT ps{};
+        HDC dc = BeginPaint(hwnd, &ps);
+        if (dc) paintSettingsEdit(hwnd, dc, oldProc);
+        EndPaint(hwnd, &ps);
+        return 0;
     } else if (message == WM_SETFOCUS || message == WM_KILLFOCUS) {
         const LRESULT result = CallWindowProcW(oldProc, hwnd, message, wParam, lParam);
-        if (std::wcscmp(className, L"Edit") == 0) configureSettingsEdit(hwnd);
+        if (std::wcscmp(className, L"Edit") == 0) {
+            if (message == WM_KILLFOCUS && normalizeSettingsNumericEdit(hwnd)) {
+                scheduleSettingsSync(GetParent(hwnd));
+            }
+            configureSettingsEdit(hwnd);
+        }
         if (std::wcscmp(className, L"Edit") == 0) invalidateSettingsEditBorder(hwnd);
         InvalidateRect(hwnd, nullptr, FALSE);
         return result;
@@ -3124,6 +4781,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             drawSettingsToggle(*item);
             return TRUE;
         }
+        if (item && item->CtlType == ODT_BUTTON && isSettingsShortcut(GetDlgCtrlID(item->hwndItem))) {
+            drawSettingsShortcut(*item);
+            return TRUE;
+        }
         if (item && item->CtlType == ODT_BUTTON && isSettingsActionButton(GetDlgCtrlID(item->hwndItem))) {
             drawSettingsButton(*item);
             return TRUE;
@@ -3144,16 +4805,20 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         wchar_t className[64]{};
         GetClassNameW(hwnd, className, 64);
         if (std::wcscmp(className, L"ClipLiteSettings") == 0) {
+            g_app->settingsControlsTab = -1;
             g_app->settingsFont = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+            g_app->settingsMultilineFont = CreateFontW(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                                       CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
             const bool highContrast = highContrastEnabled();
             const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW) :
-                (g_app->settingsData.dark ? RGB(25, 29, 34) : RGB(239, 246, 244));
+                settingsThemeColor(RGB(240, 244, 248), RGB(21, 26, 34));
             const COLORREF card = highContrast ? GetSysColor(COLOR_WINDOW) :
-                (g_app->settingsData.dark ? RGB(34, 39, 46) : RGB(250, 253, 252));
+                settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
             const COLORREF input = highContrast ? GetSysColor(COLOR_WINDOW) :
-                (g_app->settingsData.dark ? RGB(43, 47, 54) : RGB(255, 255, 255));
+                settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
             g_app->settingsBackgroundBrush = CreateSolidBrush(background);
             g_app->settingsCardBrush = CreateSolidBrush(card);
             g_app->settingsInputBrush = CreateSolidBrush(input);
@@ -3172,6 +4837,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 GetClassNameW(child, childClass,
                               static_cast<int>(sizeof(childClass) / sizeof(childClass[0])));
                 if (std::wcscmp(childClass, L"Edit") == 0) configureSettingsEdit(child);
+                if (GetDlgCtrlID(child) == kSettingIgnoredApps && g_app->settingsMultilineFont) {
+                    SendMessageW(child, WM_SETFONT,
+                                 reinterpret_cast<WPARAM>(g_app->settingsMultilineFont), TRUE);
+                }
             }
             return 0;
         }
@@ -3181,17 +4850,32 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                                            CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
             g_app->popupInputBrush = CreateSolidBrush(highContrastEnabled()
                 ? GetSysColor(COLOR_WINDOW)
-                : (g_app->settingsData.dark ? RGB(43, 47, 54) : RGB(255, 255, 255)));
+                : settingsThemeColor(RGB(255, 255, 255), RGB(43, 47, 54)));
+            const int searchEditWidth = kPopupSearchRight - kPopupSearchLeft - 30;
             g_app->searchEdit = CreateWindowExW(0, L"EDIT", L"",
-                                                WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOHSCROLL,
-                                                ui(96), ui(16), ui(164), ui(28), hwnd,
-                                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSearchEdit)),
-                                                GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(g_app->searchEdit, WM_SETFONT,
-                  reinterpret_cast<WPARAM>(g_app->popupFont), TRUE);
+                                                 WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOHSCROLL,
+                                                 ui(kPopupSearchLeft + 27), ui(15), ui(searchEditWidth), ui(30), hwnd,
+                                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSearchEdit)),
+                                                 GetModuleHandleW(nullptr), nullptr);
+            SendMessageW(g_app->searchEdit, WM_SETFONT,
+                         reinterpret_cast<WPARAM>(g_app->popupFont), TRUE);
             SendMessageW(g_app->searchEdit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
-                         MAKELPARAM(ui(4), ui(4)));
-            RECT editFormat{ui(4), ui(5), ui(160), ui(23)};
+                         MAKELPARAM(ui(0), ui(2)));
+            HDC editDc = GetDC(g_app->searchEdit);
+            TEXTMETRICW textMetrics{};
+            if (editDc) {
+                HGDIOBJ oldFont = SelectObject(editDc, g_app->popupFont);
+                GetTextMetricsW(editDc, &textMetrics);
+                SelectObject(editDc, oldFont);
+                ReleaseDC(g_app->searchEdit, editDc);
+            }
+            const int editHeight = ui(30);
+            const int textHeight = textMetrics.tmHeight > 0
+                ? static_cast<int>(textMetrics.tmHeight) : ui(14);
+            const int verticalPadding = std::max(ui(4),
+                (editHeight - textHeight) / 2);
+            RECT editFormat{0, verticalPadding, ui(searchEditWidth - 2),
+                            editHeight - verticalPadding};
             SendMessageW(g_app->searchEdit, EM_SETRECTNP, 0,
                          reinterpret_cast<LPARAM>(&editFormat));
             SendMessageW(g_app->searchEdit, EM_SETCUEBANNER, FALSE,
@@ -3203,12 +4887,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
     }
     if (message == WM_ERASEBKGND && (hwnd == g_app->settings || hwnd == g_app->popup)) {
-        if (hwnd == g_app->popup) return 1;
-        HBRUSH brush = hwnd == g_app->settings ? g_app->settingsBackgroundBrush :
-                                                   g_app->popupInputBrush;
-        RECT client{};
-        GetClientRect(hwnd, &client);
-        FillRect(reinterpret_cast<HDC>(wParam), &client, brush);
         return 1;
     }
     if (hwnd == g_app->languageDropdown && message == WM_ERASEBKGND) return 1;
@@ -3216,21 +4894,20 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
          message == WM_CTLCOLORLISTBOX) &&
         (hwnd == g_app->settings || hwnd == g_app->popup)) {
         HDC dc = reinterpret_cast<HDC>(wParam);
-        const bool dark = g_app->settingsData.dark;
         const bool highContrast = highContrastEnabled();
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-            (dark ? RGB(238, 241, 245) : RGB(30, 36, 46)));
+            settingsThemeColor(RGB(30, 41, 59), RGB(226, 232, 240)));
         if (hwnd == g_app->settings && message == WM_CTLCOLOREDIT) {
             SetBkMode(dc, OPAQUE);
             SetBkColor(dc, highContrast ? GetSysColor(COLOR_WINDOW) :
-                (dark ? RGB(34, 39, 46) : RGB(250, 253, 252)));
-            return reinterpret_cast<LRESULT>(g_app->settingsCardBrush);
+                settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48)));
+            return reinterpret_cast<LRESULT>(g_app->settingsInputBrush);
         }
         if (message == WM_CTLCOLOREDIT || message == WM_CTLCOLORLISTBOX) {
             SetBkMode(dc, OPAQUE);
             SetBkColor(dc, highContrast ? GetSysColor(COLOR_WINDOW) :
-                (dark ? RGB(43, 47, 54) : RGB(255, 255, 255)));
+                settingsThemeColor(RGB(255, 255, 255), RGB(43, 47, 54)));
             return reinterpret_cast<LRESULT>(hwnd == g_app->popup
                 ? g_app->popupInputBrush : g_app->settingsInputBrush);
         }
@@ -3291,6 +4968,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 HWND combo = GetDlgItem(g_app->settings, kSettingLanguage);
                 setSettingsLanguageSelection(combo, row);
                 InvalidateRect(combo, nullptr, FALSE);
+                scheduleSettingsSync(g_app->settings);
             }
             animateLanguageDropdown(g_app->settings, 0.0f);
             return 0;
@@ -3320,16 +4998,22 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             g_app->languageDropdown = nullptr;
         }
         if (g_app->settingsFont) DeleteObject(g_app->settingsFont);
+        if (g_app->settingsMultilineFont) DeleteObject(g_app->settingsMultilineFont);
         if (g_app->settingsBackgroundBrush) DeleteObject(g_app->settingsBackgroundBrush);
         if (g_app->settingsCardBrush) DeleteObject(g_app->settingsCardBrush);
         if (g_app->settingsInputBrush) DeleteObject(g_app->settingsInputBrush);
         g_app->settingsFont = nullptr;
+        g_app->settingsMultilineFont = nullptr;
         g_app->settingsBackgroundBrush = nullptr;
         g_app->settingsCardBrush = nullptr;
         g_app->settingsInputBrush = nullptr;
         KillTimer(hwnd, kSettingsToggleTimer);
         KillTimer(hwnd, kSettingsDropdownTimer);
+        KillTimer(hwnd, kSettingsSyncTimer);
+        KillTimer(hwnd, kSettingsThemeTimer);
         g_app->toggleAnimationControl = nullptr;
+        g_app->settingsThemeAnimating = false;
+        g_app->shortcutCaptureControl = nullptr;
         g_app->languageDropdown = nullptr;
         if (g_app->gdiplusToken != 0) {
             Gdiplus::GdiplusShutdown(g_app->gdiplusToken);
@@ -3347,7 +5031,19 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == WM_HOTKEY) {
-            showPopup();
+            if (wParam == kHotkeySettings) {
+                openSettings();
+            } else if (wParam == kHotkeyPause) {
+                g_app->settingsData.pauseMonitoring = !g_app->settingsData.pauseMonitoring;
+                if (g_app->settings) {
+                    setSettingsToggleValue(GetDlgItem(g_app->settings, kSettingPause),
+                                           g_app->settingsData.pauseMonitoring);
+                    InvalidateRect(g_app->settings, nullptr, FALSE);
+                }
+                saveSettings(g_app->settingsData);
+            } else if (wParam == kHotkeyAltV || wParam == kHotkeyWinV) {
+                showPopup();
+            }
             return 0;
         }
         if (message == kShowPopupMessage) {
@@ -3393,6 +5089,13 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
 
     if (hwnd == g_app->settings) {
+        if (message == WM_SIZE) {
+            g_app->settingsScrollOffset = std::clamp(g_app->settingsScrollOffset,
+                                                      0, settingsScrollMax(hwnd));
+            updateSettingsTabControls(hwnd);
+            invalidatePopupList(hwnd);
+            return 0;
+        }
         if (message == WM_TIMER && wParam == kSettingsDropdownTimer) {
             if (!g_app->languageDropdown) {
                 KillTimer(hwnd, kSettingsDropdownTimer);
@@ -3413,6 +5116,17 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             return 0;
         }
+        if (message == WM_TIMER && wParam == kSettingsSyncTimer) {
+            KillTimer(hwnd, kSettingsSyncTimer);
+            syncSettingsFromControls(hwnd);
+            return 0;
+        }
+        if (message == WM_TIMER && wParam == kSettingsActionFeedbackTimer) {
+            KillTimer(hwnd, kSettingsActionFeedbackTimer);
+            g_app->settingsActionFeedback.clear();
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
         if (message == WM_TIMER && wParam == kSettingsToggleTimer) {
             HWND toggle = g_app->toggleAnimationControl;
             if (!toggle || settingsToggleAnimationFinished()) {
@@ -3427,8 +5141,20 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == WM_MOUSEMOVE) {
             const int x = GET_X_LPARAM(lParam);
             const int y = GET_Y_LPARAM(lParam);
-            const int tab = x >= ui(8) && x < ui(180) && y >= ui(50) && y < ui(50 + 4 * 38)
-                ? std::clamp((y - ui(50)) / ui(38), 0, 3) : -1;
+            const int themeMode = settingsThemeModeAtPoint(hwnd, x, y);
+            if (themeMode != g_app->hoveredSettingsThemeMode) {
+                g_app->hoveredSettingsThemeMode = themeMode;
+                RECT client{};
+                GetClientRect(hwnd, &client);
+                RECT themeRect{ui(0), ui(10), client.right, ui(48)};
+                InvalidateRect(hwnd, &themeRect, FALSE);
+            }
+            const bool interactive = settingsThemeModeAtPoint(hwnd, x, y) >= 0 ||
+                settingsAccentAtPoint(hwnd, x, y) >= 0 ||
+                (x >= ui(8) && x < ui(180) && y >= ui(50) && y < ui(50 + 5 * 38));
+            SetCursor(LoadCursorW(nullptr, interactive ? IDC_HAND : IDC_ARROW));
+            const int tab = x >= ui(8) && x < ui(180) && y >= ui(50) && y < ui(50 + 5 * 38)
+                ? std::clamp((y - ui(50)) / ui(38), 0, 4) : -1;
             if (tab != g_app->hoveredSettingsTab) {
                 const int previousTab = g_app->hoveredSettingsTab;
                 g_app->hoveredSettingsTab = tab;
@@ -3439,7 +5165,52 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             TrackMouseEvent(&tracking);
             return 0;
         }
+        if (message == WM_TIMER && wParam == kSettingsThemeTimer) {
+            const bool finished = advanceSettingsThemeAnimation();
+            if (finished) {
+                g_app->settingsThemeAnimating = false;
+                g_app->settingsThemeProgressValue = 1.0f;
+                KillTimer(hwnd, kSettingsThemeTimer);
+                refreshSettingsFrame(hwnd);
+            }
+            refreshSettingsBrushes();
+            refreshPopupBrush();
+            for (HWND child = GetWindow(hwnd, GW_CHILD); child;
+                 child = GetWindow(child, GW_HWNDNEXT)) {
+                InvalidateRect(child, nullptr, FALSE);
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+            if (g_app->popup) InvalidateRect(g_app->popup, nullptr, FALSE);
+            return 0;
+        }
+        if (message == WM_MOUSEWHEEL) {
+            POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            ScreenToClient(hwnd, &point);
+            if ((g_app->settingsTab == 0 ||
+                 g_app->settingsTab == kSettingsShortcutPage ||
+                 g_app->settingsTab == 2) &&
+                point.x >= ui(kSettingsSidebarWidth) &&
+                point.y >= ui(kSettingsHeaderHeight)) {
+                const int direction = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -48 : 48;
+                const int next = std::clamp(g_app->settingsScrollOffset + direction,
+                                            0, settingsScrollMax(hwnd));
+                if (next != g_app->settingsScrollOffset) {
+                    g_app->settingsScrollOffset = next;
+                    updateSettingsTabControls(hwnd);
+                    RedrawWindow(hwnd, nullptr, nullptr,
+                                 RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_NOERASE);
+                }
+                return 0;
+            }
+        }
         if (message == WM_MOUSELEAVE) {
+            if (g_app->hoveredSettingsThemeMode != -1) {
+                g_app->hoveredSettingsThemeMode = -1;
+                RECT client{};
+                GetClientRect(hwnd, &client);
+                RECT themeRect{ui(0), ui(10), client.right, ui(48)};
+                InvalidateRect(hwnd, &themeRect, FALSE);
+            }
             if (g_app->hoveredSettingsTab != -1) {
                 const int previousTab = g_app->hoveredSettingsTab;
                 g_app->hoveredSettingsTab = -1;
@@ -3451,8 +5222,13 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             POINT point{};
             GetCursorPos(&point);
             ScreenToClient(hwnd, &point);
+            if (settingsThemeModeAtPoint(hwnd, point.x, point.y) >= 0 ||
+                settingsAccentAtPoint(hwnd, point.x, point.y) >= 0) {
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                return TRUE;
+            }
             if (point.x >= ui(8) && point.x < ui(180) &&
-                point.y >= ui(50) && point.y < ui(50 + 4 * 38)) {
+                point.y >= ui(50) && point.y < ui(50 + 5 * 38)) {
                 SetCursor(LoadCursorW(nullptr, IDC_HAND));
                 return TRUE;
             }
@@ -3462,30 +5238,30 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == WM_LBUTTONDOWN) {
             const int x = GET_X_LPARAM(lParam);
             const int y = GET_Y_LPARAM(lParam);
+            const int themeMode = settingsThemeModeAtPoint(hwnd, x, y);
+            if (themeMode >= 0) {
+                setSettingsThemeMode(hwnd, themeMode);
+                return 0;
+            }
+            const int accent = settingsAccentAtPoint(hwnd, x, y);
+            if (accent >= 0) {
+                setSettingsAccent(hwnd, accent);
+                return 0;
+            }
             SetFocus(hwnd);
             if (g_app->languageDropdown) animateLanguageDropdown(hwnd, 0.0f);
             const int toggleId = settingsToggleAtPoint(g_app->settingsTab, x, y);
             if (toggleId != 0) {
                 HWND toggle = GetDlgItem(hwnd, toggleId);
                 animateSettingsToggle(toggle);
+                syncSettingsFromControls(hwnd);
                 return 0;
             }
             if (x >= ui(8) && x < ui(kSettingsSidebarWidth) &&
-                y >= ui(50) && y < ui(50 + 4 * 38)) {
-                g_app->settingsTab = std::clamp((y - ui(50)) / ui(38), 0, 3);
+                y >= ui(50) && y < ui(50 + 5 * 38)) {
+                g_app->settingsTab = std::clamp((y - ui(50)) / ui(38), 0, 4);
+                g_app->settingsScrollOffset = 0;
                 updateSettingsTabControls(hwnd);
-                InvalidateRect(hwnd, nullptr, FALSE);
-                return 0;
-            }
-            if (x >= ui(226) && x < ui(344) && y >= ui(284) && y < ui(374)) {
-                setSettingsToggleValue(GetDlgItem(hwnd, kSettingDark), false);
-                g_app->settingsData.dark = false;
-                InvalidateRect(hwnd, nullptr, FALSE);
-                return 0;
-            }
-            if (x >= ui(344) && x < ui(462) && y >= ui(284) && y < ui(374)) {
-                setSettingsToggleValue(GetDlgItem(hwnd, kSettingDark), true);
-                g_app->settingsData.dark = true;
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
             }
@@ -3496,9 +5272,13 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                  LOWORD(wParam) == kSettingRetentionDays ||
                  LOWORD(wParam) == kSettingMaxDiskMb ||
                  LOWORD(wParam) == kSettingMaxContentMb ||
-                 LOWORD(wParam) == kSettingIgnoredApps ||
-                 LOWORD(wParam) == kSettingSensitiveExpiry)) {
+                   LOWORD(wParam) == kSettingDataDirectory ||
+                   LOWORD(wParam) == kSettingIgnoredApps ||
+                   LOWORD(wParam) == kSettingSensitiveExpiry ||
+                   (LOWORD(wParam) >= kSettingCategoryMaxBase &&
+                    LOWORD(wParam) < kSettingCategoryDiskBase + kStorageCategoryCount))) {
                 InvalidateRect(reinterpret_cast<HWND>(lParam), nullptr, FALSE);
+                scheduleSettingsSync(hwnd);
                 return 0;
             }
             if (LOWORD(wParam) == kSettingLanguage &&
@@ -3509,141 +5289,52 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 if (HIWORD(wParam) == CBN_DROPDOWN && !g_app->languageDropdown) {
                     toggleLanguageDropdown(hwnd);
                 }
+                if (HIWORD(wParam) == CBN_SELENDOK) scheduleSettingsSync(hwnd);
                 return 0;
             }
-            if (isSettingsToggle(LOWORD(wParam)) && HIWORD(wParam) == BN_CLICKED) {
+            if (isSettingsToggle(LOWORD(wParam)) &&
+                (HIWORD(wParam) == BN_CLICKED || HIWORD(wParam) == BN_DOUBLECLICKED)) {
                 HWND toggle = GetDlgItem(hwnd, LOWORD(wParam));
                 animateSettingsToggle(toggle);
-                if (LOWORD(wParam) == kSettingDark) {
-                    g_app->settingsData.dark = settingsToggleValue(toggle);
-                    refreshSettingsBrushes();
-                    for (HWND child = GetWindow(hwnd, GW_CHILD); child;
-                         child = GetWindow(child, GW_HWNDNEXT)) {
-                        InvalidateRect(child, nullptr, FALSE);
-                    }
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                }
+                syncSettingsFromControls(hwnd);
                 return 0;
             }
-            switch (LOWORD(wParam)) {
-            case kSettingClear:
-                if (MessageBoxW(hwnd, tr(L"Clear all clipboard history?", L"清空全部剪贴板历史？"),
-                                L"ClipLite", MB_YESNO | MB_ICONWARNING) == IDYES) {
-                    g_app->store.clear();
-                    InvalidateRect(hwnd, nullptr, FALSE);
+            const int actionId = LOWORD(wParam);
+            if (actionId == kSettingBrowseDataDirectory && HIWORD(wParam) == BN_CLICKED) {
+                browseDataDirectory(hwnd);
+                return 0;
+            }
+            if (isSettingsClearAction(actionId)) {
+                const std::size_t count = settingsClearActionCount(actionId);
+                if (!confirmSettingsClear(hwnd, actionId, count)) {
+                    setSettingsActionFeedback(hwnd, tr(L"Clear cancelled", L"已取消清理"), true);
+                    return 0;
                 }
-                break;
-            case kSettingClearText:
-            case kSettingClearImage:
-            case kSettingClearFiles:
-            case kSettingClearHtml:
-            case kSettingClearOther: {
-                const ClipType type = LOWORD(wParam) == kSettingClearText ? ClipType::Text :
-                    LOWORD(wParam) == kSettingClearImage ? ClipType::Image :
-                    LOWORD(wParam) == kSettingClearFiles ? ClipType::Files :
-                    LOWORD(wParam) == kSettingClearHtml ? ClipType::Html : ClipType::Text;
-                if (LOWORD(wParam) == kSettingClearOther) {
-                    const auto& items = g_app->store.items();
-                    std::vector<ClipType> otherTypes;
-                    for (const ClipItem& item : items) {
-                        if (item.type != ClipType::Text && !isImageType(item.type) &&
-                            item.type != ClipType::Files && item.type != ClipType::Html) {
-                            otherTypes.push_back(item.type);
-                        }
+                if (clearSettingsAction(actionId)) {
+                    wchar_t feedback[160]{};
+                    if (count == 0) {
+                        swprintf_s(feedback, tr(L"No %ls records to clear", L"没有可清理的%ls记录"),
+                                   settingsClearActionLabel(actionId));
+                    } else {
+                        swprintf_s(feedback, tr(L"Cleared %zu %ls records", L"已清理 %zu 条%ls记录"),
+                                   count, settingsClearActionLabel(actionId));
                     }
-                    for (const ClipType otherType : otherTypes) g_app->store.clearType(otherType);
+                    setSettingsActionFeedback(hwnd, feedback, true);
                 } else {
-                    g_app->store.clearType(type);
+                    setSettingsActionFeedback(hwnd,
+                                              tr(L"Clear failed; history was not changed",
+                                                 L"清理失败，历史记录未改变"), false);
                 }
+                if (g_app->popup) refreshVisible();
                 InvalidateRect(hwnd, nullptr, FALSE);
-                break;
-            }
-            case kSettingSave: {
-                HWND win = GetDlgItem(hwnd, kSettingWinV);
-                HWND dark = GetDlgItem(hwnd, kSettingDark);
-                HWND language = GetDlgItem(hwnd, kSettingLanguage);
-                HWND pause = GetDlgItem(hwnd, kSettingPause);
-                HWND maxItems = GetDlgItem(hwnd, kSettingMaxItems);
-                HWND retentionDays = GetDlgItem(hwnd, kSettingRetentionDays);
-                HWND maxDiskMb = GetDlgItem(hwnd, kSettingMaxDiskMb);
-                 HWND maxContentMb = GetDlgItem(hwnd, kSettingMaxContentMb);
-                 HWND ignoredApps = GetDlgItem(hwnd, kSettingIgnoredApps);
-                 HWND sensitiveExpiry = GetDlgItem(hwnd, kSettingSensitiveExpiry);
-                 HWND startup = GetDlgItem(hwnd, kSettingStartup);
-                HWND encrypt = GetDlgItem(hwnd, kSettingEncrypt);
-                const bool previousEncryption = g_app->store.encryptionEnabled();
-                g_app->settingsData.winV = settingsToggleValue(win);
-                g_app->settingsData.dark = settingsToggleValue(dark);
-                wchar_t value[32]{};
-                GetWindowTextW(maxItems, value, 32);
-                g_app->settingsData.maxItems = std::clamp(std::wcstol(value, nullptr, 10), 0L, 100000L);
-                GetWindowTextW(retentionDays, value, 32);
-                g_app->settingsData.retentionDays = std::clamp(std::wcstol(value, nullptr, 10), 0L, 36500L);
-                GetWindowTextW(maxDiskMb, value, 32);
-                g_app->settingsData.maxDiskMb = std::clamp(std::wcstol(value, nullptr, 10), 0L, 102400L);
-                GetWindowTextW(maxContentMb, value, 32);
-                 g_app->settingsData.maxContentMb = std::clamp(std::wcstol(value, nullptr, 10), 1L, 32L);
-                 GetWindowTextW(sensitiveExpiry, value, 32);
-                 g_app->settingsData.sensitiveExpiryHours = std::clamp(std::wcstol(value, nullptr, 10), 0L, 720L);
-                const int ignoredLength = GetWindowTextLengthW(ignoredApps);
-                std::wstring ignoredText(static_cast<std::size_t>(ignoredLength) + 1, L'\0');
-                GetWindowTextW(ignoredApps, ignoredText.data(), ignoredLength + 1);
-                ignoredText.resize(static_cast<std::size_t>(ignoredLength));
-                g_app->settingsData.ignoredApps.clear();
-                std::size_t lineStart = 0;
-                while (lineStart <= ignoredText.size()) {
-                    const std::size_t lineEnd = ignoredText.find_first_of(L"\r\n", lineStart);
-                    std::wstring app = ignoredText.substr(lineStart, lineEnd == std::wstring::npos
-                        ? std::wstring::npos : lineEnd - lineStart);
-                    const std::size_t first = app.find_first_not_of(L" \t");
-                    const std::size_t last = app.find_last_not_of(L" \t");
-                    if (first != std::wstring::npos) {
-                        app = app.substr(first, last - first + 1);
-                        const std::string appUtf8 = wideToUtf8(app.c_str(), app.size());
-                        bool duplicate = false;
-                        for (const std::string& existing : g_app->settingsData.ignoredApps) {
-                            if (_stricmp(existing.c_str(), appUtf8.c_str()) == 0) {
-                                duplicate = true;
-                                break;
-                            }
-                        }
-                        if (!appUtf8.empty() && !duplicate) g_app->settingsData.ignoredApps.push_back(appUtf8);
-                    }
-                    if (lineEnd == std::wstring::npos) break;
-                    lineStart = ignoredText.find_first_not_of(L"\r\n", lineEnd);
-                    if (lineStart == std::wstring::npos) break;
-                }
-                g_app->settingsData.pauseMonitoring = settingsToggleValue(pause);
-                g_app->settingsData.startWithWindows = settingsToggleValue(startup);
-                const bool desiredEncryption = settingsToggleValue(encrypt);
-                const int languageSelection = settingsLanguageSelection(language);
-                g_app->settingsData.language = languageSelection <= 0 ? -1 : languageSelection - 1;
-                if (desiredEncryption != previousEncryption && !g_app->store.rekey(desiredEncryption)) {
-                    g_app->settingsData.encryptData = previousEncryption;
-                    MessageBoxW(hwnd, tr(L"Unable to change history encryption.", L"无法更改历史加密设置。"),
-                                L"ClipLite", MB_OK | MB_ICONWARNING);
-                } else {
-                    g_app->settingsData.encryptData = desiredEncryption;
-                }
-                 g_app->store.setMaxPayloadBytes(static_cast<std::uint32_t>(g_app->settingsData.maxContentMb) * 1024u * 1024u);
-                 g_app->store.setMaxItems(static_cast<std::size_t>(g_app->settingsData.maxItems));
-                saveSettings(g_app->settingsData);
-                updateStartupRegistration(g_app->settingsData.startWithWindows);
-                const std::uint64_t cutoff = g_app->settingsData.retentionDays > 0
-                    ? nowUnix() - static_cast<std::uint64_t>(g_app->settingsData.retentionDays) * 86400ULL
-                    : 0;
-                g_app->store.prune(g_app->settingsData.maxItems,
-                                   static_cast<std::uint64_t>(g_app->settingsData.maxDiskMb) * 1024ULL * 1024ULL,
-                                   cutoff);
-                registerHotkeys();
-                DestroyWindow(hwnd);
-                g_app->settings = nullptr;
-                break;
-            }
             }
             return 0;
         }
         if (message == WM_CLOSE) {
+            KillTimer(hwnd, kSettingsSyncTimer);
+            KillTimer(hwnd, kSettingsActionFeedbackTimer);
+            g_app->settingsActionFeedback.clear();
+            syncSettingsFromControls(hwnd);
             DestroyWindow(hwnd);
             g_app->settings = nullptr;
             return 0;
@@ -3661,6 +5352,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
                 return TRUE;
             }
+            if (g_app->scrollDragging || popupScrollThumbAt(point.x, point.y)) {
+                SetCursor(LoadCursorW(nullptr, IDC_SIZENS));
+                return TRUE;
+            }
             const int row = popupRowAt(point.y);
             const int rowTop = row >= 0 ? popupRowTop(row) : -1;
             const bool deleteHover = row >= 0 && point.x >= client.right - ui(30) &&
@@ -3669,12 +5364,22 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const bool pinHover = row >= 0 && point.x >= client.right - ui(45) &&
                 point.x < client.right - ui(10) && point.y >= rowTop + ui(kPopupCardHeight - 30) &&
                 point.y < rowTop + ui(kPopupCardHeight);
-            if (point.x >= ui(90) && point.x < ui(266) &&
-                point.y >= ui(14) && point.y < ui(46)) {
+            if (point.x >= ui(kPopupSearchLeft) && point.x < ui(kPopupSearchRight) &&
+                point.y >= ui(12) && point.y < ui(48)) {
                 SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
                 return TRUE;
             }
-            if (point.x >= ui(270) && point.x < client.right - ui(16) &&
+            if (point.x >= ui(kPopupClearLeft) && point.x < ui(kPopupClearRight) &&
+                point.y >= ui(12) && point.y < ui(46)) {
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                return TRUE;
+            }
+            if (point.x >= ui(kPopupPinLeft) && point.x < ui(kPopupPinRight) &&
+                point.y >= ui(12) && point.y < ui(46)) {
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                return TRUE;
+            }
+            if (point.x >= ui(kPopupCloseLeft) && point.x < client.right - ui(16) &&
                 point.y >= ui(12) && point.y < ui(46)) {
                 SetCursor(LoadCursorW(nullptr, IDC_HAND));
                 return TRUE;
@@ -3700,12 +5405,36 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return TRUE;
         }
         if (message == WM_ACTIVATEAPP && !wParam) {
-            if (g_app->filterDragging) return 0;
+            if (g_app->popupPinned) {
+                const HWND target = GetForegroundWindow();
+                if (IsWindow(target) && target != hwnd) g_app->targetWindow = target;
+                return 0;
+            }
+            if (g_app->filterDragging || g_app->scrollDragging) return 0;
             closePopup();
             return 0;
         }
+        if (message == WM_TIMER && wParam == kPopupScrollTimer) {
+            const LONGLONG elapsed = settingsToggleClock() - g_app->scrollAnimationStartTicks;
+            const LONGLONG duration = settingsToggleClockFrequency() * kPopupScrollAnimationMs / 1000LL;
+            if (elapsed >= duration) {
+                setPopupScrollPosition(g_app->scrollAnimationTo);
+                g_app->scrollAnimating = false;
+                KillTimer(hwnd, kPopupScrollTimer);
+            } else {
+                const float linear = std::clamp(static_cast<float>(elapsed) /
+                    static_cast<float>(std::max<LONGLONG>(1, duration)), 0.0f, 1.0f);
+                const float eased = linear * linear * (3.0f - 2.0f * linear);
+                const float position = static_cast<float>(g_app->scrollAnimationFrom) +
+                    static_cast<float>(g_app->scrollAnimationTo - g_app->scrollAnimationFrom) * eased;
+                setPopupScrollPosition(static_cast<int>(position + 0.5f));
+            }
+            invalidatePopupList(hwnd);
+            return 0;
+        }
         if (message == WM_NCACTIVATE && !wParam) {
-            if (g_app->filterDragging) return 0;
+            if (g_app->popupPinned) return 0;
+            if (g_app->filterDragging || g_app->scrollDragging) return 0;
             closePopup();
             return 0;
         }
@@ -3718,18 +5447,32 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == WM_KEYDOWN) {
-            if (wParam == VK_ESCAPE) closePopup();
-            else if ((GetKeyState(VK_CONTROL) & 0x8000) && wParam == '0') {
+            if (shortcutMatches(g_app->settingsData.popupCloseHotkey, static_cast<UINT>(wParam))) {
+                closePopup();
+            }
+            else if (shortcutMatches(g_app->settingsData.popupPlainPasteHotkey,
+                                     static_cast<UINT>(wParam))) {
+                sendPaste(PasteMode::PlainText);
+            }
+            else if (shortcutMatches(g_app->settingsData.popupRichPasteHotkey,
+                                     static_cast<UINT>(wParam))) {
+                sendPaste(PasteMode::RichText);
+            }
+            else if (shortcutMatches(g_app->settingsData.popupClearFilterHotkey,
+                                     static_cast<UINT>(wParam))) {
                 applyFilterCommand(kFilterAll);
                 refreshVisible();
             }
             else if (wParam == VK_UP) { --g_app->selected; refreshVisible(); }
             else if (wParam == VK_DOWN) { ++g_app->selected; refreshVisible(); }
-            else if (wParam == VK_RETURN) sendPaste();
-            else if (wParam == VK_DELETE && !g_app->visible.empty()) {
+            else if (shortcutMatches(g_app->settingsData.popupPasteHotkey,
+                                     static_cast<UINT>(wParam))) sendPaste();
+            else if (shortcutMatches(g_app->settingsData.popupDeleteHotkey,
+                                     static_cast<UINT>(wParam)) && !g_app->visible.empty()) {
                 g_app->store.remove(g_app->visible[static_cast<std::size_t>(g_app->selected)]);
                 refreshVisible();
-            } else if (wParam == VK_F10) openSettings();
+            } else if (shortcutMatches(g_app->settingsData.popupSettingsHotkey,
+                                       static_cast<UINT>(wParam))) openSettings();
             return 0;
         }
         if (message == WM_MOUSEWHEEL) {
@@ -3742,7 +5485,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 invalidateFilterBar(hwnd);
                 return 0;
             }
-            const int direction = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -3 : 3;
+            const int direction = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -ui(96) : ui(96);
             scrollPopup(direction);
             return 0;
         }
@@ -3751,6 +5494,20 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             g_app->filterScrollOffset += direction;
             clampFilterScroll();
             invalidateFilterBar(hwnd);
+            return 0;
+        }
+        if (message == WM_MOUSEMOVE && g_app->scrollDragging) {
+            int trackTop = 0;
+            int trackBottom = 0;
+            int thumbTop = 0;
+            int thumbHeight = 0;
+            int maxOffset = 0;
+            if (popupScrollMetrics(trackTop, trackBottom, thumbTop, thumbHeight, maxOffset)) {
+                const int trackTravel = std::max(1, trackBottom - trackTop - thumbHeight);
+                const int delta = GET_Y_LPARAM(lParam) - g_app->scrollDragStartY;
+                setPopupScrollPosition(g_app->scrollDragStartOffset + delta * maxOffset / trackTravel);
+                invalidatePopupList(hwnd);
+            }
             return 0;
         }
         if (message == WM_MOUSEMOVE && g_app->filterDragging) {
@@ -3778,8 +5535,18 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 x < client.right - ui(10) && y >= rowTop + ui(kPopupCardHeight - 30) &&
                 y < rowTop + ui(kPopupCardHeight) ? row : -1;
             const bool headerHover = popupPointInHeader(client, x, y);
-            const int nextFilter = filter >= 0 ? filter :
-                (x >= ui(270) && x < client.right - ui(16) && y >= ui(12) && y < ui(46) ? 7 : -1);
+            int headerButton = -1;
+            if (x >= ui(kPopupClearLeft) && x < ui(kPopupClearRight) &&
+                y >= ui(12) && y < ui(46)) {
+                headerButton = 7;
+            } else if (x >= ui(kPopupPinLeft) && x < ui(kPopupPinRight) &&
+                       y >= ui(12) && y < ui(46)) {
+                headerButton = 8;
+            } else if (x >= ui(kPopupCloseLeft) && x < client.right - ui(16) &&
+                       y >= ui(12) && y < ui(46)) {
+                headerButton = 9;
+            }
+            const int nextFilter = filter >= 0 ? filter : headerButton;
             if (row != g_app->hoveredRow || nextFilter != g_app->hoveredFilter ||
                 deleteRow != g_app->hoveredDeleteRow || pinRow != g_app->hoveredPinRow ||
                 headerHover != g_app->hoveredHeader) {
@@ -3811,6 +5578,11 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             return 0;
         }
+        if (message == WM_LBUTTONUP && g_app->scrollDragging) {
+            g_app->scrollDragging = false;
+            ReleaseCapture();
+            return 0;
+        }
         if (message == WM_LBUTTONUP && g_app->filterDragging) {
             const int clickX = GET_X_LPARAM(lParam);
             const int clickY = GET_Y_LPARAM(lParam);
@@ -3818,7 +5590,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             g_app->filterDragging = false;
             ReleaseCapture();
             if (isClick && clickY >= ui(kPopupFilterTop) && clickY < ui(kPopupFilterBottom)) {
-                for (int slot = 0; slot < 7; ++slot) {
+                for (int slot = 0; slot < 6; ++slot) {
                     const RECT chipRect = automaticFilterRect(slot, g_app->filterScrollOffset);
                     if (clickX >= chipRect.left && clickX < chipRect.right) {
                         applyFilterCommand(automaticFilterCommand(slot));
@@ -3836,15 +5608,28 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             GetClientRect(hwnd, &client);
             const int clickX = GET_X_LPARAM(lParam);
             const int clickY = GET_Y_LPARAM(lParam);
-            const bool inSearch = clickX >= ui(90) && clickX < ui(266) &&
-                clickY >= ui(14) && clickY < ui(46);
+            const bool inSearch = clickX >= ui(kPopupSearchLeft) && clickX < ui(kPopupSearchRight) &&
+                clickY >= ui(12) && clickY < ui(48);
             if (!inSearch) SetFocus(hwnd);
             if (GET_Y_LPARAM(lParam) >= ui(12) && GET_Y_LPARAM(lParam) < ui(46) &&
-                GET_X_LPARAM(lParam) >= client.right - ui(54)) {
+                GET_X_LPARAM(lParam) >= ui(kPopupClearLeft) &&
+                GET_X_LPARAM(lParam) < ui(kPopupClearRight)) {
                 SetWindowTextW(g_app->searchEdit, L"");
                 g_app->query.clear();
                 SetFocus(g_app->searchEdit);
                 refreshVisible();
+                return 0;
+            }
+            if (GET_Y_LPARAM(lParam) >= ui(12) && GET_Y_LPARAM(lParam) < ui(46) &&
+                GET_X_LPARAM(lParam) >= ui(kPopupPinLeft) &&
+                GET_X_LPARAM(lParam) < ui(kPopupPinRight)) {
+                setPopupPinned(!g_app->popupPinned);
+                return 0;
+            }
+            if (GET_Y_LPARAM(lParam) >= ui(12) && GET_Y_LPARAM(lParam) < ui(46) &&
+                GET_X_LPARAM(lParam) >= ui(kPopupCloseLeft) &&
+                GET_X_LPARAM(lParam) < client.right - ui(16)) {
+                closePopup();
                 return 0;
             }
             if (GET_Y_LPARAM(lParam) >= ui(12) && GET_Y_LPARAM(lParam) < ui(46) &&
@@ -3858,6 +5643,19 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 g_app->filterDragStartX = GET_X_LPARAM(lParam);
                 g_app->filterDragStartOffset = g_app->filterScrollOffset;
                 SetCapture(hwnd);
+                return 0;
+            }
+            if (popupScrollThumbAt(clickX, clickY)) {
+                g_app->scrollDragging = true;
+                g_app->scrollAnimating = false;
+                KillTimer(hwnd, kPopupScrollTimer);
+                g_app->scrollDragStartY = clickY;
+                g_app->scrollDragStartOffset = g_app->scrollPosition;
+                g_app->hoveredRow = -1;
+                g_app->hoveredDeleteRow = -1;
+                g_app->hoveredPinRow = -1;
+                SetCapture(hwnd);
+                invalidatePopupList(hwnd);
                 return 0;
             }
             const int row = popupRowAt(clickY);
@@ -3894,7 +5692,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (row >= 0 && row < static_cast<int>(g_app->visible.size())) {
                 g_app->selected = row;
                 HMENU menu = CreatePopupMenu();
-                AppendMenuW(menu, MF_STRING, kMenuPaste, tr(L"Paste", L"粘贴"));
+                const ClipItem& item = g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]];
+                appendPasteMenu(menu, item);
+                appendPopupPinMenu(menu);
                 AppendMenuW(menu, MF_STRING, kMenuPin, tr(L"Toggle pin", L"切换置顶"));
                 AppendMenuW(menu, MF_STRING, kMenuDelete, tr(L"Delete", L"删除"));
                 appendFilterMenu(menu);
@@ -3904,21 +5704,29 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                                                    point.x, point.y, 0, hwnd, nullptr);
                 DestroyMenu(menu);
                 const std::size_t index = g_app->visible[static_cast<std::size_t>(g_app->selected)];
-                if (command == kMenuPaste) sendPaste();
+                if (command == kMenuPopupPinned) setPopupPinned(!g_app->popupPinned);
+                else if (command == kMenuPaste) sendPaste();
+                else if (command == kMenuPastePlain) sendPaste(PasteMode::PlainText);
+                else if (command == kMenuPasteRich) sendPaste(PasteMode::RichText);
                 else if (command == kMenuPin) g_app->store.togglePinned(index);
                 else if (command == kMenuDelete) g_app->store.remove(index);
-                applyFilterCommand(command);
+                else if (command >= kFilterAll && command <= kFilterOther) applyFilterCommand(command);
                 refreshVisible();
             } else {
                 HMENU menu = CreatePopupMenu();
+                appendPopupPinMenu(menu);
                 appendFilterMenu(menu);
                 POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
                 ClientToScreen(hwnd, &point);
                 const int command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
                                                    point.x, point.y, 0, hwnd, nullptr);
                 DestroyMenu(menu);
-                applyFilterCommand(command);
-                refreshVisible();
+                if (command == kMenuPopupPinned) {
+                    setPopupPinned(!g_app->popupPinned);
+                } else {
+                    applyFilterCommand(command);
+                    refreshVisible();
+                }
             }
             return 0;
         }
@@ -3930,6 +5738,11 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE) {
+            if (g_app->popupPinned) {
+                const HWND target = reinterpret_cast<HWND>(lParam);
+                if (IsWindow(target) && target != hwnd) g_app->targetWindow = target;
+                return 0;
+            }
             if (g_app->filterDragging) return 0;
             closePopup();
             return 0;
@@ -3950,8 +5763,11 @@ void openSettings() {
     GetMonitorInfoW(monitor, &monitorInfo);
     g_uiDpi = monitorDpi(monitor);
     g_app->hoveredSettingsTab = -1;
+    g_app->hoveredSettingsThemeMode = -1;
     g_app->hoveredSettingsControl = 0;
+    g_app->settingsScrollOffset = 0;
     g_app->toggleAnimationControl = nullptr;
+    g_app->settingsThemeAnimating = false;
     const int width = ui(kSettingsWidth);
     const int height = std::min(ui(kSettingsHeight),
                                 static_cast<int>(monitorInfo.rcWork.bottom - monitorInfo.rcWork.top - ui(40)));
@@ -3965,6 +5781,7 @@ void openSettings() {
                                       x, y, width, height,
                                        nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (g_app->settings) {
+        refreshSettingsFrame(g_app->settings);
         SendMessageW(g_app->settings, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(clipLiteIcon()));
         SendMessageW(g_app->settings, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(clipLiteIcon()));
     }
@@ -3983,6 +5800,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     app.store.setMaxItems(static_cast<std::size_t>(app.settingsData.maxItems));
     app.store.setEncryption(app.settingsData.encryptData);
     app.store.setMaxPayloadBytes(static_cast<std::uint32_t>(app.settingsData.maxContentMb) * 1024u * 1024u);
+    if (!app.settingsData.dataDirectory.empty() &&
+        !app.store.setDataDirectory(utf8ToWide(app.settingsData.dataDirectory))) {
+        app.settingsData.dataDirectory.clear();
+    }
     if (!app.store.open()) return 1;
     app.store.pruneExpired(nowUnix());
     const std::uint64_t cutoff = app.settingsData.retentionDays > 0
@@ -3991,11 +5812,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     app.store.prune(app.settingsData.maxItems,
                     static_cast<std::uint64_t>(app.settingsData.maxDiskMb) * 1024ULL * 1024ULL,
                     cutoff);
+    const ClipType categoryTypes[] = {ClipType::Text, ClipType::Image, ClipType::Files};
+    for (int i = 0; i < kStorageCategoryCount; ++i) {
+        const CategoryLimit& limit = app.settingsData.categoryLimits[static_cast<std::size_t>(i)];
+        app.store.pruneCategory(categoryTypes[i], static_cast<std::size_t>(limit.maxItems),
+                                static_cast<std::uint64_t>(limit.maxDiskMb) * 1024ULL * 1024ULL);
+    }
 
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&controls);
     WNDCLASSW popupClass{};
-    popupClass.style = CS_DROPSHADOW;
+    popupClass.style = 0;
     popupClass.lpfnWndProc = windowProc;
     popupClass.hInstance = instance;
     popupClass.hIcon = clipLiteIcon();
@@ -4004,6 +5831,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     popupClass.lpszClassName = L"ClipLitePopup";
     RegisterClassW(&popupClass);
     WNDCLASSW settingsClass = popupClass;
+    settingsClass.style = 0;
     settingsClass.lpszClassName = L"ClipLiteSettings";
     RegisterClassW(&settingsClass);
     WNDCLASSW dropdownClass = popupClass;

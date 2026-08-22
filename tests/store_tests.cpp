@@ -6,7 +6,29 @@
 #include <io.h>
 #include <string>
 
+struct TestDataScope {
+    std::wstring path;
+
+    TestDataScope() {
+        wchar_t buffer[MAX_PATH]{};
+        const DWORD length = GetTempPathW(MAX_PATH, buffer);
+        path.assign(buffer, length);
+        if (!path.empty() && path.back() != L'\\') path.push_back(L'\\');
+        path += L"ClipLiteStoreTests-" + std::to_wstring(GetCurrentProcessId());
+        CreateDirectoryW(path.c_str(), nullptr);
+        _wputenv_s(L"CLIPLITE_TEST_DATA_DIR", path.c_str());
+    }
+
+    ~TestDataScope() {
+        DeleteFileW((path + L"\\history.bin").c_str());
+        DeleteFileW((path + L"\\history.bin.tmp").c_str());
+        _wputenv_s(L"CLIPLITE_TEST_DATA_DIR", L"");
+        RemoveDirectoryW(path.c_str());
+    }
+};
+
 int main() {
+    TestDataScope testData;
     ClipStore store(10);
     if (!store.open()) return 1;
     store.clear();
@@ -46,7 +68,7 @@ int main() {
     if (!store.append(ClipType::Text, text, clipLiteHash(text), "VS Code")) return 2;
     if (store.activeCount() != 1) return 3;
     if (store.countType(ClipType::Text) != 1 || store.bytesType(ClipType::Text) != text.size()) return 44;
-    if (!store.items()[0].hasSource || store.items()[0].source != "VS Code") return 40;
+    if (store.items()[0].source != "VS Code") return 40;
     std::string restored;
     if (!store.readPayload(0, restored) || restored != text) return 4;
     if (store.search("searchable suffix").size() != 1) return 5;
@@ -65,6 +87,9 @@ int main() {
     if (formatsReopened.items()[0].type != ClipType::ImageV5) return 252;
     if (formatsReopened.items()[1].type != ClipType::Html) return 253;
     if (formatsReopened.items()[1].source != "Word") return 254;
+    if (formatsReopened.items()[1].preview != "html") return 255;
+    if (formatsReopened.countType(ClipType::Text) != 1 ||
+        formatsReopened.bytesType(ClipType::Text) != std::string("<b>html</b>").size()) return 256;
     if (!formatsReopened.clearType(ClipType::Html) || formatsReopened.activeCount() != 1 ||
         formatsReopened.items()[0].type != ClipType::ImageV5) return 41;
     formatsReopened.clear();
@@ -139,6 +164,24 @@ int main() {
     if (!limited.append(ClipType::Text, "three", clipLiteHash("three"))) return 28;
     if (!limited.prune(2, 0, 0) || limited.activeCount() != 2) return 29;
     limited.clear();
+
+    ClipStore categoryLimited(10);
+    categoryLimited.open();
+    categoryLimited.clear();
+    if (!categoryLimited.append(ClipType::Text, "text-one", clipLiteHash("text-one")) ||
+        !categoryLimited.append(ClipType::Text, "text-two", clipLiteHash("text-two")) ||
+        !categoryLimited.append(ClipType::Image, "image-one", clipLiteHash("image-one"))) return 55;
+    if (!categoryLimited.pruneCategory(ClipType::Text, 1, 0) ||
+        categoryLimited.countType(ClipType::Text) != 1 || categoryLimited.countType(ClipType::Image) != 1) return 56;
+    categoryLimited.clear();
+
+    ClipStore textCategory(10);
+    textCategory.open();
+    textCategory.clear();
+    if (!textCategory.append(ClipType::Text, "plain", clipLiteHash("plain")) ||
+        !textCategory.append(ClipType::Html, "<b>rich</b>", clipLiteHash("<b>rich</b>"))) return 57;
+    if (textCategory.countType(ClipType::Text) != 2) return 58;
+    if (!textCategory.clearType(ClipType::Text) || textCategory.activeCount() != 0) return 59;
 
     ClipStore pressure(10000);
     pressure.open();

@@ -24,10 +24,7 @@ struct ClipItem {
     std::uint64_t fileOffset = 0;
     std::uint32_t payloadSize = 0;
     std::uint32_t payloadCrc = 0;
-    bool hasChecksum = false;
     bool encrypted = false;
-    bool hasSource = false;
-    bool hasExpiry = false;
     std::string source;
     std::uint64_t expiresAt = 0;
     std::string preview;
@@ -38,6 +35,7 @@ public:
     explicit ClipStore(std::size_t maxItems = 1000);
 
     void setMaxItems(std::size_t maxItems) { maxItems_ = maxItems; }
+    bool setDataDirectory(const std::wstring& directory);
     void setEncryption(bool enabled) { encryptionEnabled_ = enabled; }
     bool encryptionEnabled() const { return encryptionEnabled_; }
     void setMaxPayloadBytes(std::uint32_t bytes) { maxPayloadBytes_ = bytes; }
@@ -50,6 +48,7 @@ public:
     bool togglePinned(std::size_t index);
     bool setCategory(std::size_t index, std::uint32_t category);
     bool prune(std::size_t maxItems, std::uint64_t maxBytes, std::uint64_t minTimestamp);
+    bool pruneCategory(ClipType type, std::size_t maxItems, std::uint64_t maxBytes);
     bool clear();
     bool clearType(ClipType type);
     bool pruneExpired(std::uint64_t timestamp);

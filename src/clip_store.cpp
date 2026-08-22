@@ -12,15 +12,14 @@
 namespace {
 
 constexpr std::uint32_t kMagic = 0x314C4343; // CCL1
-constexpr std::uint16_t kLegacyVersion = 1;
-constexpr std::uint16_t kChecksumVersion = 2;
-constexpr std::uint16_t kSourceVersion = 3;
 constexpr std::uint16_t kVersion = 4;
 constexpr std::uint32_t kMaxPayload = 32u * 1024u * 1024u;
 constexpr std::uint32_t kMaxSource = 256;
+constexpr std::uint32_t kStoredHtmlMagic = 0x314D5448; // HTM1
+constexpr std::size_t kStoredHtmlHeaderSize = 12;
 
 #pragma pack(push, 1)
-struct LegacyDiskHeader {
+struct DiskHeader {
     std::uint32_t magic;
     std::uint16_t version;
     std::uint8_t type;
@@ -29,21 +28,7 @@ struct LegacyDiskHeader {
     std::uint64_t hash;
     std::uint32_t category;
     std::uint32_t payloadSize;
-};
-
-struct DiskHeader {
-    LegacyDiskHeader base;
     std::uint32_t payloadCrc;
-};
-
-struct SourceDiskHeader {
-    DiskHeader base;
-    std::uint32_t sourceSize;
-    std::uint32_t sourceCrc;
-};
-
-struct ExpiringDiskHeader {
-    DiskHeader base;
     std::uint32_t sourceSize;
     std::uint32_t sourceCrc;
     std::uint64_t expiresAt;
@@ -111,11 +96,59 @@ std::string lowerAscii(std::string value) {
     return value;
 }
 
+bool matchesType(ClipType requested, ClipType actual) {
+    if (requested == ClipType::Text) {
+        return actual == ClipType::Text || actual == ClipType::Html;
+    }
+    if (requested == ClipType::Image) {
+        return actual == ClipType::Image || actual == ClipType::ImageV5;
+    }
+    return actual == requested;
+}
+
+std::string htmlTextPreview(const std::string& payload) {
+    std::string html = payload;
+    if (payload.size() >= kStoredHtmlHeaderSize) {
+        std::uint32_t magic = 0;
+        std::uint32_t textSize = 0;
+        std::memcpy(&magic, payload.data(), sizeof(magic));
+        std::memcpy(&textSize, payload.data() + 4, sizeof(textSize));
+        const std::size_t contentSize = payload.size() - kStoredHtmlHeaderSize;
+        if (magic == kStoredHtmlMagic && textSize <= contentSize) {
+            const std::string text(payload.data() + kStoredHtmlHeaderSize, textSize);
+            if (!text.empty()) return text;
+            const std::uint32_t htmlSize = static_cast<std::uint32_t>(contentSize - textSize);
+            html.assign(payload.data() + kStoredHtmlHeaderSize + textSize, htmlSize);
+        }
+    }
+    std::string text;
+    text.reserve(html.size());
+    bool inTag = false;
+    for (const char character : html) {
+        if (character == '<') {
+            inTag = true;
+        } else if (character == '>') {
+            inTag = false;
+        } else if (!inTag) {
+            text.push_back(character);
+        }
+    }
+    return text;
+}
+
 } // namespace
 
 struct ClipStore::DiskRecord {};
 
 std::wstring clipLiteDataDirectory() {
+    wchar_t testPath[MAX_PATH]{};
+    const DWORD testPathLength = GetEnvironmentVariableW(
+        L"CLIPLITE_TEST_DATA_DIR", testPath, ARRAYSIZE(testPath));
+    if (testPathLength > 0 && testPathLength < ARRAYSIZE(testPath)) {
+        std::wstring path(testPath, testPathLength);
+        ensureDirectory(path);
+        return path;
+    }
     wchar_t buffer[MAX_PATH]{};
     if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, buffer))) {
         return L".";
@@ -139,6 +172,18 @@ ClipStore::ClipStore(std::size_t maxItems) : maxItems_(maxItems) {
     path_ = clipLiteDataDirectory() + L"\\history.bin";
 }
 
+bool ClipStore::setDataDirectory(const std::wstring& directory) {
+    if (directory.empty()) return false;
+    std::wstring normalized = directory;
+    while (normalized.size() > 3 &&
+           (normalized.back() == L'\\' || normalized.back() == L'/')) {
+        normalized.pop_back();
+    }
+    if (!ensureDirectory(normalized)) return false;
+    path_ = normalized + L"\\history.bin";
+    return true;
+}
+
 bool ClipStore::open() {
     items_.clear();
     diskBytes_ = 0;
@@ -154,60 +199,44 @@ bool ClipStore::open() {
 
     while (true) {
         const auto offset = static_cast<std::uint64_t>(_ftelli64(file));
-        LegacyDiskHeader base{};
-        if (std::fread(&base, sizeof(base), 1, file) != 1) break;
-        if (base.magic != kMagic || (base.version != kLegacyVersion &&
-            base.version != kChecksumVersion && base.version != kSourceVersion && base.version != kVersion) ||
-            base.payloadSize > kMaxPayload || base.type < 1 || base.type > 5) {
+        DiskHeader header{};
+        if (std::fread(&header, sizeof(header), 1, file) != 1) break;
+        if (header.magic != kMagic || header.version != kVersion ||
+            header.payloadSize > kMaxPayload || header.sourceSize > kMaxSource ||
+            header.type < 1 || header.type > 5) {
             break;
         }
 
-        std::uint32_t expectedCrc = 0;
-        const bool hasChecksum = base.version >= kChecksumVersion;
-        if (hasChecksum && std::fread(&expectedCrc, sizeof(expectedCrc), 1, file) != 1) break;
-        std::uint32_t sourceSize = 0;
-        std::uint32_t sourceCrc = 0;
-        const bool hasSource = base.version >= kSourceVersion;
-        if (hasSource && (std::fread(&sourceSize, sizeof(sourceSize), 1, file) != 1 ||
-                          std::fread(&sourceCrc, sizeof(sourceCrc), 1, file) != 1 ||
-                          sourceSize > kMaxSource)) {
-            break;
-        }
-        std::uint64_t expiresAt = 0;
-        const bool hasExpiry = base.version >= kVersion;
-        if (hasExpiry && std::fread(&expiresAt, sizeof(expiresAt), 1, file) != 1) break;
         std::string source;
-        if (hasSource && sourceSize > 0) {
-            source.resize(sourceSize);
+        if (header.sourceSize > 0) {
+            source.resize(header.sourceSize);
             if (std::fread(source.data(), 1, source.size(), file) != source.size() ||
-                crc32(source) != sourceCrc) {
+                crc32(source) != header.sourceCrc) {
                 break;
             }
         }
         const auto payloadOffset = static_cast<std::uint64_t>(_ftelli64(file));
-        if (payloadOffset > fileSize || base.payloadSize > fileSize - payloadOffset) break;
+        if (payloadOffset > fileSize || header.payloadSize > fileSize - payloadOffset) break;
 
         ClipItem item;
-        item.type = static_cast<ClipType>(base.type);
-        item.timestamp = base.timestamp;
-        item.hash = base.hash;
-        item.category = base.category;
-        item.pinned = (base.flags & 1) != 0;
+        item.type = static_cast<ClipType>(header.type);
+        item.timestamp = header.timestamp;
+        item.hash = header.hash;
+        item.category = header.category;
+        item.pinned = (header.flags & 1) != 0;
         item.fileOffset = offset;
-        item.payloadSize = base.payloadSize;
-        item.payloadCrc = expectedCrc;
-        item.hasChecksum = hasChecksum;
-        item.encrypted = (base.flags & 2) != 0;
-        item.hasSource = hasSource;
-        item.hasExpiry = hasExpiry;
+        item.payloadSize = header.payloadSize;
+        item.payloadCrc = header.payloadCrc;
+        item.encrypted = (header.flags & 2) != 0;
         item.source = std::move(source);
-        item.expiresAt = expiresAt;
+        item.expiresAt = header.expiresAt;
 
         std::string preview;
-        const bool isImage = base.type == static_cast<std::uint8_t>(ClipType::Image) ||
-                             base.type == static_cast<std::uint8_t>(ClipType::ImageV5);
-        const std::size_t previewLimit = item.encrypted || isImage ? 0 : 160;
-        std::uint32_t remaining = base.payloadSize;
+        const bool isImage = header.type == static_cast<std::uint8_t>(ClipType::Image) ||
+                             header.type == static_cast<std::uint8_t>(ClipType::ImageV5);
+        const std::size_t previewLimit = item.encrypted || isImage ? 0 :
+            (header.type == static_cast<std::uint8_t>(ClipType::Html) ? 4096 : 160);
+        std::uint32_t remaining = header.payloadSize;
         std::uint32_t checksum = 0xFFFFFFFFu;
         char buffer[64 * 1024];
         bool payloadValid = true;
@@ -225,14 +254,17 @@ bool ClipStore::open() {
             remaining -= static_cast<std::uint32_t>(chunkSize);
         }
         if (!payloadValid) break;
-        if (hasChecksum && (checksum ^ 0xFFFFFFFFu) != expectedCrc) break;
+        if ((checksum ^ 0xFFFFFFFFu) != header.payloadCrc) break;
         if (item.encrypted) preview = "[Protected]";
         else if (isImage) preview = "[Image]";
-        if (base.type == static_cast<std::uint8_t>(ClipType::Html)) preview = "[HTML]";
-        if (base.type == static_cast<std::uint8_t>(ClipType::Files)) preview = "[Files] " + preview;
+        if (header.type == static_cast<std::uint8_t>(ClipType::Html)) {
+            const std::string htmlPreview = htmlTextPreview(preview);
+            preview = htmlPreview.empty() ? "[HTML]" : htmlPreview.substr(0, 160);
+        }
+        if (header.type == static_cast<std::uint8_t>(ClipType::Files)) preview = "[Files] " + preview;
         item.preview = std::move(preview);
         items_.push_back(std::move(item));
-        validBytes = payloadOffset + base.payloadSize;
+        validBytes = payloadOffset + header.payloadSize;
         if (maxItems_ > 0 && items_.size() > maxItems_ * 2) {
             items_.erase(items_.begin(), items_.begin() + (items_.size() - maxItems_));
         }
@@ -244,16 +276,16 @@ bool ClipStore::open() {
 }
 
 bool ClipStore::writeRecord(std::FILE* file, const ClipItem& item, const std::string& payload) const {
-    ExpiringDiskHeader header{};
-    header.base.base.magic = kMagic;
-    header.base.base.version = kVersion;
-    header.base.base.type = static_cast<std::uint8_t>(item.type);
-    header.base.base.flags = (item.pinned ? 1 : 0) | (item.encrypted ? 2 : 0);
-    header.base.base.timestamp = item.timestamp;
-    header.base.base.hash = item.hash;
-    header.base.base.category = item.category;
-    header.base.base.payloadSize = static_cast<std::uint32_t>(payload.size());
-    header.base.payloadCrc = crc32(payload);
+    DiskHeader header{};
+    header.magic = kMagic;
+    header.version = kVersion;
+    header.type = static_cast<std::uint8_t>(item.type);
+    header.flags = (item.pinned ? 1 : 0) | (item.encrypted ? 2 : 0);
+    header.timestamp = item.timestamp;
+    header.hash = item.hash;
+    header.category = item.category;
+    header.payloadSize = static_cast<std::uint32_t>(payload.size());
+    header.payloadCrc = crc32(payload);
     header.sourceSize = static_cast<std::uint32_t>(item.source.size());
     header.sourceCrc = crc32(item.source);
     header.expiresAt = item.expiresAt;
@@ -279,8 +311,6 @@ bool ClipStore::append(ClipType type, const std::string& payload, std::uint64_t 
     item.timestamp = nowUnix();
     item.hash = hash;
     item.encrypted = encryptionEnabled_;
-    item.hasSource = true;
-    item.hasExpiry = true;
     item.source = source.substr(0, kMaxSource);
     item.expiresAt = expiresAt;
     std::string storedPayload;
@@ -291,10 +321,9 @@ bool ClipStore::append(ClipType type, const std::string& payload, std::uint64_t 
     if (!item.encrypted) storedPayload = payload;
     item.payloadSize = static_cast<std::uint32_t>(storedPayload.size());
     item.payloadCrc = crc32(storedPayload);
-    item.hasChecksum = true;
     item.fileOffset = static_cast<std::uint64_t>(_ftelli64(file));
     item.preview = makePreview(type, payload);
-    const std::uint64_t recordBytes = sizeof(ExpiringDiskHeader) + item.source.size() + storedPayload.size();
+    const std::uint64_t recordBytes = sizeof(DiskHeader) + item.source.size() + storedPayload.size();
     const bool ok = writeRecord(file, item, storedPayload);
     std::fflush(file);
     std::fclose(file);
@@ -313,18 +342,15 @@ bool ClipStore::readPayload(std::size_t index, std::string& payload) const {
     const ClipItem& item = items_[index];
     std::FILE* file = nullptr;
     _wfopen_s(&file, path_.c_str(), L"rb");
-    const std::uint64_t headerSize = item.hasExpiry ? sizeof(ExpiringDiskHeader) :
-        item.hasSource ? sizeof(SourceDiskHeader) :
-        item.hasChecksum ? sizeof(DiskHeader) : sizeof(LegacyDiskHeader);
-    const std::uint64_t sourceSize = item.hasSource ? item.source.size() : 0;
-    if (!file || _fseeki64(file, static_cast<__int64>(item.fileOffset + headerSize + sourceSize), SEEK_SET) != 0) {
+    const std::uint64_t headerSize = sizeof(DiskHeader);
+    if (!file || _fseeki64(file, static_cast<__int64>(item.fileOffset + headerSize + item.source.size()), SEEK_SET) != 0) {
         if (file) std::fclose(file);
         return false;
     }
     payload.resize(item.payloadSize);
     const bool readOk = std::fread(payload.data(), 1, payload.size(), file) == payload.size();
     std::fclose(file);
-    if (!readOk || (item.hasChecksum && crc32(payload) != item.payloadCrc)) return false;
+    if (!readOk || crc32(payload) != item.payloadCrc) return false;
     if (!item.encrypted) return true;
     std::string plain;
     if (!unprotectPayload(payload, plain)) return false;
@@ -349,8 +375,6 @@ bool ClipStore::rebuildFile() {
             return false;
         }
         ClipItem item = old;
-    item.hasSource = true;
-    item.hasExpiry = true;
         item.fileOffset = offset;
         std::string storedPayload;
         if (item.encrypted && !protectPayload(payload, storedPayload)) {
@@ -361,13 +385,12 @@ bool ClipStore::rebuildFile() {
         if (!item.encrypted) storedPayload = payload;
         item.payloadSize = static_cast<std::uint32_t>(storedPayload.size());
         item.payloadCrc = crc32(storedPayload);
-        item.hasChecksum = true;
         if (!writeRecord(out, item, storedPayload)) {
             std::fclose(out);
             DeleteFileW(tempPath.c_str());
             return false;
         }
-        offset += sizeof(ExpiringDiskHeader) + item.source.size() + storedPayload.size();
+        offset += sizeof(DiskHeader) + item.source.size() + storedPayload.size();
         rebuilt.push_back(std::move(item));
     }
     std::fflush(out);
@@ -426,7 +449,6 @@ bool ClipStore::rekey(bool enabled) {
             return false;
         }
         ClipItem item = items_[index];
-        item.hasSource = true;
         item.encrypted = enabled;
         std::string stored;
         if (enabled && !protectPayload(plain, stored)) {
@@ -438,13 +460,12 @@ bool ClipStore::rekey(bool enabled) {
         item.fileOffset = offset;
         item.payloadSize = static_cast<std::uint32_t>(stored.size());
         item.payloadCrc = crc32(stored);
-        item.hasChecksum = true;
         if (!writeRecord(out, item, stored)) {
             std::fclose(out);
             DeleteFileW(tempPath.c_str());
             return false;
         }
-        offset += sizeof(ExpiringDiskHeader) + item.source.size() + stored.size();
+        offset += sizeof(DiskHeader) + item.source.size() + stored.size();
         rebuilt.push_back(std::move(item));
     }
     std::fflush(out);
@@ -466,13 +487,41 @@ bool ClipStore::prune(std::size_t maxItems, std::uint64_t maxBytes, std::uint64_
     kept.reserve(items_.size());
     std::uint64_t bytes = 0;
     for (const ClipItem& item : items_) {
-        const std::uint64_t recordBytes = sizeof(ExpiringDiskHeader) + item.source.size() + item.payloadSize;
+        const std::uint64_t recordBytes = sizeof(DiskHeader) + item.source.size() + item.payloadSize;
         const bool underCount = maxItems == 0 || kept.size() < maxItems;
         const bool underBytes = maxBytes == 0 || bytes + recordBytes <= maxBytes;
         const bool recent = minTimestamp == 0 || item.timestamp >= minTimestamp;
         if (item.pinned || (underCount && underBytes && recent)) {
             kept.push_back(item);
             bytes += recordBytes;
+        }
+    }
+    if (kept.size() == items_.size()) return true;
+    items_ = std::move(kept);
+    if (rebuildFile()) return true;
+    items_ = backup;
+    return false;
+}
+
+bool ClipStore::pruneCategory(ClipType type, std::size_t maxItems, std::uint64_t maxBytes) {
+    if (items_.empty()) return true;
+    const std::vector<ClipItem> backup = items_;
+    std::vector<ClipItem> kept;
+    kept.reserve(items_.size());
+    std::size_t categoryCount = 0;
+    std::uint64_t categoryBytes = 0;
+    for (const ClipItem& item : items_) {
+        if (!matchesType(type, item.type)) {
+            kept.push_back(item);
+            continue;
+        }
+        const std::uint64_t recordBytes = sizeof(DiskHeader) + item.source.size() + item.payloadSize;
+        const bool underCount = maxItems == 0 || categoryCount < maxItems;
+        const bool underBytes = maxBytes == 0 || categoryBytes + recordBytes <= maxBytes;
+        if (item.pinned || (underCount && underBytes)) {
+            kept.push_back(item);
+            ++categoryCount;
+            categoryBytes += recordBytes;
         }
     }
     if (kept.size() == items_.size()) return true;
@@ -496,9 +545,7 @@ bool ClipStore::clearType(ClipType type) {
     const std::vector<ClipItem> backup = items_;
     items_.erase(std::remove_if(items_.begin(), items_.end(),
                                 [type](const ClipItem& item) {
-                                    if (type == ClipType::Image) return item.type == ClipType::Image ||
-                                        item.type == ClipType::ImageV5;
-                                    return item.type == type;
+                                    return matchesType(type, item.type);
                                 }), items_.end());
     if (items_.size() == oldSize) return true;
     if (rebuildFile()) return true;
@@ -529,10 +576,7 @@ std::size_t ClipStore::findHash(std::uint64_t hash) const {
 std::size_t ClipStore::countType(ClipType type) const {
     std::size_t count = 0;
     for (const ClipItem& item : items_) {
-        const bool matches = type == ClipType::Image
-            ? item.type == ClipType::Image || item.type == ClipType::ImageV5
-            : item.type == type;
-        if (matches) ++count;
+        if (matchesType(type, item.type)) ++count;
     }
     return count;
 }
@@ -540,10 +584,7 @@ std::size_t ClipStore::countType(ClipType type) const {
 std::uint64_t ClipStore::bytesType(ClipType type) const {
     std::uint64_t bytes = 0;
     for (const ClipItem& item : items_) {
-        const bool matches = type == ClipType::Image
-            ? item.type == ClipType::Image || item.type == ClipType::ImageV5
-            : item.type == type;
-        if (matches) bytes += item.payloadSize;
+        if (matchesType(type, item.type)) bytes += item.payloadSize;
     }
     return bytes;
 }
@@ -570,8 +611,8 @@ std::vector<std::size_t> ClipStore::search(const std::string& query) const {
 
 std::string ClipStore::makePreview(ClipType type, const std::string& payload) {
     if (type == ClipType::Image || type == ClipType::ImageV5) return "[Image]";
-    if (type == ClipType::Html) return "[HTML]";
-    std::string value = payload.substr(0, 160);
+    std::string value = type == ClipType::Html ? htmlTextPreview(payload) : payload.substr(0, 160);
+    if (value.empty() && type == ClipType::Html) return "[HTML]";
     if (type == ClipType::Files) value = "[Files] " + value;
     for (char& c : value) if (c == '\r' || c == '\n' || c == '\t') c = ' ';
     return value;

@@ -20,7 +20,7 @@ add_executable(ClipLite WIN32
 
 target_include_directories(ClipLite PRIVATE include)
 target_compile_definitions(ClipLite PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(ClipLite PRIVATE user32 gdi32 shell32 shcore ole32 comctl32 crypt32 gdiplus)
+target_link_libraries(ClipLite PRIVATE user32 gdi32 shell32 shcore ole32 comctl32 crypt32 gdiplus dwmapi)
 
 if(MSVC)
     set_target_properties(ClipLite PROPERTIES LINK_FLAGS "/SUBSYSTEM:WINDOWS")
