@@ -89,6 +89,27 @@ bool ensureDirectory(const std::wstring& path) {
     return GetLastError() == ERROR_ALREADY_EXISTS;
 }
 
+std::wstring executableDirectory() {
+    wchar_t executable[MAX_PATH]{};
+    const DWORD length = GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
+    if (length == 0 || length >= ARRAYSIZE(executable)) return {};
+    std::wstring path(executable, length);
+    const std::size_t separator = path.find_last_of(L"\\/");
+    return separator == std::wstring::npos ? std::wstring{} : path.substr(0, separator);
+}
+
+bool portableModeEnabled(std::wstring& dataDirectory) {
+    const std::wstring executable = executableDirectory();
+    if (executable.empty()) return false;
+    const std::wstring marker = executable + L"\\portable.flag";
+    const DWORD attributes = GetFileAttributesW(marker.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        return false;
+    }
+    dataDirectory = executable + L"\\data";
+    return ensureDirectory(dataDirectory);
+}
+
 std::string lowerAscii(std::string value) {
     for (char& c : value) {
         if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
@@ -149,6 +170,8 @@ std::wstring clipLiteDataDirectory() {
         ensureDirectory(path);
         return path;
     }
+    std::wstring portablePath;
+    if (portableModeEnabled(portablePath)) return portablePath;
     wchar_t buffer[MAX_PATH]{};
     if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, buffer))) {
         return L".";

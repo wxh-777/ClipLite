@@ -71,6 +71,9 @@ constexpr int kSettingIgnoredApps = 32;
 constexpr int kSettingSensitiveExpiry = 33;
 constexpr int kSettingDataDirectory = 34;
 constexpr int kSettingBrowseDataDirectory = 35;
+constexpr int kSettingStartupSettings = 36;
+constexpr int kSettingStartupNotification = 37;
+constexpr int kSettingOpenLog = 38;
 constexpr int kSettingClearText = 40;
 constexpr int kSettingClearImage = 41;
 constexpr int kSettingClearFiles = 42;
@@ -87,7 +90,6 @@ constexpr int kSettingShortcutDelete = 59;
 constexpr int kSettingCategoryMaxBase = 60;
 constexpr int kSettingCategoryDiskBase = 64;
 constexpr int kMenuPaste = 100;
-constexpr int kMenuPin = 101;
 constexpr int kMenuDelete = 102;
 constexpr int kMenuPastePlain = 103;
 constexpr int kMenuPasteRich = 104;
@@ -99,6 +101,7 @@ constexpr int kFilterImage = 133;
 constexpr int kFilterPinned = 134;
 constexpr int kFilterOther = 135;
 constexpr int kStorageCategoryCount = 3;
+constexpr int kAccentCount = 4;
 constexpr UINT kShowPopupMessage = WM_APP + 1;
 constexpr UINT kTrayMessage = WM_APP + 2;
 constexpr UINT kShowSettingsMessage = WM_APP + 3;
@@ -155,6 +158,8 @@ struct Settings {
     int accent = 0; // 0 blue, 1 purple, 2 legacy green, 3 orange
     bool pauseMonitoring = false;
     bool startWithWindows = false;
+    bool showSettingsOnStartup = true;
+    bool showStartupNotification = true;
     bool encryptData = false;
     int maxItems = 1000;
     int retentionDays = 30;
@@ -195,7 +200,10 @@ struct AppState {
     HHOOK keyboardHook = nullptr;
     bool winKeyDown = false;
     bool suppressWinV = false;
-    bool suppressWinKey = false;
+    bool suppressVKeyUp = false;
+    bool winKeyForwarded = false;
+    UINT pendingWinKey = VK_LWIN;
+    DWORD winKeyDownTime = 0;
     WNDPROC oldEditProc = nullptr;
     POINT popupPoint{};
     int selected = 0;
@@ -237,6 +245,8 @@ struct AppState {
     LONGLONG languageDropdownStartTicks = 0;
     float languageDropdownFrom = 0.0f;
     float languageDropdownTo = 0.0f;
+    bool restoringSettingsControls = false;
+    bool settingsClosing = false;
     int settingsTab = 0;
     std::wstring settingsActionFeedback;
     bool settingsActionFeedbackSuccess = true;
@@ -254,6 +264,32 @@ struct AppState {
 AppState* g_app = nullptr;
 UINT g_taskbarCreated = 0;
 UINT g_uiDpi = 96;
+
+std::wstring diagnosticLogPath() {
+    return clipLiteDataDirectory() + L"\\cliplite.log";
+}
+
+void appendDiagnosticLog(const char* level, const char* message, DWORD errorCode = 0) {
+    constexpr std::int64_t kMaxLogBytes = 1024 * 1024;
+    std::FILE* file = nullptr;
+    _wfopen_s(&file, diagnosticLogPath().c_str(), L"ab+");
+    if (!file) return;
+    _fseeki64(file, 0, SEEK_END);
+    if (_ftelli64(file) >= kMaxLogBytes) {
+        std::fclose(file);
+        file = nullptr;
+        _wfopen_s(&file, diagnosticLogPath().c_str(), L"wb");
+        if (!file) return;
+    }
+    SYSTEMTIME time{};
+    GetLocalTime(&time);
+    std::fprintf(file, "%04u-%02u-%02u %02u:%02u:%02u.%03u [%s] %s",
+                 time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute,
+                 time.wSecond, time.wMilliseconds, level, message);
+    if (errorCode != 0) std::fprintf(file, " error=%lu", errorCode);
+    std::fputc('\n', file);
+    std::fclose(file);
+}
 
 LONGLONG settingsToggleClock();
 LONGLONG settingsToggleClockFrequency();
@@ -310,6 +346,231 @@ const wchar_t* tr(const wchar_t* en, const wchar_t* zh) {
     return languageIsChinese() ? zh : en;
 }
 
+struct SettingsLocale {
+    const wchar_t* appearanceCard;
+    const wchar_t* darkTheme;
+    const wchar_t* language;
+    const wchar_t* systemCard;
+    const wchar_t* pauseMonitoring;
+    const wchar_t* startWithWindows;
+    const wchar_t* showSettingsOnStartup;
+    const wchar_t* showStartupNotification;
+    const wchar_t* importantSystemShortcut;
+    const wchar_t* forceReplaceWinV;
+    const wchar_t* globalShortcuts;
+    const wchar_t* openClipboardHistory;
+    const wchar_t* openSettings;
+    const wchar_t* pauseResumeMonitoring;
+    const wchar_t* historyWindowShortcuts;
+    const wchar_t* pasteSelectedItem;
+    const wchar_t* pastePlainText;
+    const wchar_t* pasteRichText;
+    const wchar_t* closeHistoryWindow;
+    const wchar_t* openSettingsInHistory;
+    const wchar_t* clearHistoryFilter;
+    const wchar_t* deleteSelectedRecord;
+    const wchar_t* registrationStatus;
+    const wchar_t* dataRetention;
+    const wchar_t* maximumRecords;
+    const wchar_t* retentionDays;
+    const wchar_t* maximumDiskSpace;
+    const wchar_t* maximumItemSize;
+    const wchar_t* cacheDirectory;
+    const wchar_t* text;
+    const wchar_t* images;
+    const wchar_t* files;
+    const wchar_t* categoryStorage;
+    const wchar_t* historyStatistics;
+    const wchar_t* privacyProtection;
+    const wchar_t* protectHistory;
+    const wchar_t* ignoredApplications;
+    const wchar_t* sensitiveContentExpiry;
+    const wchar_t* protectionScope;
+    const wchar_t* about;
+    const wchar_t* navGeneral;
+    const wchar_t* navShortcuts;
+    const wchar_t* navStorage;
+    const wchar_t* navPrivacy;
+    const wchar_t* navAbout;
+    const wchar_t* titleGeneral;
+    const wchar_t* titleShortcuts;
+    const wchar_t* titleStorage;
+    const wchar_t* titlePrivacy;
+    const wchar_t* titleAbout;
+    const wchar_t* autoSaved;
+    const wchar_t* totalHistoryFormat;
+    const wchar_t* pinned;
+    const wchar_t* records;
+    const wchar_t* space;
+    const wchar_t* currentCategoryFormat;
+    const wchar_t* categoryNote;
+    const wchar_t* shortcutRegistrationWarning;
+    const wchar_t* shortcutModifierRequirement;
+    const wchar_t* privacyNote;
+    const wchar_t* aboutApplication;
+    const wchar_t* aboutVersion;
+    const wchar_t* aboutStorageFormat;
+    const wchar_t* aboutDataDirectory;
+    const wchar_t* browse;
+    const wchar_t* clearHistory;
+    const wchar_t* clearText;
+    const wchar_t* clearImages;
+    const wchar_t* clearFiles;
+    const wchar_t* pressShortcut;
+    const wchar_t* needModifier;
+    const wchar_t* ignoredAppsPlaceholder;
+    const wchar_t* autoLanguage;
+    const wchar_t* windowTitle;
+    const wchar_t* chooseValidCache;
+    const wchar_t* unableCreateCache;
+    const wchar_t* targetContainsHistory;
+    const wchar_t* unableMigrateHistory;
+    const wchar_t* unableOpenCache;
+    const wchar_t* chooseCacheDirectory;
+    const wchar_t* unableChangeEncryption;
+    const wchar_t* historyLabel;
+    const wchar_t* textLabel;
+    const wchar_t* imagesLabel;
+    const wchar_t* filesLabel;
+    const wchar_t* confirmClearAllFormat;
+    const wchar_t* confirmClearTypeFormat;
+    const wchar_t* confirmClearTitle;
+    const wchar_t* clearCancelled;
+    const wchar_t* noRecordsFormat;
+    const wchar_t* clearedRecordsFormat;
+    const wchar_t* clearFailed;
+    const wchar_t* pruneConfirmationTitle;
+    const wchar_t* pruneConfirmationMessage;
+    const wchar_t* popupTitle;
+    const wchar_t* popupClearSearch;
+    const wchar_t* popupFilterAll;
+    const wchar_t* popupFilterPinned;
+    const wchar_t* popupFilterText;
+    const wchar_t* popupFilterImages;
+    const wchar_t* popupFilterFiles;
+    const wchar_t* popupFilterOther;
+    const wchar_t* popupClipboardSource;
+    const wchar_t* popupEmpty;
+    const wchar_t* popupPaste;
+    const wchar_t* popupPastePlain;
+    const wchar_t* popupPasteRich;
+    const wchar_t* popupPin;
+    const wchar_t* popupUnpin;
+    const wchar_t* popupDelete;
+    const wchar_t* popupFilter;
+    const wchar_t* popupSearchPlaceholder;
+    const wchar_t* popupTextType;
+    const wchar_t* popupImageType;
+    const wchar_t* popupFilesType;
+    const wchar_t* popupOtherType;
+    const wchar_t* relativeJustNow;
+    const wchar_t* relativeMinutesAgo;
+    const wchar_t* relativeHoursAgo;
+    const wchar_t* relativeDaysAgo;
+    const wchar_t* trayOpen;
+    const wchar_t* traySettings;
+    const wchar_t* trayExit;
+    const wchar_t* popupEmptyPreview;
+    const wchar_t* popupImagePreview;
+    const wchar_t* popupFilesPreview;
+    const wchar_t* popupHtmlPreview;
+    const wchar_t* popupInvalidText;
+    const wchar_t* startupNotificationTitle;
+    const wchar_t* startupNotification;
+    const wchar_t* startupFailureTitle;
+    const wchar_t* unableOpenStore;
+    const wchar_t* unableCreateBackground;
+    const wchar_t* unableMonitorClipboard;
+    const wchar_t* unableCreateMutex;
+    const wchar_t* logFilePrefix;
+    const wchar_t* openLog;
+    const wchar_t* unableOpenLog;
+};
+
+const SettingsLocale kEnglishSettingsLocale{
+    L"Appearance and interaction", L"Dark theme", L"Language", L"System and integration",
+    L"Pause clipboard monitoring", L"Start with Windows", L"Important system shortcut",
+    L"Open settings after startup", L"Show startup notification",
+    L"Force replace Win + V", L"Global shortcuts", L"Open clipboard history", L"Open settings",
+    L"Pause/resume clipboard monitoring", L"History window shortcuts", L"Paste selected item",
+    L"Paste as plain text", L"Paste as rich text", L"Close history window",
+    L"Open settings in history window", L"Clear history filter", L"Delete selected record",
+    L"Registration status", L"Data retention", L"Maximum records", L"Retention days (0 = forever)",
+    L"Maximum disk space (MB)", L"Maximum item size (MB)", L"Cache directory", L"Text", L"Images",
+    L"Files", L"Category storage", L"History statistics", L"Privacy protection",
+    L"Protect history with Windows user encryption",
+    L"Ignored applications (one source name per line)",
+    L"Sensitive content expiry (hours, 0 = off)", L"Protection scope", L"About ClipLite",
+    L"General", L"Shortcuts", L"Storage", L"Privacy", L"About ClipLite", L"General settings",
+    L"Shortcuts", L"Storage", L"Privacy", L"About ClipLite", L"Auto-saved",
+    L"Total history: %zu records, %ls", L"Pinned", L"Records", L"Space",
+    L"Current %zu \xB7 %ls",
+    L"Set to 0 for unlimited. Pinned records are not removed automatically.",
+    L"Some shortcuts could not be registered. Choose different combinations.",
+    L"Custom shortcuts require at least one modifier key.",
+    L"Sensitive markers: password, token, api_key, secret, and private keys; detected by content pattern.",
+    L"Application    ClipLite", L"Version        0.1.0 x64", L"Storage format  v4",
+    L"Data directory  %LOCALAPPDATA%\\ClipLite", L"Browse", L"Clear history", L"Clear text",
+    L"Clear images", L"Clear files", L"Press shortcut", L"Need modifier", L"One application per line", L"Auto",
+    L"ClipLite Settings", L"Choose a valid cache directory.", L"Unable to create the cache directory.",
+    L"The target directory already contains history. Choose an empty directory.",
+    L"Unable to migrate clipboard history.", L"Unable to open the new cache directory.",
+    L"Choose a cache directory", L"Unable to change history encryption.", L"history", L"text", L"images",
+    L"files", L"This will permanently remove %zu clipboard records. Continue?",
+    L"This will permanently remove %zu %ls records. Continue?", L"Confirm clear", L"Clear cancelled",
+    L"No %ls records to clear", L"Cleared %zu %ls records", L"Clear failed; history was not changed",
+    L"Confirm retention change", L"Reducing retention limits may permanently remove existing clipboard records. Continue?",
+    L"Clipboard history", L"Clear", L"All", L"Pinned", L"Text", L"Images", L"Files", L"Other",
+    L"Clipboard", L"No clipboard history", L"Paste", L"Paste as plain text", L"Paste as rich text",
+    L"Pin history window", L"Unpin history window", L"Delete", L"Filter", L"Search clipboard history",
+    L"Text", L"Image", L"Files", L"Other", L"Just now", L" min ago", L" hr ago", L" d ago",
+    L"Open history", L"Settings", L"Exit", L"[Empty]", L"[Image]", L"[Files]", L"[HTML]",
+    L"[Invalid text]", L"ClipLite started", L"ClipLite is running in the system tray.",
+    L"ClipLite startup failed", L"Unable to open clipboard history storage.",
+    L"Unable to create the background window.", L"Unable to monitor the clipboard.",
+    L"Unable to create the single-instance lock.", L"Log file        ", L"Open log file",
+    L"Unable to open the log file."
+};
+
+const SettingsLocale kChineseSettingsLocale{
+    L"界面与交互", L"深色主题", L"语言", L"系统与集成", L"暂停剪贴板监听", L"随 Windows 启动",
+    L"启动后打开设置", L"启动后显示系统提示",
+    L"重要系统快捷键", L"强制替换 Win + V", L"全局快捷键", L"打开剪贴板历史", L"打开设置",
+    L"暂停/恢复剪贴板监听", L"历史窗口快捷键", L"粘贴选中项目", L"粘贴为纯文本", L"粘贴为富文本",
+    L"关闭历史窗口", L"在历史窗口打开设置", L"清除历史筛选", L"删除选中记录", L"注册状态",
+    L"数据保留策略", L"最大记录数", L"保留天数（0 = 永久）", L"最大磁盘空间（MB）",
+    L"单条内容上限（MB）", L"缓存目录", L"文本", L"图片", L"文件", L"分类存储设置",
+    L"历史记录统计", L"隐私保护", L"使用 Windows 用户加密保护历史",
+    L"忽略应用（每行一个来源名称）", L"敏感内容过期时间（小时，0 = 关闭）", L"保护范围",
+    L"关于 ClipLite", L"通用", L"快捷键", L"存储管理", L"安全与隐私", L"关于 ClipLite",
+    L"通用设置", L"快捷键", L"存储管理", L"安全与隐私", L"关于 ClipLite", L"已自动保存",
+    L"当前历史总计：%zu 条记录，%ls", L"置顶", L"记录", L"空间",
+    L"当前 %zu 条 \xB7 %ls", L"设置为 0 表示不限；置顶记录不会被自动清理。",
+    L"部分快捷键注册失败，请更换组合键。", L"自定义快捷键至少需要一个修饰键。",
+    L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。",
+    L"应用名称    ClipLite", L"版本        0.1.0 x64", L"存储格式    v4",
+    L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清空历史", L"清理文本", L"清理图片",
+    L"清理文件", L"按下组合键", L"需要修饰键", L"每行一个应用名称", L"自动", L"ClipLite 设置",
+    L"请选择有效的缓存目录。", L"无法创建缓存目录。", L"目标目录已有历史数据，请选择空目录。",
+    L"无法迁移剪贴板历史。", L"无法打开新的缓存目录。", L"选择缓存目录", L"无法更改历史加密设置。",
+    L"历史", L"文本", L"图片", L"文件", L"此操作将永久删除 %zu 条剪贴板记录，是否继续？",
+    L"此操作将永久删除 %zu 条%ls记录，是否继续？", L"确认清理", L"已取消清理",
+    L"没有可清理的%ls记录", L"已清理 %zu 条%ls记录", L"清理失败，历史记录未改变",
+    L"确认保留策略变更", L"降低保留限制可能永久删除现有剪贴板记录，是否继续？",
+    L"剪贴板历史", L"清空", L"全部", L"置顶", L"文本", L"图片", L"文件", L"其他",
+    L"剪贴板", L"暂无剪贴板记录", L"粘贴", L"粘贴为纯文本", L"粘贴为富文本",
+    L"置顶历史窗口", L"取消历史窗口置顶", L"删除", L"筛选", L"搜索剪贴板历史",
+    L"文本", L"图片", L"文件", L"其他", L"刚刚", L"分钟前", L"小时前", L"天前",
+    L"打开历史", L"设置", L"退出", L"[空]", L"[图片]", L"[文件]", L"[HTML]", L"[无效文本]",
+    L"ClipLite 已启动", L"ClipLite 正在系统托盘中运行。", L"ClipLite 启动失败",
+    L"无法打开剪贴板历史存储。", L"无法创建后台窗口。", L"无法监听剪贴板。",
+    L"无法创建单实例锁。", L"日志文件        ", L"打开日志文件", L"无法打开日志文件。"
+};
+
+const SettingsLocale& settingsLocale() {
+    return languageIsChinese() ? kChineseSettingsLocale : kEnglishSettingsLocale;
+}
+
 std::wstring settingsPath() {
     return clipLiteDataDirectory() + L"\\settings.ini";
 }
@@ -345,14 +606,46 @@ std::uint64_t nowUnix() {
     return (value.QuadPart - 116444736000000000ULL) / 10000000ULL;
 }
 
+std::wstring formatByteSize(std::uint64_t bytes) {
+    constexpr std::uint64_t kKibiByte = 1024;
+    constexpr std::uint64_t kMebiByte = kKibiByte * 1024;
+    constexpr std::uint64_t kGibiByte = kMebiByte * 1024;
+    const wchar_t* unit = L"B";
+    double value = static_cast<double>(bytes);
+    if (bytes >= kGibiByte) {
+        value /= static_cast<double>(kGibiByte);
+        unit = L"GB";
+    } else if (bytes >= kMebiByte) {
+        value /= static_cast<double>(kMebiByte);
+        unit = L"MB";
+    } else if (bytes >= kKibiByte) {
+        value /= static_cast<double>(kKibiByte);
+        unit = L"KB";
+    } else {
+        wchar_t result[32]{};
+        swprintf_s(result, L"%llu B", static_cast<unsigned long long>(bytes));
+        return result;
+    }
+
+    wchar_t result[32]{};
+    const wchar_t* format = value >= 100.0 ? L"%.0f %ls" :
+        (value >= 10.0 ? L"%.1f %ls" : L"%.2f %ls");
+    swprintf_s(result, format, value, unit);
+    return result;
+}
+
 std::wstring formatRelativeTime(std::uint64_t timestamp) {
     if (timestamp == 0) return {};
     const std::uint64_t current = nowUnix();
     const std::uint64_t elapsed = current > timestamp ? current - timestamp : 0;
-    if (elapsed < 60) return tr(L"Just now", L"刚刚");
-    if (elapsed < 3600) return std::to_wstring(elapsed / 60) + tr(L" min ago", L"分钟前");
-    if (elapsed < 86400) return std::to_wstring(elapsed / 3600) + tr(L" hr ago", L"小时前");
-    return std::to_wstring(elapsed / 86400) + tr(L" d ago", L"天前");
+    if (elapsed < 60) return settingsLocale().relativeJustNow;
+    if (elapsed < 3600) {
+        return std::to_wstring(elapsed / 60) + settingsLocale().relativeMinutesAgo;
+    }
+    if (elapsed < 86400) {
+        return std::to_wstring(elapsed / 3600) + settingsLocale().relativeHoursAgo;
+    }
+    return std::to_wstring(elapsed / 86400) + settingsLocale().relativeDaysAgo;
 }
 
 void loadSettings(Settings& settings) {
@@ -377,6 +670,10 @@ void loadSettings(Settings& settings) {
         if (std::strncmp(line, "accent=", 7) == 0) settings.accent = std::clamp(std::atoi(line + 7), 0, 3);
         if (std::strncmp(line, "pauseMonitoring=1", 17) == 0) settings.pauseMonitoring = true;
         if (std::strncmp(line, "startWithWindows=1", 18) == 0) settings.startWithWindows = true;
+        if (std::strncmp(line, "showSettingsOnStartup=0", 23) == 0) settings.showSettingsOnStartup = false;
+        if (std::strncmp(line, "showSettingsOnStartup=1", 23) == 0) settings.showSettingsOnStartup = true;
+        if (std::strncmp(line, "showStartupNotification=0", 25) == 0) settings.showStartupNotification = false;
+        if (std::strncmp(line, "showStartupNotification=1", 25) == 0) settings.showStartupNotification = true;
         if (std::strncmp(line, "encryptData=1", 13) == 0) settings.encryptData = true;
         if (std::strncmp(line, "maxItems=", 9) == 0) settings.maxItems = std::clamp(std::atoi(line + 9), 0, 100000);
         if (std::strncmp(line, "retentionDays=", 14) == 0) settings.retentionDays = std::clamp(std::atoi(line + 14), 0, 36500);
@@ -488,10 +785,14 @@ void loadSettings(Settings& settings) {
 void saveSettings(const Settings& settings) {
     std::FILE* file = nullptr;
     _wfopen_s(&file, settingsPath().c_str(), L"wb");
-    if (!file) return;
+    if (!file) {
+        appendDiagnosticLog("ERROR", "settings: unable to write settings file", GetLastError());
+        return;
+    }
     std::fprintf(file, "winV=%d\ndark=%d\nthemeMode=%d\naccent=%d\n"
-                        "pauseMonitoring=%d\nstartWithWindows=%d\n"
-                       "encryptData=%d\n"
+                         "pauseMonitoring=%d\nstartWithWindows=%d\n"
+                         "showSettingsOnStartup=%d\nshowStartupNotification=%d\n"
+                         "encryptData=%d\n"
                         "maxItems=%d\nretentionDays=%d\nmaxDiskMb=%d\nmaxContentMb=%d\n"
                         "dataDirectory=%s\n"
                         "sensitiveExpiryHours=%d\nlanguage=%d\n"
@@ -507,7 +808,9 @@ void saveSettings(const Settings& settings) {
                          "shortcutPopupDeleteModifiers=%u\nshortcutPopupDeleteKey=%u\n",
                   settings.winV ? 1 : 0, settings.dark ? 1 : 0,
                   settings.themeMode, settings.accent,
-                 settings.pauseMonitoring ? 1 : 0, settings.startWithWindows ? 1 : 0,
+                  settings.pauseMonitoring ? 1 : 0, settings.startWithWindows ? 1 : 0,
+                  settings.showSettingsOnStartup ? 1 : 0,
+                  settings.showStartupNotification ? 1 : 0,
                   settings.encryptData ? 1 : 0,
                   settings.maxItems,
                    settings.retentionDays, settings.maxDiskMb, settings.maxContentMb,
@@ -539,9 +842,12 @@ void saveSettings(const Settings& settings) {
 
 void updateStartupRegistration(bool enabled) {
     HKEY key = nullptr;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER,
-            L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, nullptr, 0,
-            KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) {
+    const LONG result = RegCreateKeyExW(HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, nullptr, 0,
+        KEY_SET_VALUE, nullptr, &key, nullptr);
+    if (result != ERROR_SUCCESS) {
+        appendDiagnosticLog("ERROR", "startup: unable to update Windows startup registration",
+                            static_cast<DWORD>(result));
         return;
     }
     constexpr wchar_t valueName[] = L"ClipLite";
@@ -916,11 +1222,24 @@ bool isAutomaticTypeMatch(int filterType, ClipType type) {
 }
 
 const wchar_t* automaticTypeLabel(ClipType type) {
-    if (type == ClipType::Text) return tr(L"Text", L"文本");
-    if (isImageType(type)) return tr(L"Image", L"图片");
-    if (type == ClipType::Files) return tr(L"Files", L"文件");
-    if (type == ClipType::Html) return tr(L"Text", L"文本");
-    return tr(L"Other", L"其他");
+    if (type == ClipType::Text || type == ClipType::Html) return settingsLocale().popupTextType;
+    if (isImageType(type)) return settingsLocale().popupImageType;
+    if (type == ClipType::Files) return settingsLocale().popupFilesType;
+    return settingsLocale().popupOtherType;
+}
+
+std::wstring localizedPopupPreview(const ClipItem& item) {
+    std::wstring preview = utf8ToWide(item.preview);
+    if (preview.empty() || preview == L"[Empty]") return settingsLocale().popupEmptyPreview;
+    if (preview == L"[Image]") return settingsLocale().popupImagePreview;
+    if (preview == L"[HTML]") return settingsLocale().popupHtmlPreview;
+    if (preview == L"[Invalid text]") return settingsLocale().popupInvalidText;
+    constexpr wchar_t filesPrefix[] = L"[Files] ";
+    if (preview.rfind(filesPrefix, 0) == 0) {
+        return std::wstring(settingsLocale().popupFilesPreview) + preview.substr(
+            sizeof(filesPrefix) / sizeof(filesPrefix[0]) - 1);
+    }
+    return preview;
 }
 
 int popupVisibleRows() {
@@ -1581,11 +1900,13 @@ void sendPaste(PasteMode mode = PasteMode::Automatic) {
     const std::size_t index = g_app->visible[static_cast<std::size_t>(selected)];
     std::string payload;
     if (!g_app->store.readPayload(index, payload)) {
+        appendDiagnosticLog("ERROR", "paste: unable to read selected history payload");
         notifyPasteFailure();
         return;
     }
     const std::uint64_t hash = g_app->store.items()[index].hash;
     if (!setClipboardDataForItem(g_app->store.items()[index], payload, mode)) {
+        appendDiagnosticLog("ERROR", "paste: unable to write selected item to clipboard");
         notifyPasteFailure();
         return;
     }
@@ -1600,6 +1921,8 @@ void sendPaste(PasteMode mode = PasteMode::Automatic) {
         g_app->searchEdit = nullptr;
     }
     if (!IsWindow(target)) {
+        appendDiagnosticLog("WARN", "paste: target window is no longer valid");
+        notifyPasteFailure();
         if (keepPopup && IsWindow(g_app->popup)) ShowWindow(g_app->popup, SW_SHOWNOACTIVATE);
         return;
     }
@@ -1614,7 +1937,12 @@ void sendPaste(PasteMode mode = PasteMode::Automatic) {
     inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
     inputs[3] = inputs[0];
     inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
-    SendInput(4, inputs, sizeof(INPUT));
+    if (SendInput(4, inputs, sizeof(INPUT)) != 4) {
+        appendDiagnosticLog("ERROR", "paste: SendInput failed", GetLastError());
+        notifyPasteFailure();
+        if (keepPopup && IsWindow(g_app->popup)) ShowWindow(g_app->popup, SW_SHOWNOACTIVATE);
+        return;
+    }
     if (keepPopup && IsWindow(g_app->popup)) {
         SetWindowPos(g_app->popup, HWND_TOPMOST, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -1677,6 +2005,7 @@ void closePopup() {
     }
     g_app->popup = nullptr;
     g_app->searchEdit = nullptr;
+    g_app->popupPinned = false;
 }
 
 void setPopupPinned(bool pinned) {
@@ -1707,6 +2036,27 @@ bool addTrayIcon() {
     return Shell_NotifyIconW(NIM_ADD, &icon) != FALSE;
 }
 
+void showStartupNotification() {
+    if (!g_app || !g_app->hidden) return;
+    NOTIFYICONDATAW icon{};
+    icon.cbSize = sizeof(icon);
+    icon.hWnd = g_app->hidden;
+    icon.uID = kTrayId;
+    icon.uFlags = NIF_INFO;
+    wcscpy_s(icon.szInfoTitle, settingsLocale().startupNotificationTitle);
+    wcscpy_s(icon.szInfo, settingsLocale().startupNotification);
+    icon.dwInfoFlags = NIIF_INFO;
+    if (!Shell_NotifyIconW(NIM_MODIFY, &icon)) {
+        appendDiagnosticLog("WARN", "startup: unable to show tray notification", GetLastError());
+    }
+}
+
+void showStartupFailure(const wchar_t* message) {
+    appendDiagnosticLog("ERROR", "startup: fatal initialization failure");
+    MessageBoxW(nullptr, message, settingsLocale().startupFailureTitle,
+                MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+}
+
 void removeTrayIcon() {
     if (!g_app || !g_app->hidden) return;
     NOTIFYICONDATAW icon{};
@@ -1719,10 +2069,10 @@ void removeTrayIcon() {
 void showTrayMenu() {
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
-    AppendMenuW(menu, MF_STRING, kTrayOpen, tr(L"Open history", L"打开历史"));
-    AppendMenuW(menu, MF_STRING, kTraySettings, tr(L"Settings", L"设置"));
+    AppendMenuW(menu, MF_STRING, kTrayOpen, settingsLocale().trayOpen);
+    AppendMenuW(menu, MF_STRING, kTraySettings, settingsLocale().traySettings);
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, kTrayExit, tr(L"Exit", L"退出"));
+    AppendMenuW(menu, MF_STRING, kTrayExit, settingsLocale().trayExit);
     POINT point{};
     GetCursorPos(&point);
     SetForegroundWindow(g_app->hidden);
@@ -1735,31 +2085,69 @@ void showTrayMenu() {
 }
 
 LRESULT CALLBACK lowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
-    if (code == HC_ACTION && g_app && g_app->settingsData.winV) {
+    if (code == HC_ACTION && g_app && g_app->keyboardHook) {
         const auto* key = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
         const bool keyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
         const bool keyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
         const bool injected = (key->flags & LLKHF_INJECTED) != 0;
         const bool winKey = key->vkCode == VK_LWIN || key->vkCode == VK_RWIN;
-        if (!injected && winKey) {
-            if (keyUp && g_app->suppressWinKey) {
-                g_app->suppressWinKey = false;
-                g_app->winKeyDown = false;
-                return 1;
-            }
-            g_app->winKeyDown = keyDown || (g_app->winKeyDown && !keyUp);
+        if (injected) return CallNextHookEx(nullptr, code, wParam, lParam);
+
+        if (g_app->winKeyDown && !winKey &&
+            static_cast<DWORD>(key->time - g_app->winKeyDownTime) > 10000) {
+            g_app->winKeyDown = false;
+            g_app->suppressWinV = false;
+            g_app->suppressVKeyUp = false;
+            g_app->winKeyForwarded = false;
         }
-        if (!injected && key->vkCode == 'V') {
-            if (keyDown && g_app->winKeyDown && !g_app->suppressWinV) {
-                g_app->suppressWinV = true;
-                g_app->suppressWinKey = true;
-                PostMessageW(g_app->hidden, kShowPopupMessage, 0, 0);
+
+        const auto replayWinKeyDown = [&]() {
+            INPUT input{};
+            input.type = INPUT_KEYBOARD;
+            input.ki.wVk = static_cast<WORD>(g_app->pendingWinKey);
+            return SendInput(1, &input, sizeof(input)) == 1;
+        };
+
+        if (winKey) {
+            if (keyDown) {
+                if (g_app->winKeyDown) return 1;
+                g_app->winKeyDown = true;
+                g_app->pendingWinKey = static_cast<UINT>(key->vkCode);
+                g_app->winKeyDownTime = key->time;
+                g_app->winKeyForwarded = false;
                 return 1;
             }
-            if (keyUp && g_app->suppressWinV) {
-                g_app->suppressWinV = false;
+            if (keyUp) {
+                if (g_app->winKeyDown && g_app->suppressWinV) {
+                    g_app->winKeyDown = false;
+                    g_app->suppressWinV = false;
+                    return 1;
+                }
+                if (g_app->winKeyDown) {
+                    g_app->winKeyDown = false;
+                    g_app->winKeyForwarded = replayWinKeyDown();
+                }
+                if (g_app->winKeyForwarded) {
+                    g_app->winKeyForwarded = false;
+                    return CallNextHookEx(nullptr, code, wParam, lParam);
+                }
                 return 1;
             }
+        }
+
+        if (g_app->winKeyDown && keyDown && key->vkCode == 'V') {
+            g_app->suppressWinV = true;
+            g_app->suppressVKeyUp = true;
+            PostMessageW(g_app->hidden, kShowPopupMessage, 0, 0);
+            return 1;
+        }
+        if (g_app->winKeyDown && keyDown) {
+            g_app->winKeyDown = false;
+            g_app->winKeyForwarded = replayWinKeyDown();
+        }
+        if (keyUp && g_app->suppressVKeyUp && key->vkCode == 'V') {
+            g_app->suppressVKeyUp = false;
+            return 1;
         }
     }
     return CallNextHookEx(nullptr, code, wParam, lParam);
@@ -1780,10 +2168,17 @@ void registerHotkeys() {
         UnhookWindowsHookEx(g_app->keyboardHook);
         g_app->keyboardHook = nullptr;
     }
+    g_app->winKeyDown = false;
+    g_app->suppressWinV = false;
+    g_app->suppressVKeyUp = false;
+    g_app->winKeyForwarded = false;
+    g_app->pendingWinKey = VK_LWIN;
+    g_app->winKeyDownTime = 0;
     g_app->shortcutRegistrationWarning = false;
     auto registerWithFallback = [&](int id, ShortcutBinding& binding,
                                      const ShortcutBinding& fallback) {
         if (registerConfiguredHotkey(id, binding)) return;
+        appendDiagnosticLog("WARN", "hotkey: configured shortcut registration failed");
         g_app->shortcutRegistrationWarning = true;
         binding = fallback;
         registerConfiguredHotkey(id, binding);
@@ -1795,15 +2190,15 @@ void registerHotkeys() {
     registerWithFallback(kHotkeyPause, g_app->settingsData.pauseHotkey,
                          ShortcutBinding{MOD_CONTROL | MOD_SHIFT, 'P'});
     if (g_app->settingsData.winV) {
-        if (!RegisterHotKey(g_app->hidden, kHotkeyWinV, MOD_WIN | MOD_NOREPEAT, 'V')) {
-            g_app->keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, lowLevelKeyboardProc,
-                                                     GetModuleHandleW(nullptr), 0);
-            if (!g_app->keyboardHook) {
-                MessageBoxW(g_app->hidden, tr(L"Unable to replace Win+V.", L"无法替换 Win+V。"),
-                            L"ClipLite", MB_OK | MB_ICONWARNING);
-                g_app->settingsData.winV = false;
-                saveSettings(g_app->settingsData);
-            }
+        g_app->keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, lowLevelKeyboardProc,
+                                                 GetModuleHandleW(nullptr), 0);
+        if (!g_app->keyboardHook) {
+            appendDiagnosticLog("ERROR", "hotkey: unable to install Win+V interceptor",
+                                GetLastError());
+            MessageBoxW(g_app->hidden, tr(L"Unable to replace Win+V.", L"无法替换 Win+V。"),
+                        L"ClipLite", MB_OK | MB_ICONWARNING);
+            g_app->settingsData.winV = false;
+            saveSettings(g_app->settingsData);
         }
     }
     if (g_app->shortcutRegistrationWarning && g_app->settings) {
@@ -2005,43 +2400,69 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
         layout.cards.push_back(std::move(card));
     };
     if (g_app->settingsTab == 0) {
-        makeCard(L"界面与交互", {
-            makeSettingsRow(hwnd, L"深色主题", {kSettingDark}, {36}, {20}, contentWidth),
-            makeSettingsRow(hwnd, L"语言", {kSettingLanguage}, {150}, {30}, contentWidth)
+        makeCard(settingsLocale().appearanceCard, {
+            makeSettingsRow(hwnd, settingsLocale().darkTheme,
+                            {kSettingDark}, {36}, {20}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().language,
+                            {kSettingLanguage}, {150}, {30}, contentWidth)
         });
-        makeCard(L"系统与集成", {
-            makeSettingsRow(hwnd, L"暂停剪贴板监听", {kSettingPause}, {36}, {20}, contentWidth),
-            makeSettingsRow(hwnd, L"随 Windows 启动", {kSettingStartup}, {36}, {20}, contentWidth)
+        makeCard(settingsLocale().systemCard, {
+            makeSettingsRow(hwnd, settingsLocale().pauseMonitoring,
+                            {kSettingPause}, {36}, {20}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().startWithWindows,
+                            {kSettingStartup}, {36}, {20}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().showSettingsOnStartup,
+                            {kSettingStartupSettings}, {36}, {20}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().showStartupNotification,
+                            {kSettingStartupNotification}, {36}, {20}, contentWidth)
         });
     } else if (g_app->settingsTab == kSettingsShortcutPage) {
-        makeCard(L"重要系统快捷键", {
-            makeSettingsRow(hwnd, L"强制替换 Win + V", {kSettingWinV}, {36}, {20}, contentWidth)
+        makeCard(settingsLocale().importantSystemShortcut, {
+            makeSettingsRow(hwnd, settingsLocale().forceReplaceWinV,
+                            {kSettingWinV}, {36}, {20}, contentWidth)
         });
-        makeCard(L"全局快捷键", {
-            makeSettingsRow(hwnd, L"打开剪贴板历史", {kSettingShortcutHistory}, {150}, {30}, contentWidth),
-            makeSettingsRow(hwnd, L"打开设置", {kSettingShortcutSettings}, {150}, {30}, contentWidth),
-            makeSettingsRow(hwnd, L"暂停/恢复剪贴板监听", {kSettingShortcutPause}, {150}, {30}, contentWidth)
+        makeCard(settingsLocale().globalShortcuts, {
+            makeSettingsRow(hwnd, settingsLocale().openClipboardHistory,
+                            {kSettingShortcutHistory}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().openSettings,
+                            {kSettingShortcutSettings}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().pauseResumeMonitoring,
+                            {kSettingShortcutPause}, {150}, {30}, contentWidth)
         });
-        makeCard(L"历史窗口快捷键", {
-            makeSettingsRow(hwnd, L"粘贴选中项目", {kSettingShortcutPaste}, {150}, {30}, contentWidth),
-            makeSettingsRow(hwnd, L"粘贴为纯文本", {kSettingShortcutPastePlain}, {150}, {30}, contentWidth),
-            makeSettingsRow(hwnd, L"粘贴为富文本", {kSettingShortcutPasteRich}, {150}, {30}, contentWidth),
-            makeSettingsRow(hwnd, L"关闭历史窗口", {kSettingShortcutClosePopup}, {150}, {30}, contentWidth),
-            makeSettingsRow(hwnd, L"在历史窗口打开设置", {kSettingShortcutPopupSettings}, {150}, {30}, contentWidth),
-            makeSettingsRow(hwnd, L"清除历史筛选", {kSettingShortcutClearFilter}, {150}, {30}, contentWidth),
-            makeSettingsRow(hwnd, L"删除选中记录", {kSettingShortcutDelete}, {150}, {30}, contentWidth)
+        makeCard(settingsLocale().historyWindowShortcuts, {
+            makeSettingsRow(hwnd, settingsLocale().pasteSelectedItem,
+                            {kSettingShortcutPaste}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().pastePlainText,
+                            {kSettingShortcutPastePlain}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().pasteRichText,
+                            {kSettingShortcutPasteRich}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().closeHistoryWindow,
+                            {kSettingShortcutClosePopup}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().openSettingsInHistory,
+                            {kSettingShortcutPopupSettings}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().clearHistoryFilter,
+                            {kSettingShortcutClearFilter}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().deleteSelectedRecord,
+                            {kSettingShortcutDelete}, {150}, {30}, contentWidth)
         });
-        makeCard(L"注册状态", {}, 48);
+        makeCard(settingsLocale().registrationStatus, {}, 48);
     } else if (g_app->settingsTab == 2) {
-        makeCard(L"数据保留策略", {
-            makeSettingsRow(hwnd, L"最大记录数", {kSettingMaxItems}, {150}, {30}, contentWidth),
-            makeSettingsRow(hwnd, L"保留天数（0 = 永久）", {kSettingRetentionDays}, {150}, {30}, contentWidth),
-            makeSettingsRow(hwnd, L"最大磁盘空间（MB）", {kSettingMaxDiskMb}, {150}, {30}, contentWidth),
-            makeSettingsRow(hwnd, L"单条内容上限（MB）", {kSettingMaxContentMb}, {150}, {30}, contentWidth),
-            makeSettingsRow(hwnd, L"缓存目录", {kSettingDataDirectory, kSettingBrowseDataDirectory},
+        makeCard(settingsLocale().dataRetention, {
+            makeSettingsRow(hwnd, settingsLocale().maximumRecords,
+                            {kSettingMaxItems}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().retentionDays,
+                            {kSettingRetentionDays}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().maximumDiskSpace,
+                            {kSettingMaxDiskMb}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().maximumItemSize,
+                            {kSettingMaxContentMb}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().cacheDirectory,
+                            {kSettingDataDirectory, kSettingBrowseDataDirectory},
                             {360, 64}, {30, 30}, contentWidth)
         });
-        const wchar_t* labels[] = {L"文本", L"图片", L"文件"};
+        const wchar_t* labels[] = {
+            settingsLocale().text, settingsLocale().images, settingsLocale().files
+        };
         const int clearIds[] = {kSettingClearText, kSettingClearImage, kSettingClearFiles};
         std::vector<SettingsRowLayout> categoryRows;
         for (int i = 0; i < kStorageCategoryCount; ++i) {
@@ -2050,13 +2471,13 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
                                                      kSettingCategoryDiskBase + i, clearIds[i]},
                                                     {70, 70, 64}, {30, 30, 30}, contentWidth));
         }
-        makeCard(L"分类存储设置", std::move(categoryRows), 34);
+        makeCard(settingsLocale().categoryStorage, std::move(categoryRows), 34);
         SettingsCardLayout& categoryCard = layout.cards.back();
         for (SettingsRowLayout& row : categoryCard.rows) row.top += 20;
         categoryCard.bottom += 20;
         cursor += 20;
         SettingsCardLayout stats;
-        stats.title = L"历史记录统计";
+        stats.title = settingsLocale().historyStatistics;
         stats.top = cursor;
         stats.bottom = cursor + 160;
         SettingsRowLayout statsAction = makeSettingsRow(
@@ -2066,14 +2487,17 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
         layout.cards.push_back(std::move(stats));
         cursor += 172;
     } else if (g_app->settingsTab == 3) {
-        makeCard(L"隐私保护", {
-            makeSettingsRow(hwnd, L"使用 Windows 用户加密保护历史", {kSettingEncrypt}, {36}, {20}, contentWidth),
-            makeSettingsRow(hwnd, L"忽略应用（每行一个来源名称）", {kSettingIgnoredApps}, {150}, {60}, contentWidth),
-            makeSettingsRow(hwnd, L"敏感内容过期时间（小时，0 = 关闭）", {kSettingSensitiveExpiry}, {150}, {30}, contentWidth)
+        makeCard(settingsLocale().privacyProtection, {
+            makeSettingsRow(hwnd, settingsLocale().protectHistory,
+                            {kSettingEncrypt}, {36}, {20}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().ignoredApplications,
+                            {kSettingIgnoredApps}, {150}, {60}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().sensitiveContentExpiry,
+                            {kSettingSensitiveExpiry}, {150}, {30}, contentWidth)
         }, 28);
-        makeCard(L"保护范围", {}, 48);
+        makeCard(settingsLocale().protectionScope, {}, 48);
     } else {
-        makeCard(L"关于 ClipLite", {}, 150);
+        makeCard(settingsLocale().about, {}, 220);
     }
     const int controlRight = clientWidth - 20 - 14;
     for (SettingsCardLayout& card : layout.cards) {
@@ -2200,7 +2624,10 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                  CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
     SetBkMode(dc, TRANSPARENT);
-    const wchar_t* navLabels[] = {L"通用", L"快捷键", L"存储管理", L"安全与隐私", L"关于 ClipLite"};
+    const wchar_t* navLabels[] = {
+        settingsLocale().navGeneral, settingsLocale().navShortcuts, settingsLocale().navStorage,
+        settingsLocale().navPrivacy, settingsLocale().navAbout
+    };
     const int activeTop = 50 + g_app->settingsTab * 38;
     drawRounded(RECT{ui(12), ui(activeTop), ui(168), ui(activeTop + 34)},
                 settingsAccentSoftColor(), settingsAccentSoftColor(), 6);
@@ -2226,7 +2653,10 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
 
     SelectObject(dc, titleFont);
     SetTextColor(dc, text);
-    const wchar_t* titles[] = {L"通用设置", L"快捷键", L"存储管理", L"安全与隐私", L"关于 ClipLite"};
+    const wchar_t* titles[] = {
+        settingsLocale().titleGeneral, settingsLocale().titleShortcuts, settingsLocale().titleStorage,
+        settingsLocale().titlePrivacy, settingsLocale().titleAbout
+    };
     RECT pageTitle{contentLeft, ui(20), contentRight, ui(48)};
     DrawTextW(dc, titles[g_app->settingsTab], -1, &pageTitle,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
@@ -2244,7 +2674,7 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
         : (g_app->settingsActionFeedbackSuccess ? accent : RGB(185, 28, 28)));
     RECT saveState{accentLeft - ui(86), ui(20), accentLeft - ui(8), ui(42)};
     const wchar_t* saveLabel = g_app->settingsActionFeedback.empty()
-        ? L"已自动保存" : g_app->settingsActionFeedback.c_str();
+        ? settingsLocale().autoSaved : g_app->settingsActionFeedback.c_str();
     DrawTextW(dc, saveLabel, -1, &saveState,
               DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     const COLORREF themeSurface = settingsThemeColor(RGB(232, 238, 245), RGB(26, 33, 44));
@@ -2272,7 +2702,7 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
     const COLORREF accentColors[] = {
         RGB(37, 99, 235), RGB(124, 58, 237), RGB(39, 124, 97), RGB(217, 119, 6)
     };
-    for (int i = 0; i < kStorageCategoryCount; ++i) {
+    for (int i = 0; i < kAccentCount; ++i) {
         const int left = accentLeft + i * (accentSize + accentGap);
         drawSettingsAccentDot(dc, left, themeTop + ui(7), accentSize,
                               accentColors[i], g_app->settingsData.accent == i, text);
@@ -2317,14 +2747,18 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
             if (item.pinned) ++pinnedCount;
         }
         wchar_t summary[192]{};
-        swprintf_s(summary, L"当前历史总计：%zu 条记录，%llu 字节",
-                   g_app->store.activeCount(), g_app->store.diskBytes());
+        const std::wstring totalSize = formatByteSize(g_app->store.diskBytes());
+        swprintf_s(summary, settingsLocale().totalHistoryFormat,
+                   g_app->store.activeCount(), totalSize.c_str());
         SelectObject(dc, bodyFont);
         SetTextColor(dc, secondary);
         RECT summaryRect{contentLeft + ui(14), settingsContentY(top + 37), contentRight - ui(14),
                          settingsContentY(top + 61)};
         DrawTextW(dc, summary, -1, &summaryRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        const wchar_t* labels[] = {L"文本", L"图片", L"文件", L"置顶"};
+        const wchar_t* labels[] = {
+            settingsLocale().text, settingsLocale().images,
+            settingsLocale().files, settingsLocale().pinned
+        };
         const std::size_t counts[] = {textCount, imageCount, fileCount, pinnedCount};
         for (int i = 0; i < 4; ++i) {
             wchar_t value[64]{};
@@ -2359,14 +2793,17 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
                            ui(firstRow.controlX[0] + 70), settingsContentY(categoryCard.top + 54)};
             RECT diskHeader{ui(firstRow.controlX[1]), settingsContentY(categoryCard.top + 40),
                             ui(firstRow.controlX[1] + 70), settingsContentY(categoryCard.top + 54)};
-            DrawTextW(dc, L"记录", -1, &maxHeader, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            DrawTextW(dc, L"空间 MB", -1, &diskHeader, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawTextW(dc, settingsLocale().records, -1, &maxHeader,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+             DrawTextW(dc, settingsLocale().space, -1, &diskHeader,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             const ClipType types[] = {ClipType::Text, ClipType::Image, ClipType::Files};
             for (int i = 0; i < kStorageCategoryCount; ++i) {
                 const SettingsRowLayout& row = categoryCard.rows[static_cast<std::size_t>(i)];
                 wchar_t count[64]{};
-                swprintf_s(count, L"当前 %zu 条 · %llu B", g_app->store.countType(types[i]),
-                           g_app->store.bytesType(types[i]));
+                const std::wstring categorySize = formatByteSize(g_app->store.bytesType(types[i]));
+                swprintf_s(count, settingsLocale().currentCategoryFormat,
+                           g_app->store.countType(types[i]), categorySize.c_str());
                 RECT countRect{contentLeft + ui(62), settingsContentY(row.top),
                                ui(row.controlX.front() - 8), settingsContentY(row.top + row.height)};
                 SetTextColor(dc, secondary);
@@ -2375,7 +2812,7 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
             }
             RECT note{contentLeft + ui(14), settingsContentY(categoryCard.bottom - 48),
                       contentRight - ui(14), settingsContentY(categoryCard.bottom - 22)};
-            DrawTextW(dc, L"设置为 0 表示不限；置顶记录不会被自动清理。", -1, &note,
+            DrawTextW(dc, settingsLocale().categoryNote, -1, &note,
                       DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         }
     } else if (g_app->settingsTab == kSettingsShortcutPage && !layout.cards.empty()) {
@@ -2385,8 +2822,8 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
         RECT description{contentLeft + ui(14), settingsContentY(card.bottom - 38), contentRight - ui(14),
                          settingsContentY(card.bottom - 12)};
         DrawTextW(dc, g_app->shortcutRegistrationWarning
-                      ? L"部分快捷键注册失败，请更换组合键。"
-                      : L"自定义快捷键至少需要一个修饰键。",
+                      ? settingsLocale().shortcutRegistrationWarning
+                      : settingsLocale().shortcutModifierRequirement,
                   -1, &description, DT_LEFT | DT_WORDBREAK);
     } else if (g_app->settingsTab == 3 && layout.cards.size() >= 2) {
         SelectObject(dc, bodyFont);
@@ -2394,19 +2831,25 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
         const SettingsCardLayout& card = layout.cards.back();
         RECT description{contentLeft + ui(14), settingsContentY(card.bottom - 38), contentRight - ui(14),
                          settingsContentY(card.bottom - 12)};
-        DrawTextW(dc, L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。", -1, &description,
+        DrawTextW(dc, settingsLocale().privacyNote, -1, &description,
                   DT_LEFT | DT_WORDBREAK);
     } else if (g_app->settingsTab == 4 && !layout.cards.empty()) {
         SelectObject(dc, bodyFont);
         SetTextColor(dc, text);
-        const wchar_t* about[] = {L"应用名称    ClipLite", L"版本        0.1.0 x64",
-                                  L"存储格式    v4",
-                                  L"数据目录    %LOCALAPPDATA%\\ClipLite"};
+        const wchar_t* about[] = {
+            settingsLocale().aboutApplication, settingsLocale().aboutVersion,
+            settingsLocale().aboutStorageFormat, settingsLocale().aboutDataDirectory
+        };
         for (int i = 0; i < 4; ++i) {
             RECT aboutRect{contentLeft + ui(14), settingsContentY(layout.cards.front().top + 50 + i * 34),
                            contentRight - ui(14), settingsContentY(layout.cards.front().top + 76 + i * 34)};
             DrawTextW(dc, about[i], -1, &aboutRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         }
+        const std::wstring logFile = settingsLocale().logFilePrefix + diagnosticLogPath();
+        RECT logRect{contentLeft + ui(14), settingsContentY(layout.cards.front().top + 186),
+                     contentRight - ui(14), settingsContentY(layout.cards.front().top + 212)};
+        DrawTextW(dc, logFile.c_str(), -1, &logRect,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
     RestoreDC(dc, bodyClip);
 
@@ -2524,7 +2967,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         drawGdiRoundedSurface(dc, RECT{ui(12), ui(10), ui(86), ui(50)},
                               settingsAccentSoftColor(), settingsAccentSoftColor(), 4);
     }
-    DrawTextW(dc, tr(L"Clipboard history", L"剪贴板历史"), -1, &titleRect,
+    DrawTextW(dc, settingsLocale().popupTitle, -1, &titleRect,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     const COLORREF searchBorder = g_app->searchEdit && GetFocus() == g_app->searchEdit
         ? accent : border;
@@ -2534,7 +2977,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
                           searchBorder, 6);
     drawSearchIcon(dc, ui(kPopupSearchLeft + 14), ui(30),
                    g_app->searchEdit && GetFocus() == g_app->searchEdit ? accent : secondary);
-    const wchar_t* clearLabel = tr(L"Clear", L"清空");
+    const wchar_t* clearLabel = settingsLocale().popupClearSearch;
     SelectObject(dc, filterFont);
     RECT clearRect{ui(kPopupClearLeft), ui(14), ui(kPopupClearRight), ui(46)};
     if (g_app->hoveredFilter == 7) {
@@ -2560,8 +3003,9 @@ void paintPopupContent(HWND hwnd, HDC dc) {
                    g_app->hoveredFilter == 9 ? RGB(220, 38, 38) : secondary);
 
     const wchar_t* filterLabels[] = {
-        tr(L"All", L"全部"), tr(L"Pinned", L"置顶"), tr(L"Text", L"文本"),
-        tr(L"Images", L"图片"), tr(L"Files", L"文件"), tr(L"Other", L"其他")
+        settingsLocale().popupFilterAll, settingsLocale().popupFilterPinned,
+        settingsLocale().popupFilterText, settingsLocale().popupFilterImages,
+        settingsLocale().popupFilterFiles, settingsLocale().popupFilterOther
     };
     SelectObject(dc, filterFont);
     const int filterClip = SaveDC(dc);
@@ -2612,11 +3056,10 @@ void paintPopupContent(HWND hwnd, HDC dc) {
                                   accent, accent, 2);
         }
         const bool image = isImageType(item.type);
-            if (image && drawImagePreview(dc, item, RECT{rowRect.left + ui(12), y + ui(12),
+        if (image && drawImagePreview(dc, item, RECT{rowRect.left + ui(12), y + ui(12),
                                                      rowRect.left + ui(56), y + ui(56)})) {
         } else {
-            std::wstring preview = utf8ToWide(item.preview);
-            if (preview.empty()) preview = L"[Empty]";
+            const std::wstring preview = localizedPopupPreview(item);
             SelectObject(dc, previewFont);
             SetTextColor(dc, text);
             RECT previewRect{rowRect.left + ui(12), y + ui(10), rowRect.right - ui(12), y + ui(48)};
@@ -2627,7 +3070,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         const wchar_t* kind = automaticTypeLabel(item.type);
         SetTextColor(dc, secondary);
         const std::wstring source = item.source.empty()
-            ? std::wstring(tr(L"Clipboard", L"剪贴板")) : utf8ToWide(item.source);
+            ? std::wstring(settingsLocale().popupClipboardSource) : utf8ToWide(item.source);
         const int metadataTop = y + height - ui(24);
         const bool metadataVisible = metadataTop >= ui(kPopupListTop) &&
             metadataTop + ui(16) <= listBottom;
@@ -2661,7 +3104,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         y += height + ui(kPopupCardGap);
     }
     if (g_app->visible.empty()) {
-        const wchar_t* empty = tr(L"No clipboard history", L"暂无剪贴板记录");
+        const wchar_t* empty = settingsLocale().popupEmpty;
         SetTextColor(dc, secondary);
         const int centerX = client.right / 2;
         const int emptyTop = ui(kPopupListTop + 54);
@@ -2815,7 +3258,7 @@ void beginSettingsShortcutCapture(HWND hwnd, HWND control) {
     if (!hwnd || !control) return;
     g_app->shortcutCaptureControl = control;
     SetFocus(control);
-    SetWindowTextW(control, tr(L"Press shortcut", L"按下组合键"));
+    SetWindowTextW(control, settingsLocale().pressShortcut);
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
@@ -2831,7 +3274,7 @@ void captureSettingsShortcut(HWND hwnd, HWND control, UINT virtualKey) {
     const bool modifierless = id == kSettingShortcutPaste || id == kSettingShortcutClosePopup ||
         id == kSettingShortcutPopupSettings || id == kSettingShortcutDelete;
     if (modifiers == 0 && !modifierless) {
-        SetWindowTextW(control, tr(L"Need modifier", L"需要修饰键"));
+        SetWindowTextW(control, settingsLocale().needModifier);
         return;
     }
     ShortcutBinding* binding = settingsShortcutBinding(g_app->settingsData, GetDlgCtrlID(control));
@@ -2846,7 +3289,6 @@ void captureSettingsShortcut(HWND hwnd, HWND control, UINT virtualKey) {
 }
 
 void createSettingsControlsModern(HWND hwnd) {
-    const bool zh = languageIsChinese();
     auto createToggle = [hwnd](int id, int x, int y, bool checked) {
         HWND control = CreateWindowW(L"BUTTON", L"",
                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP |
@@ -2871,6 +3313,8 @@ void createSettingsControlsModern(HWND hwnd) {
     createToggle(kSettingWinV, 640, 112, g_app->settingsData.winV);
     createToggle(kSettingPause, 640, 264, g_app->settingsData.pauseMonitoring);
     createToggle(kSettingStartup, 640, 299, g_app->settingsData.startWithWindows);
+    createToggle(kSettingStartupSettings, 640, 334, g_app->settingsData.showSettingsOnStartup);
+    createToggle(kSettingStartupNotification, 640, 369, g_app->settingsData.showStartupNotification);
     createToggle(kSettingEncrypt, 640, 116, g_app->settingsData.encryptData);
     createShortcut(kSettingShortcutHistory, 110, g_app->settingsData.historyHotkey);
     createShortcut(kSettingShortcutSettings, 154, g_app->settingsData.settingsHotkey);
@@ -2924,7 +3368,7 @@ void createSettingsControlsModern(HWND hwnd) {
                     ui(520), ui(252), ui(360), ui(30), hwnd,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingDataDirectory)),
                     GetModuleHandleW(nullptr), nullptr);
-    CreateWindowW(L"BUTTON", zh ? L"浏览" : L"Browse",
+    CreateWindowW(L"BUTTON", settingsLocale().browse,
                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                   ui(888), ui(252), ui(64), ui(30), hwnd,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingBrowseDataDirectory)),
@@ -2962,21 +3406,49 @@ void createSettingsControlsModern(HWND hwnd) {
                         GetModuleHandleW(nullptr), nullptr);
     }
 
-    CreateWindowW(L"BUTTON", zh ? L"清空历史" : L"Clear history",
+    CreateWindowW(L"BUTTON", settingsLocale().clearHistory,
                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, ui(232), ui(360), ui(120), ui(30), hwnd,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingClear)),
                   GetModuleHandleW(nullptr), nullptr);
     const int clearIds[] = {kSettingClearText, kSettingClearImage, kSettingClearFiles};
-    const wchar_t* clearLabels[] = {L"文本", L"图片", L"文件"};
+    const wchar_t* clearLabels[] = {
+        settingsLocale().clearText, settingsLocale().clearImages, settingsLocale().clearFiles
+    };
     for (int i = 0; i < kStorageCategoryCount; ++i) {
-        const std::wstring clearLabel = zh
-            ? std::wstring(L"清理") + clearLabels[i] : std::wstring(clearLabels[i]);
-        CreateWindowW(L"BUTTON", clearLabel.c_str(),
+        CreateWindowW(L"BUTTON", clearLabels[i],
                       WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, ui(232 + i * 82), ui(324),
-                      ui(76), ui(26), hwnd,
+                      ui(84), ui(26), hwnd,
                       reinterpret_cast<HMENU>(static_cast<INT_PTR>(clearIds[i])),
                       GetModuleHandleW(nullptr), nullptr);
     }
+    CreateWindowW(L"BUTTON", settingsLocale().openLog,
+                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, ui(520), ui(298), ui(150), ui(30), hwnd,
+                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingOpenLog)),
+                  GetModuleHandleW(nullptr), nullptr);
+}
+
+void refreshSettingsLocalizedControls(HWND hwnd) {
+    if (!hwnd) return;
+    SetWindowTextW(hwnd, settingsLocale().windowTitle);
+    if (HWND browse = GetDlgItem(hwnd, kSettingBrowseDataDirectory)) {
+        SetWindowTextW(browse, settingsLocale().browse);
+    }
+    if (HWND clear = GetDlgItem(hwnd, kSettingClear)) {
+        SetWindowTextW(clear, settingsLocale().clearHistory);
+    }
+    if (HWND openLog = GetDlgItem(hwnd, kSettingOpenLog)) {
+        SetWindowTextW(openLog, settingsLocale().openLog);
+    }
+    const int clearIds[] = {kSettingClearText, kSettingClearImage, kSettingClearFiles};
+    const wchar_t* clearLabels[] = {
+        settingsLocale().clearText, settingsLocale().clearImages, settingsLocale().clearFiles
+    };
+    for (int i = 0; i < kStorageCategoryCount; ++i) {
+        if (HWND clear = GetDlgItem(hwnd, clearIds[i])) {
+            SetWindowTextW(clear, clearLabels[i]);
+        }
+    }
+    InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 void updateSettingsTabControls(HWND hwnd) {
@@ -2988,12 +3460,14 @@ void updateSettingsTabControls(HWND hwnd) {
         KillTimer(hwnd, kSettingsDropdownTimer);
     }
     const int ids[] = {kSettingDark, kSettingWinV, kSettingLanguage, kSettingPause,
-                        kSettingStartup, kSettingEncrypt, kSettingMaxItems,
+                        kSettingStartup, kSettingStartupSettings, kSettingStartupNotification,
+                        kSettingEncrypt, kSettingMaxItems,
                         kSettingRetentionDays, kSettingMaxDiskMb, kSettingMaxContentMb,
                         kSettingDataDirectory, kSettingBrowseDataDirectory,
-                         kSettingIgnoredApps, kSettingSensitiveExpiry, kSettingClear,
-                           kSettingClearText, kSettingClearImage, kSettingClearFiles,
-                           kSettingShortcutHistory,
+                          kSettingIgnoredApps, kSettingSensitiveExpiry, kSettingClear,
+                            kSettingClearText, kSettingClearImage, kSettingClearFiles,
+                            kSettingOpenLog,
+                            kSettingShortcutHistory,
                          kSettingShortcutSettings, kSettingShortcutPause,
                          kSettingShortcutPaste, kSettingShortcutPastePlain,
                          kSettingShortcutPasteRich, kSettingShortcutClosePopup,
@@ -3067,27 +3541,30 @@ void updateSettingsTabControls(HWND hwnd) {
             }
         }
     }
+    if (g_app->settingsTab == 4) {
+        show(kSettingOpenLog, 520, 298, 150, 30);
+    }
     if (defer) EndDeferWindowPos(defer);
     RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
 }
 
 void appendPasteMenu(HMENU menu, const ClipItem& item) {
-    AppendMenuW(menu, MF_STRING, kMenuPaste, tr(L"Paste", L"粘贴"));
-    AppendMenuW(menu, MF_STRING, kMenuPastePlain, tr(L"Paste as plain text", L"粘贴为纯文本"));
+    AppendMenuW(menu, MF_STRING, kMenuPaste, settingsLocale().popupPaste);
+    AppendMenuW(menu, MF_STRING, kMenuPastePlain, settingsLocale().popupPastePlain);
     AppendMenuW(menu, MF_STRING | (item.type == ClipType::Html ? 0 : MF_GRAYED),
-                kMenuPasteRich, tr(L"Paste as rich text", L"粘贴为富文本"));
+                kMenuPasteRich, settingsLocale().popupPasteRich);
 }
 
 void appendFilterMenu(HMENU menu) {
     HMENU filters = CreatePopupMenu();
-    AppendMenuW(filters, MF_STRING, kFilterAll, tr(L"All", L"全部"));
-    AppendMenuW(filters, MF_STRING, kFilterPinned, tr(L"Pinned only", L"仅置顶"));
-    AppendMenuW(filters, MF_STRING, kFilterText, tr(L"Text", L"文本"));
-    AppendMenuW(filters, MF_STRING, kFilterImage, tr(L"Images", L"图片"));
-    AppendMenuW(filters, MF_STRING, kFilterFiles, tr(L"Files", L"文件"));
-    AppendMenuW(filters, MF_STRING, kFilterOther, tr(L"Other", L"其他"));
+    AppendMenuW(filters, MF_STRING, kFilterAll, settingsLocale().popupFilterAll);
+    AppendMenuW(filters, MF_STRING, kFilterPinned, settingsLocale().popupFilterPinned);
+    AppendMenuW(filters, MF_STRING, kFilterText, settingsLocale().popupFilterText);
+    AppendMenuW(filters, MF_STRING, kFilterImage, settingsLocale().popupFilterImages);
+    AppendMenuW(filters, MF_STRING, kFilterFiles, settingsLocale().popupFilterFiles);
+    AppendMenuW(filters, MF_STRING, kFilterOther, settingsLocale().popupFilterOther);
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(filters),
-                tr(L"Filter", L"筛选"));
+                settingsLocale().popupFilter);
 }
 
 void applyFilterCommand(int command) {
@@ -3139,8 +3616,7 @@ void appendPopupPinMenu(HMENU menu) {
     AppendMenuW(menu, MF_STRING | (g_app->popupPinned ? MF_CHECKED : 0),
                 kMenuPopupPinned,
                 g_app->popupPinned
-                    ? tr(L"Unpin history window", L"取消历史窗口置顶")
-                    : tr(L"Pin history window", L"置顶历史窗口"));
+                    ? settingsLocale().popupUnpin : settingsLocale().popupPin);
 }
 
 void refreshPopupBrush() {
@@ -3172,7 +3648,8 @@ void refreshSettingsFrame(HWND hwnd) {
 
 bool isSettingsToggle(int id) {
     return id == kSettingWinV || id == kSettingDark || id == kSettingPause ||
-           id == kSettingStartup || id == kSettingEncrypt;
+           id == kSettingStartup || id == kSettingStartupSettings ||
+           id == kSettingStartupNotification || id == kSettingEncrypt;
 }
 
 int settingsToggleAtPoint(int tab, int x, int y) {
@@ -3214,7 +3691,7 @@ int settingsAccentAtPoint(HWND hwnd, int x, int y) {
     const int right = themeLeft - ui(14);
     const int left = right - ui(14 * 4 + 6 * 3);
     if (x < left - ui(2) || x >= right + ui(2)) return -1;
-    return std::clamp((x - left) / ui(20), 0, 3);
+    return std::clamp((x - left) / ui(20), 0, kAccentCount - 1);
 }
 
 void invalidateSettingsTheme(HWND hwnd) {
@@ -3298,13 +3775,15 @@ bool migrateDataDirectory(HWND hwnd, const std::wstring& requested, std::string&
     const std::wstring targetDirectory = normalizeDataDirectory(requested.empty()
         ? defaultDirectory : requested);
     if (targetDirectory.empty()) {
-        MessageBoxW(hwnd, tr(L"Choose a valid cache directory.", L"请选择有效的缓存目录。"),
+        appendDiagnosticLog("ERROR", "settings: invalid cache directory");
+        MessageBoxW(hwnd, settingsLocale().chooseValidCache,
                     L"ClipLite", MB_OK | MB_ICONWARNING);
         return false;
     }
     if (SHCreateDirectoryExW(nullptr, targetDirectory.c_str(), nullptr) != ERROR_SUCCESS &&
         GetLastError() != ERROR_ALREADY_EXISTS) {
-        MessageBoxW(hwnd, tr(L"Unable to create the cache directory.", L"无法创建缓存目录。"),
+        appendDiagnosticLog("ERROR", "settings: unable to create cache directory", GetLastError());
+        MessageBoxW(hwnd, settingsLocale().unableCreateCache,
                     L"ClipLite", MB_OK | MB_ICONWARNING);
         return false;
     }
@@ -3321,9 +3800,9 @@ bool migrateDataDirectory(HWND hwnd, const std::wstring& requested, std::string&
     const bool currentExists = GetFileAttributesW(currentFile.c_str()) != INVALID_FILE_ATTRIBUTES;
     const bool targetExists = GetFileAttributesW(targetFile.c_str()) != INVALID_FILE_ATTRIBUTES;
     if (currentExists && targetExists) {
+        appendDiagnosticLog("WARN", "settings: cache migration target already contains history");
         MessageBoxW(hwnd,
-                    tr(L"The target directory already contains history. Choose an empty directory.",
-                       L"目标目录已有历史数据，请选择空目录。"),
+                    settingsLocale().targetContainsHistory,
                     L"ClipLite", MB_OK | MB_ICONWARNING);
         return false;
     }
@@ -3331,17 +3810,20 @@ bool migrateDataDirectory(HWND hwnd, const std::wstring& requested, std::string&
     bool copied = false;
     if (currentExists) {
         if (!CopyFileW(currentFile.c_str(), targetFile.c_str(), TRUE)) {
-            MessageBoxW(hwnd, tr(L"Unable to migrate clipboard history.", L"无法迁移剪贴板历史。"),
+            appendDiagnosticLog("ERROR", "settings: unable to copy history during cache migration",
+                                GetLastError());
+            MessageBoxW(hwnd, settingsLocale().unableMigrateHistory,
                         L"ClipLite", MB_OK | MB_ICONWARNING);
             return false;
         }
         copied = true;
     }
     if (!g_app->store.setDataDirectory(targetDirectory) || !g_app->store.open()) {
+        appendDiagnosticLog("ERROR", "settings: unable to open migrated cache directory");
         DeleteFileW(targetFile.c_str());
         g_app->store.setDataDirectory(currentDirectory);
         g_app->store.open();
-        MessageBoxW(hwnd, tr(L"Unable to open the new cache directory.", L"无法打开新的缓存目录。"),
+        MessageBoxW(hwnd, settingsLocale().unableOpenCache,
                     L"ClipLite", MB_OK | MB_ICONWARNING);
         return false;
     }
@@ -3356,7 +3838,7 @@ void browseDataDirectory(HWND hwnd) {
     BROWSEINFOW browse{ };
     browse.hwndOwner = hwnd;
     browse.pszDisplayName = displayName;
-    browse.lpszTitle = tr(L"Choose a cache directory", L"选择缓存目录");
+    browse.lpszTitle = settingsLocale().chooseCacheDirectory;
     browse.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
     PIDLIST_ABSOLUTE item = SHBrowseForFolderW(&browse);
     if (!item) return;
@@ -3366,6 +3848,62 @@ void browseDataDirectory(HWND hwnd) {
         scheduleSettingsSync(hwnd);
     }
     CoTaskMemFree(item);
+}
+
+void restoreSettingsRetentionControls(HWND hwnd, const Settings& settings) {
+    if (!hwnd || !g_app) return;
+    g_app->restoringSettingsControls = true;
+    auto setValue = [](HWND control, int value) {
+        if (!control) return;
+        wchar_t text[32]{};
+        swprintf_s(text, L"%d", value);
+        SetWindowTextW(control, text);
+    };
+    setValue(GetDlgItem(hwnd, kSettingMaxItems), settings.maxItems);
+    setValue(GetDlgItem(hwnd, kSettingRetentionDays), settings.retentionDays);
+    setValue(GetDlgItem(hwnd, kSettingMaxDiskMb), settings.maxDiskMb);
+    for (int i = 0; i < kStorageCategoryCount; ++i) {
+        const CategoryLimit& limit = settings.categoryLimits[static_cast<std::size_t>(i)];
+        setValue(GetDlgItem(hwnd, kSettingCategoryMaxBase + i), limit.maxItems);
+        setValue(GetDlgItem(hwnd, kSettingCategoryDiskBase + i), limit.maxDiskMb);
+    }
+    g_app->restoringSettingsControls = false;
+    KillTimer(hwnd, kSettingsSyncTimer);
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+bool settingsWouldPruneExisting(const Settings& previous, const Settings& next) {
+    if (!g_app) return false;
+    if (next.maxItems != previous.maxItems && next.maxItems > 0 &&
+        g_app->store.activeCount() > static_cast<std::size_t>(next.maxItems)) {
+        return true;
+    }
+    if (next.maxDiskMb != previous.maxDiskMb && next.maxDiskMb > 0 &&
+        g_app->store.diskBytes() > static_cast<std::uint64_t>(next.maxDiskMb) * 1024ULL * 1024ULL) {
+        return true;
+    }
+    if (next.retentionDays != previous.retentionDays && next.retentionDays > 0) {
+        const std::uint64_t cutoff = nowUnix() -
+            static_cast<std::uint64_t>(next.retentionDays) * 86400ULL;
+        for (const ClipItem& item : g_app->store.items()) {
+            if (!item.pinned && item.timestamp < cutoff) return true;
+        }
+    }
+    const ClipType types[] = {ClipType::Text, ClipType::Image, ClipType::Files};
+    for (int i = 0; i < kStorageCategoryCount; ++i) {
+        const CategoryLimit& before = previous.categoryLimits[static_cast<std::size_t>(i)];
+        const CategoryLimit& after = next.categoryLimits[static_cast<std::size_t>(i)];
+        if (after == before) continue;
+        if (after.maxItems > 0 &&
+            g_app->store.countType(types[i]) > static_cast<std::size_t>(after.maxItems)) {
+            return true;
+        }
+        if (after.maxDiskMb > 0 &&
+            g_app->store.bytesType(types[i]) > static_cast<std::uint64_t>(after.maxDiskMb) * 1024ULL * 1024ULL) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool syncSettingsFromControls(HWND hwnd) {
@@ -3382,6 +3920,8 @@ bool syncSettingsFromControls(HWND hwnd) {
     HWND ignoredApps = GetDlgItem(hwnd, kSettingIgnoredApps);
     HWND sensitiveExpiry = GetDlgItem(hwnd, kSettingSensitiveExpiry);
     HWND startup = GetDlgItem(hwnd, kSettingStartup);
+    HWND startupSettings = GetDlgItem(hwnd, kSettingStartupSettings);
+    HWND startupNotification = GetDlgItem(hwnd, kSettingStartupNotification);
     HWND encrypt = GetDlgItem(hwnd, kSettingEncrypt);
     HWND categoryMax[kStorageCategoryCount]{};
     HWND categoryDisk[kStorageCategoryCount]{};
@@ -3390,7 +3930,8 @@ bool syncSettingsFromControls(HWND hwnd) {
         categoryDisk[i] = GetDlgItem(hwnd, kSettingCategoryDiskBase + i);
     }
     if (!win || !dark || !language || !pause || !maxItems || !retentionDays || !maxDiskMb ||
-        !maxContentMb || !dataDirectory || !ignoredApps || !sensitiveExpiry || !startup || !encrypt) {
+        !maxContentMb || !dataDirectory || !ignoredApps || !sensitiveExpiry || !startup ||
+        !startupSettings || !startupNotification || !encrypt) {
         return false;
     }
     for (int i = 0; i < kStorageCategoryCount; ++i) {
@@ -3402,6 +3943,8 @@ bool syncSettingsFromControls(HWND hwnd) {
     next.dark = settingsToggleValue(dark);
     next.pauseMonitoring = settingsToggleValue(pause);
     next.startWithWindows = settingsToggleValue(startup);
+    next.showSettingsOnStartup = settingsToggleValue(startupSettings);
+    next.showStartupNotification = settingsToggleValue(startupNotification);
     next.language = settingsLanguageSelection(language);
     next.language = next.language <= 0 ? -1 : next.language - 1;
 
@@ -3420,7 +3963,7 @@ bool syncSettingsFromControls(HWND hwnd) {
     dataDirectoryText.resize(static_cast<std::size_t>(dataDirectoryLength));
     const std::wstring normalizedDataDirectory = normalizeDataDirectory(dataDirectoryText);
     if (!dataDirectoryText.empty() && normalizedDataDirectory.empty()) {
-        MessageBoxW(hwnd, tr(L"Choose a valid cache directory.", L"请选择有效的缓存目录。"),
+        MessageBoxW(hwnd, settingsLocale().chooseValidCache,
                     L"ClipLite", MB_OK | MB_ICONWARNING);
         return false;
     }
@@ -3468,17 +4011,26 @@ bool syncSettingsFromControls(HWND hwnd) {
         if (lineStart == std::wstring::npos) break;
     }
 
+    const Settings& previous = g_app->settingsData;
+    if (settingsWouldPruneExisting(previous, next) &&
+        MessageBoxW(hwnd, settingsLocale().pruneConfirmationMessage,
+                    settingsLocale().pruneConfirmationTitle,
+                    MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) {
+        restoreSettingsRetentionControls(hwnd, previous);
+        return false;
+    }
+
     const bool previousEncryption = g_app->store.encryptionEnabled();
     const bool desiredEncryption = settingsToggleValue(encrypt);
     if (desiredEncryption != previousEncryption && !g_app->store.rekey(desiredEncryption)) {
+        appendDiagnosticLog("ERROR", "settings: history encryption migration failed");
         setSettingsToggleValue(encrypt, previousEncryption);
-        MessageBoxW(hwnd, tr(L"Unable to change history encryption.", L"无法更改历史加密设置。"),
+        MessageBoxW(hwnd, settingsLocale().unableChangeEncryption,
                     L"ClipLite", MB_OK | MB_ICONWARNING);
         return false;
     }
     next.encryptData = desiredEncryption;
 
-    const Settings& previous = g_app->settingsData;
     const bool dataDirectoryChanged = next.dataDirectory != previous.dataDirectory;
     if (dataDirectoryChanged) {
         if (!migrateDataDirectory(hwnd, normalizedDataDirectory, next.dataDirectory)) {
@@ -3495,12 +4047,17 @@ bool syncSettingsFromControls(HWND hwnd) {
     const bool themeModeChanged = next.themeMode != previous.themeMode;
     const bool winVChanged = next.winV != previous.winV;
     const bool startupChanged = next.startWithWindows != previous.startWithWindows;
+    const bool startupSettingsChanged = next.showSettingsOnStartup != previous.showSettingsOnStartup;
+    const bool startupNotificationChanged =
+        next.showStartupNotification != previous.showStartupNotification;
     const bool maxItemsChanged = next.maxItems != previous.maxItems;
     const bool retentionChanged = next.retentionDays != previous.retentionDays;
     const bool maxDiskChanged = next.maxDiskMb != previous.maxDiskMb;
     const bool maxContentChanged = next.maxContentMb != previous.maxContentMb;
     const bool categoryLimitsChanged = next.categoryLimits != previous.categoryLimits;
-    const bool changed = darkChanged || themeModeChanged || winVChanged || startupChanged || maxItemsChanged ||
+    const bool languageChanged = next.language != previous.language;
+    const bool changed = darkChanged || themeModeChanged || winVChanged || startupChanged ||
+        startupSettingsChanged || startupNotificationChanged || maxItemsChanged ||
         retentionChanged || maxDiskChanged || maxContentChanged || categoryLimitsChanged ||
         next.pauseMonitoring != previous.pauseMonitoring ||
         next.encryptData != previous.encryptData || next.language != previous.language ||
@@ -3523,6 +4080,11 @@ bool syncSettingsFromControls(HWND hwnd) {
     }
     if (startupChanged) updateStartupRegistration(g_app->settingsData.startWithWindows);
     if (winVChanged) registerHotkeys();
+    if (languageChanged) {
+        g_app->settingsActionFeedback.clear();
+        refreshSettingsLocalizedControls(hwnd);
+        updateSettingsTabControls(hwnd);
+    }
     if (maxItemsChanged || retentionChanged || maxDiskChanged) {
         const std::uint64_t cutoff = g_app->settingsData.retentionDays > 0
             ? nowUnix() - static_cast<std::uint64_t>(g_app->settingsData.retentionDays) * 86400ULL
@@ -3546,7 +4108,9 @@ bool syncSettingsFromControls(HWND hwnd) {
 }
 
 void scheduleSettingsSync(HWND hwnd) {
-    if (hwnd) SetTimer(hwnd, kSettingsSyncTimer, kSettingsSyncDelayMs, nullptr);
+    if (hwnd && g_app && !g_app->settingsClosing) {
+        SetTimer(hwnd, kSettingsSyncTimer, kSettingsSyncDelayMs, nullptr);
+    }
 }
 
 LONGLONG settingsToggleClock() {
@@ -3885,7 +4449,7 @@ void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
 bool isSettingsActionButton(int id) {
     return id == kSettingClear || id == kSettingClearText ||
            id == kSettingClearImage || id == kSettingClearFiles ||
-           id == kSettingBrowseDataDirectory;
+           id == kSettingBrowseDataDirectory || id == kSettingOpenLog;
 }
 
 bool isSettingsClearAction(int id) {
@@ -3895,11 +4459,11 @@ bool isSettingsClearAction(int id) {
 
 const wchar_t* settingsClearActionLabel(int id) {
     switch (id) {
-    case kSettingClear: return tr(L"all history", L"全部历史");
-    case kSettingClearText: return tr(L"text", L"文本");
-    case kSettingClearImage: return tr(L"images", L"图片");
-    case kSettingClearFiles: return tr(L"files", L"文件");
-    default: return tr(L"history", L"历史");
+    case kSettingClear: return settingsLocale().historyLabel;
+    case kSettingClearText: return settingsLocale().textLabel;
+    case kSettingClearImage: return settingsLocale().imagesLabel;
+    case kSettingClearFiles: return settingsLocale().filesLabel;
+    default: return settingsLocale().historyLabel;
     }
 }
 
@@ -3916,14 +4480,12 @@ bool confirmSettingsClear(HWND hwnd, int id, std::size_t count) {
     if (count == 0) return true;
     wchar_t message[256]{};
     if (id == kSettingClear) {
-        swprintf_s(message, tr(L"This will permanently remove %zu clipboard records. Continue?",
-                               L"此操作将永久删除 %zu 条剪贴板记录，是否继续？"), count);
+        swprintf_s(message, settingsLocale().confirmClearAllFormat, count);
     } else {
-        swprintf_s(message, tr(L"This will permanently remove %zu %ls records. Continue?",
-                               L"此操作将永久删除 %zu 条%ls记录，是否继续？"),
+        swprintf_s(message, settingsLocale().confirmClearTypeFormat,
                     count, settingsClearActionLabel(id));
     }
-    return MessageBoxW(hwnd, message, tr(L"Confirm clear", L"确认清理"),
+    return MessageBoxW(hwnd, message, settingsLocale().confirmClearTitle,
                        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
 }
 
@@ -3936,6 +4498,16 @@ bool clearSettingsAction(int id) {
     return g_app->store.clearType(type);
 }
 
+void openDiagnosticLog(HWND hwnd) {
+    appendDiagnosticLog("INFO", "diagnostics: log file opened by user");
+    const HINSTANCE result = ShellExecuteW(nullptr, L"open", diagnosticLogPath().c_str(),
+                                           nullptr, nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(result) <= 32) {
+        MessageBoxW(hwnd, settingsLocale().unableOpenLog, settingsLocale().startupFailureTitle,
+                    MB_OK | MB_ICONWARNING);
+    }
+}
+
 void setSettingsActionFeedback(HWND hwnd, const std::wstring& message, bool success) {
     g_app->settingsActionFeedback = message;
     g_app->settingsActionFeedbackSuccess = success;
@@ -3945,12 +4517,12 @@ void setSettingsActionFeedback(HWND hwnd, const std::wstring& message, bool succ
 
 void drawSettingsButton(const DRAWITEMSTRUCT& item) {
     const int id = GetDlgCtrlID(item.hwndItem);
-    const bool browse = id == kSettingBrowseDataDirectory;
+    const bool neutral = id == kSettingBrowseDataDirectory || id == kSettingOpenLog;
     const bool hovered = g_app->hoveredSettingsControl == id;
     const bool pressed = (item.itemState & ODS_SELECTED) != 0;
     const bool focused = (item.itemState & ODS_FOCUS) != 0 || GetFocus() == item.hwndItem;
     const bool highContrast = highContrastEnabled();
-    const COLORREF background = browse
+    const COLORREF background = neutral
         ? (highContrast ? GetSysColor(COLOR_BTNFACE) :
            settingsThemeColor(pressed ? RGB(226, 232, 240) :
                               (hovered ? RGB(239, 246, 255) : RGB(248, 250, 252)),
@@ -3960,14 +4532,14 @@ void drawSettingsButton(const DRAWITEMSTRUCT& item) {
                               (hovered ? RGB(254, 242, 242) : RGB(255, 247, 247)),
                               pressed ? RGB(93, 42, 52) :
                               (hovered ? RGB(67, 35, 42) : RGB(52, 42, 48))));
-    const COLORREF border = browse
+    const COLORREF border = neutral
         ? (highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
            (hovered || pressed ? settingsAccentColor() :
                                  settingsThemeColor(RGB(200, 211, 222), RGB(74, 88, 104))))
         : (highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
            settingsThemeColor(hovered || pressed ? RGB(239, 68, 68) : RGB(252, 165, 165),
                               hovered || pressed ? RGB(248, 113, 113) : RGB(139, 70, 80)));
-    const COLORREF text = browse
+    const COLORREF text = neutral
         ? (highContrast ? GetSysColor(COLOR_WINDOWTEXT) : settingsAccentColor())
         : (highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
            settingsThemeColor(pressed ? RGB(153, 27, 27) : RGB(185, 28, 28),
@@ -4118,7 +4690,7 @@ void paintLanguageDropdown(HWND hwnd, HDC dc) {
 
     HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(renderDc, g_app->settingsFont));
     SetBkMode(renderDc, TRANSPARENT);
-    const wchar_t* labels[] = {tr(L"Auto", L"自动"), L"English", L"简体中文"};
+    const wchar_t* labels[] = {settingsLocale().autoLanguage, L"English", L"简体中文"};
     const int selected = settingsLanguageSelection(
         GetDlgItem(g_app->settings, kSettingLanguage));
     for (int row = 0; row < 3; ++row) {
@@ -4217,7 +4789,7 @@ void paintSettingsLanguageCombo(HWND hwnd, HDC dc) {
 
     wchar_t value[64]{};
     const int index = settingsLanguageSelection(hwnd);
-    const wchar_t* labels[] = {tr(L"Auto", L"自动"), L"English", L"简体中文"};
+    const wchar_t* labels[] = {settingsLocale().autoLanguage, L"English", L"简体中文"};
     wcscpy_s(value, labels[index]);
     HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(renderDc, g_app->settingsFont));
     SetBkMode(renderDc, TRANSPARENT);
@@ -4333,7 +4905,7 @@ void paintSettingsEditPlaceholder(HWND hwnd) {
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, highContrastEnabled() ? GetSysColor(COLOR_GRAYTEXT) :
         settingsThemeColor(RGB(150, 160, 157), RGB(145, 155, 166)));
-    DrawTextW(dc, tr(L"One application per line", L"每行一个应用名称"), -1, &client,
+    DrawTextW(dc, settingsLocale().ignoredAppsPlaceholder, -1, &client,
               DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
     ReleaseDC(hwnd, dc);
 }
@@ -4379,7 +4951,7 @@ void paintSettingsEdit(HWND hwnd, HDC dc, WNDPROC oldProc) {
         SetBkMode(bufferDc, TRANSPARENT);
         SetTextColor(bufferDc, highContrast ? GetSysColor(COLOR_GRAYTEXT) :
             settingsThemeColor(RGB(150, 160, 157), RGB(145, 155, 166)));
-        DrawTextW(bufferDc, tr(L"One application per line", L"每行一个应用名称"), -1,
+        DrawTextW(bufferDc, settingsLocale().ignoredAppsPlaceholder, -1,
                   &placeholder, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
 
@@ -4739,8 +5311,13 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
     } else if (message == WM_SETFOCUS || message == WM_KILLFOCUS) {
         const LRESULT result = CallWindowProcW(oldProc, hwnd, message, wParam, lParam);
         if (std::wcscmp(className, L"Edit") == 0) {
-            if (message == WM_KILLFOCUS && normalizeSettingsNumericEdit(hwnd)) {
-                scheduleSettingsSync(GetParent(hwnd));
+            if (message == WM_KILLFOCUS) {
+                long minimum = 0;
+                long maximum = 0;
+                if (settingsNumericEditRange(id, minimum, maximum)) {
+                    normalizeSettingsNumericEdit(hwnd);
+                    if (!g_app->settingsClosing) scheduleSettingsSync(GetParent(hwnd));
+                }
             }
             configureSettingsEdit(hwnd);
         }
@@ -4822,11 +5399,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             g_app->settingsBackgroundBrush = CreateSolidBrush(background);
             g_app->settingsCardBrush = CreateSolidBrush(card);
             g_app->settingsInputBrush = CreateSolidBrush(input);
-            Gdiplus::GdiplusStartupInput gdiplusInput;
-            if (Gdiplus::GdiplusStartup(&g_app->gdiplusToken, &gdiplusInput, nullptr) !=
-                Gdiplus::Ok) {
-                g_app->gdiplusToken = 0;
-            }
             createSettingsControlsModern(hwnd);
             subclassSettingsControls(hwnd);
             updateSettingsTabControls(hwnd);
@@ -4879,7 +5451,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             SendMessageW(g_app->searchEdit, EM_SETRECTNP, 0,
                          reinterpret_cast<LPARAM>(&editFormat));
             SendMessageW(g_app->searchEdit, EM_SETCUEBANNER, FALSE,
-                         reinterpret_cast<LPARAM>(tr(L"Search clipboard history", L"搜索剪贴板历史")));
+            reinterpret_cast<LPARAM>(settingsLocale().popupSearchPlaceholder));
             g_app->oldEditProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
                 g_app->searchEdit, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(editProc)));
             SetFocus(hwnd);
@@ -5015,10 +5587,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         g_app->settingsThemeAnimating = false;
         g_app->shortcutCaptureControl = nullptr;
         g_app->languageDropdown = nullptr;
-        if (g_app->gdiplusToken != 0) {
-            Gdiplus::GdiplusShutdown(g_app->gdiplusToken);
-            g_app->gdiplusToken = 0;
-        }
     }
     if (hwnd == g_app->hidden) {
         if (g_taskbarCreated != 0 && message == g_taskbarCreated) {
@@ -5079,11 +5647,14 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                         containsSensitiveMarker(type, payload)
                         ? nowUnix() + static_cast<std::uint64_t>(g_app->settingsData.sensitiveExpiryHours) * 3600ULL
                         : 0;
-                    g_app->store.append(type, payload, hash, source, expiresAt);
+                    if (!g_app->store.append(type, payload, hash, source, expiresAt)) {
+                        appendDiagnosticLog("ERROR", "clipboard: unable to append history record");
+                    }
                 } else {
                     g_app->ignoredClipboardHash = 0;
                 }
             }
+            if (g_app->popup) refreshVisible();
             return 0;
         }
     }
@@ -5118,7 +5689,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         if (message == WM_TIMER && wParam == kSettingsSyncTimer) {
             KillTimer(hwnd, kSettingsSyncTimer);
-            syncSettingsFromControls(hwnd);
+            if (!g_app->settingsClosing) syncSettingsFromControls(hwnd);
             return 0;
         }
         if (message == WM_TIMER && wParam == kSettingsActionFeedbackTimer) {
@@ -5275,10 +5846,15 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                    LOWORD(wParam) == kSettingDataDirectory ||
                    LOWORD(wParam) == kSettingIgnoredApps ||
                    LOWORD(wParam) == kSettingSensitiveExpiry ||
-                   (LOWORD(wParam) >= kSettingCategoryMaxBase &&
-                    LOWORD(wParam) < kSettingCategoryDiskBase + kStorageCategoryCount))) {
+                    (LOWORD(wParam) >= kSettingCategoryMaxBase &&
+                     LOWORD(wParam) < kSettingCategoryDiskBase + kStorageCategoryCount))) {
+                if (g_app->restoringSettingsControls) return 0;
                 InvalidateRect(reinterpret_cast<HWND>(lParam), nullptr, FALSE);
-                scheduleSettingsSync(hwnd);
+                long minimum = 0;
+                long maximum = 0;
+                if (!settingsNumericEditRange(LOWORD(wParam), minimum, maximum)) {
+                    scheduleSettingsSync(hwnd);
+                }
                 return 0;
             }
             if (LOWORD(wParam) == kSettingLanguage &&
@@ -5300,6 +5876,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 return 0;
             }
             const int actionId = LOWORD(wParam);
+            if (actionId == kSettingOpenLog && HIWORD(wParam) == BN_CLICKED) {
+                openDiagnosticLog(hwnd);
+                return 0;
+            }
             if (actionId == kSettingBrowseDataDirectory && HIWORD(wParam) == BN_CLICKED) {
                 browseDataDirectory(hwnd);
                 return 0;
@@ -5307,23 +5887,22 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (isSettingsClearAction(actionId)) {
                 const std::size_t count = settingsClearActionCount(actionId);
                 if (!confirmSettingsClear(hwnd, actionId, count)) {
-                    setSettingsActionFeedback(hwnd, tr(L"Clear cancelled", L"已取消清理"), true);
+                    setSettingsActionFeedback(hwnd, settingsLocale().clearCancelled, true);
                     return 0;
                 }
                 if (clearSettingsAction(actionId)) {
                     wchar_t feedback[160]{};
                     if (count == 0) {
-                        swprintf_s(feedback, tr(L"No %ls records to clear", L"没有可清理的%ls记录"),
+                        swprintf_s(feedback, settingsLocale().noRecordsFormat,
                                    settingsClearActionLabel(actionId));
                     } else {
-                        swprintf_s(feedback, tr(L"Cleared %zu %ls records", L"已清理 %zu 条%ls记录"),
+                        swprintf_s(feedback, settingsLocale().clearedRecordsFormat,
                                    count, settingsClearActionLabel(actionId));
                     }
                     setSettingsActionFeedback(hwnd, feedback, true);
                 } else {
-                    setSettingsActionFeedback(hwnd,
-                                              tr(L"Clear failed; history was not changed",
-                                                 L"清理失败，历史记录未改变"), false);
+                    appendDiagnosticLog("ERROR", "settings: history clear operation failed");
+                    setSettingsActionFeedback(hwnd, settingsLocale().clearFailed, false);
                 }
                 if (g_app->popup) refreshVisible();
                 InvalidateRect(hwnd, nullptr, FALSE);
@@ -5331,12 +5910,14 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == WM_CLOSE) {
+            g_app->settingsClosing = true;
             KillTimer(hwnd, kSettingsSyncTimer);
             KillTimer(hwnd, kSettingsActionFeedbackTimer);
             g_app->settingsActionFeedback.clear();
             syncSettingsFromControls(hwnd);
             DestroyWindow(hwnd);
             g_app->settings = nullptr;
+            g_app->settingsClosing = false;
             return 0;
         }
     }
@@ -5695,8 +6276,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 const ClipItem& item = g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]];
                 appendPasteMenu(menu, item);
                 appendPopupPinMenu(menu);
-                AppendMenuW(menu, MF_STRING, kMenuPin, tr(L"Toggle pin", L"切换置顶"));
-                AppendMenuW(menu, MF_STRING, kMenuDelete, tr(L"Delete", L"删除"));
+                AppendMenuW(menu, MF_STRING, kMenuDelete, settingsLocale().popupDelete);
                 appendFilterMenu(menu);
                 POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
                 ClientToScreen(hwnd, &point);
@@ -5708,7 +6288,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 else if (command == kMenuPaste) sendPaste();
                 else if (command == kMenuPastePlain) sendPaste(PasteMode::PlainText);
                 else if (command == kMenuPasteRich) sendPaste(PasteMode::RichText);
-                else if (command == kMenuPin) g_app->store.togglePinned(index);
                 else if (command == kMenuDelete) g_app->store.remove(index);
                 else if (command >= kFilterAll && command <= kFilterOther) applyFilterCommand(command);
                 refreshVisible();
@@ -5776,7 +6355,7 @@ void openSettings() {
     const int y = monitorInfo.rcWork.top +
         (monitorInfo.rcWork.bottom - monitorInfo.rcWork.top - height) / 2;
     g_app->settings = CreateWindowExW(WS_EX_APPWINDOW, L"ClipLiteSettings",
-                                      tr(L"ClipLite Settings", L"ClipLite 设置"),
+                                      settingsLocale().windowTitle,
                                        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
                                       x, y, width, height,
                                        nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -5795,8 +6374,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     AppState app;
     g_app = &app;
+    appendDiagnosticLog("INFO", "startup: process initialization started");
     g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
     loadSettings(app.settingsData);
+    appendDiagnosticLog("INFO", "startup: settings loaded");
     app.store.setMaxItems(static_cast<std::size_t>(app.settingsData.maxItems));
     app.store.setEncryption(app.settingsData.encryptData);
     app.store.setMaxPayloadBytes(static_cast<std::uint32_t>(app.settingsData.maxContentMb) * 1024u * 1024u);
@@ -5804,7 +6385,39 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         !app.store.setDataDirectory(utf8ToWide(app.settingsData.dataDirectory))) {
         app.settingsData.dataDirectory.clear();
     }
-    if (!app.store.open()) return 1;
+    HANDLE mutex = CreateMutexW(nullptr, TRUE, L"ClipLite.SingleInstance");
+    const DWORD mutexError = GetLastError();
+    if (!mutex) {
+        appendDiagnosticLog("ERROR", "startup: single-instance lock creation failed", mutexError);
+        showStartupFailure(settingsLocale().unableCreateMutex);
+        return 1;
+    }
+    const bool commandExit = wcsstr(commandLine, L"--exit") || wcsstr(commandLine, L"/exit");
+    const bool commandHistory = wcsstr(commandLine, L"--history") || wcsstr(commandLine, L"/history");
+    const bool commandSettings = wcsstr(commandLine, L"--settings") || wcsstr(commandLine, L"/settings");
+    if (mutexError == ERROR_ALREADY_EXISTS) {
+        appendDiagnosticLog("INFO", "startup: existing instance received launch request");
+        HWND existing = FindWindowExW(HWND_MESSAGE, nullptr, L"ClipLiteHidden", nullptr);
+        if (existing) {
+            if (commandExit) {
+                PostMessageW(existing, kExitMessage, 0, 0);
+            } else if (commandHistory) {
+                PostMessageW(existing, kShowPopupMessage, 0, 0);
+            } else if (commandSettings || app.settingsData.showSettingsOnStartup) {
+                PostMessageW(existing, kShowSettingsMessage, 0, 0);
+            }
+        }
+        CloseHandle(mutex);
+        return 0;
+    }
+    if (!app.store.open()) {
+        appendDiagnosticLog("ERROR", "startup: history storage open failed");
+        showStartupFailure(settingsLocale().unableOpenStore);
+        ReleaseMutex(mutex);
+        CloseHandle(mutex);
+        return 1;
+    }
+    appendDiagnosticLog("INFO", "startup: history storage opened");
     app.store.pruneExpired(nowUnix());
     const std::uint64_t cutoff = app.settingsData.retentionDays > 0
         ? nowUnix() - static_cast<std::uint64_t>(app.settingsData.retentionDays) * 86400ULL
@@ -5843,51 +6456,55 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     hiddenClass.lpszClassName = L"ClipLiteHidden";
     RegisterClassW(&hiddenClass);
 
-    HANDLE mutex = CreateMutexW(nullptr, TRUE, L"ClipLite.SingleInstance");
-    if (!mutex) return 1;
-    if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        HWND existing = FindWindowExW(HWND_MESSAGE, nullptr, L"ClipLiteHidden", nullptr);
-        if (existing) {
-            if (wcsstr(commandLine, L"--exit") || wcsstr(commandLine, L"/exit")) {
-                PostMessageW(existing, kExitMessage, 0, 0);
-            } else if (wcsstr(commandLine, L"--history") || wcsstr(commandLine, L"/history")) {
-                PostMessageW(existing, kShowPopupMessage, 0, 0);
-            } else {
-                PostMessageW(existing, kShowSettingsMessage, 0, 0);
-            }
-        }
-        CloseHandle(mutex);
-        return 0;
-    }
     app.hidden = CreateWindowExW(0, L"ClipLiteHidden", L"ClipLite", 0, 0, 0, 0, 0,
                                  HWND_MESSAGE, nullptr, instance, nullptr);
-    if (!app.hidden) return 1;
-    SetTimer(app.hidden, kExpiryTimer, 60000, nullptr);
-    if (!AddClipboardFormatListener(app.hidden)) {
-        MessageBoxW(nullptr, tr(L"Unable to monitor the clipboard.", L"无法监听剪贴板。"),
-                    L"ClipLite", MB_OK | MB_ICONERROR);
-        DestroyWindow(app.hidden);
+    if (!app.hidden) {
+        appendDiagnosticLog("ERROR", "startup: background window creation failed", GetLastError());
+        showStartupFailure(settingsLocale().unableCreateBackground);
+        ReleaseMutex(mutex);
+        CloseHandle(mutex);
         return 1;
     }
+    Gdiplus::GdiplusStartupInput gdiplusInput;
+    if (Gdiplus::GdiplusStartup(&app.gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
+        app.gdiplusToken = 0;
+    }
+    SetTimer(app.hidden, kExpiryTimer, 60000, nullptr);
+    if (!AddClipboardFormatListener(app.hidden)) {
+        appendDiagnosticLog("ERROR", "startup: clipboard listener registration failed", GetLastError());
+        showStartupFailure(settingsLocale().unableMonitorClipboard);
+        DestroyWindow(app.hidden);
+        if (app.gdiplusToken != 0) Gdiplus::GdiplusShutdown(app.gdiplusToken);
+        ReleaseMutex(mutex);
+        CloseHandle(mutex);
+        return 1;
+    }
+    appendDiagnosticLog("INFO", "startup: clipboard listener registered");
     registerHotkeys();
-    addTrayIcon();
-    if (wcsstr(commandLine, L"--history") || wcsstr(commandLine, L"/history")) {
+    if (!addTrayIcon()) {
+        appendDiagnosticLog("WARN", "startup: tray icon registration failed", GetLastError());
+    }
+    if (app.settingsData.showStartupNotification) showStartupNotification();
+    if (commandHistory) {
         PostMessageW(app.hidden, kShowPopupMessage, 0, 0);
-    } else {
+    } else if (commandSettings || app.settingsData.showSettingsOnStartup) {
         PostMessageW(app.hidden, kShowSettingsMessage, 0, 0);
     }
+    appendDiagnosticLog("INFO", "startup: initialization completed");
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
+    appendDiagnosticLog("INFO", "shutdown: process cleanup started");
     RemoveClipboardFormatListener(app.hidden);
     KillTimer(app.hidden, kExpiryTimer);
     removeTrayIcon();
     UnregisterHotKey(app.hidden, kHotkeyAltV);
     UnregisterHotKey(app.hidden, kHotkeyWinV);
     if (app.keyboardHook) UnhookWindowsHookEx(app.keyboardHook);
+    if (app.gdiplusToken != 0) Gdiplus::GdiplusShutdown(app.gdiplusToken);
     ReleaseMutex(mutex);
     CloseHandle(mutex);
     return 0;
