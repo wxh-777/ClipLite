@@ -196,35 +196,51 @@ bool RenderContext::drawDib(const std::string& payload, const RECT& destination)
     BITMAPINFOHEADER header{};
     std::memcpy(&header, payload.data(), sizeof(header));
     if (header.biSize < sizeof(BITMAPINFOHEADER) || header.biSize > payload.size() ||
-        header.biWidth <= 0 || header.biHeight == 0 || header.biBitCount != 32 ||
-        header.biCompression != BI_RGB || header.biWidth > 10000 ||
+        header.biWidth <= 0 || header.biHeight == 0 ||
+        (header.biBitCount != 24 && header.biBitCount != 32) ||
+        (header.biCompression != BI_RGB && header.biCompression != BI_BITFIELDS) ||
+        header.biWidth > 10000 ||
         header.biHeight < -10000 || header.biHeight > 10000) {
         return false;
     }
     const std::size_t width = static_cast<std::size_t>(header.biWidth);
     const std::size_t height = static_cast<std::size_t>(std::abs(header.biHeight));
-    const std::size_t sourceStride = width * 4;
-    const std::size_t bitsOffset = header.biSize;
-    if (bitsOffset > payload.size() || sourceStride > (payload.size() - bitsOffset) / height) {
+    if (header.biBitCount == 24 && header.biCompression != BI_RGB) return false;
+    const std::size_t sourcePixelBytes = header.biBitCount / 8;
+    const std::size_t sourceStride = (width * sourcePixelBytes + 3u) & ~std::size_t{3};
+    const std::size_t destinationStride = width * 4;
+    const std::size_t bitsOffset = header.biSize +
+        ((header.biCompression == BI_BITFIELDS && header.biSize == sizeof(BITMAPINFOHEADER))
+             ? 3u * sizeof(std::uint32_t) : 0u);
+    if (bitsOffset > payload.size() || height > (payload.size() - bitsOffset) / sourceStride) {
         return false;
     }
 
     // WIC receives a bounded, top-down BGRA copy and owns the decoded bitmap.
-    std::vector<std::uint8_t> pixels(sourceStride * height);
+    std::vector<std::uint8_t> pixels(destinationStride * height);
     const auto* source = reinterpret_cast<const std::uint8_t*>(payload.data() + bitsOffset);
     for (std::size_t row = 0; row < height; ++row) {
         const std::size_t sourceRow = header.biHeight > 0 ? height - row - 1 : row;
-        std::memcpy(pixels.data() + row * sourceStride, source + sourceRow * sourceStride,
-                    sourceStride);
+        const auto* sourcePixels = source + sourceRow * sourceStride;
+        auto* destinationPixels = pixels.data() + row * destinationStride;
+        if (header.biBitCount == 32) {
+            std::memcpy(destinationPixels, sourcePixels, width * 4);
+        } else {
+            for (std::size_t column = 0; column < width; ++column) {
+                destinationPixels[column * 4] = sourcePixels[column * 3];
+                destinationPixels[column * 4 + 1] = sourcePixels[column * 3 + 1];
+                destinationPixels[column * 4 + 2] = sourcePixels[column * 3 + 2];
+            }
+        }
         for (std::size_t column = 0; column < width; ++column) {
-            pixels[row * sourceStride + column * 4 + 3] = 255;
+            destinationPixels[column * 4 + 3] = 255;
         }
     }
 
     Microsoft::WRL::ComPtr<IWICBitmap> sourceBitmap;
     HRESULT result = wicFactory_->CreateBitmapFromMemory(
         static_cast<UINT>(width), static_cast<UINT>(height), GUID_WICPixelFormat32bppBGRA,
-        static_cast<UINT>(sourceStride), static_cast<UINT>(pixels.size()), pixels.data(),
+        static_cast<UINT>(destinationStride), static_cast<UINT>(pixels.size()), pixels.data(),
         sourceBitmap.GetAddressOf());
     if (FAILED(result)) return false;
 
