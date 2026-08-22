@@ -14,13 +14,25 @@ endif()
 add_executable(ClipLite WIN32
     src/main.cpp
     src/clip_store.cpp
+    src/render_context.cpp
+    src/clipboard_monitor.cpp
+    src/hotkey_manager.cpp
+    src/app_lifecycle.cpp
+    src/history_window.cpp
+    src/settings_window.cpp
     include/clip_store.h
+    include/render_context.h
+    include/clipboard_monitor.h
+    include/hotkey_manager.h
+    include/app_lifecycle.h
+    include/history_window.h
+    include/settings_window.h
     resources/clipLite.rc
 )
 
 target_include_directories(ClipLite PRIVATE include)
 target_compile_definitions(ClipLite PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(ClipLite PRIVATE user32 gdi32 shell32 shcore ole32 comctl32 crypt32 gdiplus dwmapi)
+target_link_libraries(ClipLite PRIVATE user32 gdi32 shell32 shcore ole32 comctl32 crypt32 dwmapi d2d1 dwrite windowscodecs)
 
 if(MSVC)
     set_target_properties(ClipLite PROPERTIES LINK_FLAGS "/SUBSYSTEM:WINDOWS")

@@ -1,117 +1,96 @@
 # ClipLite
 
-ClipLite 是一个仅面向 Windows 的轻量剪贴板历史工具。
+ClipLite 是面向 Windows 10 和 Windows 11 的原生剪贴板历史工具，最低运行版本为 Windows 10 1903，主要验证 Windows 10 22H2 和 Windows 11。
 
-设计目标：后台常驻内存优先，其次是交互流畅度，最后是程序体积。它不使用 WebView、Electron、WinUI 或大型第三方框架，普通安装模式的历史内容默认保存在 `%LOCALAPPDATA%\\ClipLite`，启动时只加载轻量索引。
+## 产品目标
+
+- 后台低内存、低 CPU 占用。
+- 剪贴板数据可靠保存，支持损坏恢复和按需读取。
+- Direct2D/DirectWrite 提供清晰文字、稳定 DPI 和高质量图形。
+- 历史窗口和设置窗口保持原生 Win32 的启动速度与交互响应。
+- 不使用 WebView、Electron、WinUI、XAML、Qt、SQLite 或大型 UI 框架。
 
 ## 当前功能
 
-- 双击程序后可按设置选择是否打开设置窗口，关闭窗口后继续驻留系统托盘
-- 可设置启动后显示“ClipLite 已启动”的 Windows 系统托盘提示
-- 启动失败时固定显示错误提示，不受启动提示开关影响
-- 自动记录启动、初始化和关键操作错误到 `%LOCALAPPDATA%\\ClipLite\\cliplite.log`
-- `Alt+V` 打开剪贴板历史窗口
-- 可选强制替换 `Win+V`
-- 历史窗口出现在鼠标附近，并自动避开屏幕边缘
-- 单击历史项目后粘贴到打开面板前的活动窗口
-- 文本、HTML、文件列表、DIB 和 DIBV5 图片的捕获与恢复
-- 富文本历史卡片优先显示可读的纯文本内容，无法提取时才显示 HTML 占位文本
-- 文本搜索
-- 历史窗口支持按全部、置顶、文本、图片、文件和其他直接点击筛选；文本筛选包含纯文本与富文本
-- 历史窗口标题区域支持拖拽移动，筛选标签支持横向滚动，顶部清空按钮用于清除搜索
-- 历史窗口顶部提供置顶和关闭图标，右键菜单也支持置顶；置顶后失焦仍保持打开，适合连续粘贴
-- 鼠标指针会按搜索、拖拽、筛选、历史项、置顶、删除和设置控件等场景切换，可点击区域提供 hover 反馈
-- 设置页语言下拉框使用自绘圆角列表，支持选中态、hover 和展开/收起动画
-- 设置页提供与通用页同级的快捷键页，可自定义 `Alt+V` 历史、`Ctrl+Alt+S` 设置和 `Ctrl+Shift+P` 暂停监听快捷键，并保留可选 `Win+V` 替换
-- 设置页控件按整行布局，行高会根据标签文字和控件实际尺寸自动计算，滚动时按完整行和卡片边界裁剪
-- 设置页按功能分组：通用仅包含界面与系统行为，快捷键包含全局/系统快捷键，存储管理包含保留策略、分类限制和统计，安全与隐私包含加密、来源过滤和保护范围
-- 设置页数字和多行输入框保留原生编辑能力，数字项支持单行编辑和 Tab 导航，多行输入框提供空状态格式提示，聚焦使用主题强调色边框
-- 设置页按 `740x520` 桌面参考尺寸采用固定侧栏、固定标题区和可滚动卡片正文；窄视口仅用于布局诊断，程序不引入移动端 UI 框架
-- 剪贴板内容按格式自动分类，不需要手动维护分类名称
-- 历史记录保存剪贴板来源进程，并在卡片中显示 Chrome、VS Code、Word 等友好名称
-- 图片缩略图按原始比例显示，停止滚动后使用高质量插值绘制
-- 置顶、删除、清空历史
-- Windows 原生单实例后台监听
-- 程序、设置窗口、历史弹窗和系统托盘统一使用 ClipLite 工具图标
-- 英文和简体中文界面，设置页、历史窗口、右键菜单和系统托盘文案均完整同步
-- 黑色和白色主题设置
-- 支持自动、浅色和深色主题模式，以及蓝色、紫色、绿色和橙色强调色
-- 存储管理将纯文本与富文本统一为文本，支持按文本、图片和文件设置数量/空间限制并单独清理
-- 存储管理清理按钮提供悬停、按下和结果反馈；删除历史前会显示记录数量确认弹窗，取消也会提示
-- 降低最大记录数、磁盘空间、保留天数或分类限额且可能删除现有历史时，会先要求确认；取消会恢复原设置
-- 可配置最大记录数、最大磁盘空间、保留天数、单条内容上限和暂停监听
-- 通用设置支持控制启动后是否打开设置窗口，以及是否显示启动系统提示
-- 可在存储管理中选择自定义缓存目录，切换时自动迁移现有历史并自动保存
-- 支持按来源名称忽略应用，支持可选的敏感内容自动过期
-- 可选使用 Windows DPAPI 按当前用户加密历史内容
-- 追加式磁盘存储，不在内存中保存完整历史正文，当前格式为 v4
+- Windows 原生单实例后台监听和系统托盘。
+- `Alt+V` 打开剪贴板历史窗口。
+- 可选 Win+V 拦截模式，当前仍处于重构和边界验证阶段。
+- 历史窗口出现在鼠标附近，并自动避开屏幕边缘。
+- 文本、HTML、文件列表、DIB 和 DIBV5 图片的捕获与恢复。
+- 文本搜索、类型筛选、置顶、删除、清空和按需图片预览。
+- 右键选择自动粘贴、纯文本粘贴或富文本粘贴。
+- 设置窗口支持通用、快捷键、存储管理、安全与隐私、关于 ClipLite 页面。
+- 设置自动保存，数字项支持失焦校验和键盘导航。
+- 支持英文、简体中文、自动语言、浅色、深色和高对比度颜色路径。
+- 支持最大记录数、磁盘空间、保留天数、单条内容上限和暂停监听。
+- 支持文本、图片、文件分类限制与独立清理。
+- 支持来源应用过滤、敏感内容过期和 Windows DPAPI 用户级加密。
+- 支持自定义缓存目录、历史迁移和诊断日志。
+
+## 渲染改造方向
+
+当前回退节点为 `f506adf`。后续改造目标是：
+
+- Direct2D 1.1 负责圆角、图标、路径、阴影、透明混合和图片缩放。
+- DirectWrite 负责自绘文字、中文字体回退、文本布局和高 DPI。
+- WIC 负责图片解码和格式转换。
+- WARP 作为 Direct2D 的系统软件渲染回退。
+- Direct2D/DirectWrite Factory 全进程共享，窗口资源按需创建和释放。
+- 不创建常驻整窗截图、大型 GPU 纹理或无界缩略图缓存。
+
+当前主窗口已经使用 Direct2D/DirectWrite 绘制，图片可见行使用 WIC 按需缩放，Win+V 使用独立低级钩子模块。原生输入控件仍由 Windows 控件自身绘制，语言下拉和部分辅助控件的迁移及多版本实机验收仍在进行；`PLAN.md` 是实施计划和验收依据。
 
 ## 发布方式
 
-ClipLite 提供普通安装模式和便携模式两种发布方式：
-
-- 普通安装包：`ClipLite-Setup-0.1.0-x64.exe`，支持选择安装目录，创建开始菜单/桌面快捷方式，并提供 Windows 标准卸载入口。程序安装目录与用户数据目录分离。
-- 便携包：`ClipLite-0.1.0-portable-win-x64`，复制整个目录即可迁移；`portable.flag` 启用便携模式，历史、设置和日志保存在包内的 `data\\` 目录。
-
-运行 `packaging/package.ps1` 会生成便携包；安装了 Inno Setup 并能找到 `ISCC.exe` 时，同时生成普通安装包。普通安装包默认使用 `%LOCALAPPDATA%\\Programs\\ClipLite`，安装过程中可以改为其他目录。
+- 普通安装包：支持选择安装目录、开始菜单/桌面快捷方式和 Windows 卸载入口。
+- 便携包：复制整个目录即可迁移，数据保存在包内 `data\` 目录。
+- `packaging/package.ps1` 生成便携包；检测到 Inno Setup 时同时生成安装包。
 
 ## 构建
 
-需要 Windows、Visual Studio 2019 或更高版本、CMake 3.15 或更高版本。
+需要 Windows、Visual Studio 2019 或更高版本、CMake 3.15 或更高版本，并使用 x64 生成器。
 
 ```pwsh
 cmake -S . -B build-x64 -A x64 -DBUILD_TESTING=ON
 cmake --build build-x64 --config Release
 ctest --test-dir build-x64 -C Release --output-on-failure
+```
 
-# 可选：测量启动后的进程资源
+性能和压力验证：
+
+```pwsh
 powershell -ExecutionPolicy Bypass -File tools/measure.ps1
-
-# 可选：重复打开和关闭历史窗口
 powershell -ExecutionPolicy Bypass -File tools/stress-windows.ps1 -Iterations 100
-
-# 可选：执行 10000 次文本剪贴板捕获压力测试，并在结束后恢复原文本剪贴板
 powershell -ExecutionPolicy Bypass -File tools/stress-clipboard.ps1 -Iterations 10000
 ```
 
 程序输出为 `build-x64/Release/ClipLite.exe`。
 
-生成便携发布目录：
+## 数据和隐私
 
-```pwsh
-powershell -ExecutionPolicy Bypass -File packaging/package.ps1
-```
+- 普通安装模式历史：`%LOCALAPPDATA%\ClipLite\history.bin`
+- 普通安装模式设置：`%LOCALAPPDATA%\ClipLite\settings.ini`
+- 诊断日志：`%LOCALAPPDATA%\ClipLite\cliplite.log`
+- 便携模式数据：便携目录下的 `data\`
+- 自定义缓存目录设置后，历史文件和临时文件位于自定义目录。
 
-## 数据位置
+ClipLite 不把剪贴板正文写入诊断日志。启用 DPAPI 后，历史内容只能由同一 Windows 用户恢复。敏感内容过期默认关闭，启用后只处理明确的密码、Token、API key、secret 或私钥标记。
 
-- 普通安装模式历史记录：`%LOCALAPPDATA%\\ClipLite\\history.bin`
-- 普通安装模式设置：`%LOCALAPPDATA%\\ClipLite\\settings.ini`
-- 普通安装模式诊断日志：`%LOCALAPPDATA%\\ClipLite\\cliplite.log`
-- 便携模式历史、设置和日志：便携包目录下的 `data\\`
-- 如果设置了自定义缓存目录，历史记录和临时文件位于该目录；设置页“关于 ClipLite”可直接打开日志
-
-ClipLite 不记录剪贴板正文日志。启用 DPAPI 后，历史 payload 只能由同一 Windows 用户恢复。清空历史会删除本地历史文件，暂停监听可用于临时避免保存敏感内容。敏感内容过期默认关闭，启用后只对包含明确 `password`、`token`、`api_key`、`secret` 或私钥标记的文本生效。
-
-粘贴到管理员权限或受保护窗口可能受 Windows UIPI 限制；此时 ClipLite 不能绕过系统权限，用户需要在目标应用中手动粘贴。
+粘贴到管理员权限、任务管理器或受保护窗口可能受到 Windows UIPI 限制，ClipLite 不绕过系统权限。Win+V 低级钩子也不能保证覆盖安全桌面和所有高权限窗口。
 
 ## 快捷键
 
-- `Alt+V`：打开历史窗口
-- `ClipLite.exe --history`：启动并打开历史窗口
-- `ClipLite.exe --settings`：启动并打开设置窗口
-- `ClipLite.exe --exit`：退出已运行的 ClipLite 实例
-- 可在设置中尝试启用 `Win+V`。如果 Windows 或其他程序已经注册该快捷键，ClipLite 会保留 `Alt+V`。
-- `Enter`：粘贴当前项目
-- 鼠标单击：粘贴当前项目
-- `Ctrl+Shift+V`：粘贴为纯文本
-- `Ctrl+Shift+R`：粘贴为富文本（仅富文本记录可用）
-- 历史项目右键菜单：选择自动粘贴、粘贴为纯文本或粘贴为富文本
-- `Delete`：删除当前项目
-- `F10`：打开设置
-- `Ctrl+0`：清除历史筛选
-- 设置页“快捷键”中可管理上述历史窗口快捷键和三个全局快捷键；`Win+V` 仍作为系统快捷键替换开关单独管理
+- `Alt+V`：打开历史窗口。
+- `ClipLite.exe --history`：启动并打开历史窗口。
+- `ClipLite.exe --settings`：启动并打开设置窗口。
+- `ClipLite.exe --exit`：退出已运行实例。
+- `Enter`：粘贴当前项目。
+- 鼠标单击：粘贴当前项目。
+- `Ctrl+Shift+V`：粘贴为纯文本。
+- `Ctrl+Shift+R`：粘贴为富文本。
+- `Delete`：删除当前项目。
+- `F10`：打开设置。
+- `Ctrl+0`：清除历史筛选。
+- `Esc`：关闭历史窗口。
 
-HTML 设置原型：`settings-prototype.html`，用于调整设置页布局和交互后再回接原生 Win32 界面。
-- `Esc`：关闭历史窗口
-- 系统托盘右键：打开历史、设置或退出
-- 语言默认跟随 Windows 首选 UI 语言，也可以手动选择英文或简体中文
+Win+V 是否启用、拦截状态和权限限制将在快捷键设置页中明确显示。

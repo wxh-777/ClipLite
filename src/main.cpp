@@ -4,9 +4,14 @@
 #include <shellscalingapi.h>
 #include <commctrl.h>
 #include <dwmapi.h>
-#include <gdiplus.h>
 
 #include "clip_store.h"
+#include "app_lifecycle.h"
+#include "clipboard_monitor.h"
+#include "history_window.h"
+#include "hotkey_manager.h"
+#include "render_context.h"
+#include "settings_window.h"
 
 #include <algorithm>
 #include <array>
@@ -196,14 +201,6 @@ struct AppState {
     HBRUSH settingsBackgroundBrush = nullptr;
     HBRUSH settingsCardBrush = nullptr;
     HBRUSH settingsInputBrush = nullptr;
-    ULONG_PTR gdiplusToken = 0;
-    HHOOK keyboardHook = nullptr;
-    bool winKeyDown = false;
-    bool suppressWinV = false;
-    bool suppressVKeyUp = false;
-    bool winKeyForwarded = false;
-    UINT pendingWinKey = VK_LWIN;
-    DWORD winKeyDownTime = 0;
     WNDPROC oldEditProc = nullptr;
     POINT popupPoint{};
     int selected = 0;
@@ -256,7 +253,12 @@ struct AppState {
     bool pinnedOnly = false;
     std::string query;
     Settings settingsData;
+    AppLifecycle lifecycle;
     ClipStore store;
+    ClipboardMonitor clipboardMonitor;
+    HotkeyManager hotkeys;
+    HistoryWindow historyWindow;
+    SettingsWindow settingsWindow;
     std::vector<std::size_t> visible;
     std::uint64_t ignoredClipboardHash = 0;
 };
@@ -1399,6 +1401,7 @@ bool popupScrollThumbAt(int x, int y) {
            y >= thumbTop && y < thumbTop + thumbHeight;
 }
 
+#if 0 // Legacy GDI+ helpers retained temporarily for source archaeology.
 Gdiplus::Color makeGdiColor(COLORREF value) {
     return Gdiplus::Color(255, GetRValue(value), GetGValue(value), GetBValue(value));
 }
@@ -1766,6 +1769,154 @@ void drawSettingsAccentDot(HDC dc, int left, int top, int size,
         DeleteObject(ring);
     }
 }
+#endif
+
+void drawGdiLine(HDC dc, int x1, int y1, int x2, int y2, COLORREF color, float width = 1.0f) {
+    HPEN pen = CreatePen(PS_SOLID, std::max(1, static_cast<int>(width + 0.5f)), color);
+    if (!pen) return;
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    MoveToEx(dc, x1, y1, nullptr);
+    LineTo(dc, x2, y2);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
+void drawGdiRoundedSurface(HDC dc, const RECT& rect, COLORREF fill, COLORREF border, int radius) {
+    HBRUSH brush = CreateSolidBrush(fill);
+    HPEN pen = CreatePen(PS_SOLID, ui(1), border);
+    if (!brush || !pen) {
+        if (brush) DeleteObject(brush);
+        if (pen) DeleteObject(pen);
+        return;
+    }
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, ui(radius), ui(radius));
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(pen);
+    DeleteObject(brush);
+}
+
+void drawPinIcon(HDC dc, int right, int centerY, COLORREF color, bool filled) {
+    HPEN pen = CreatePen(PS_SOLID, ui(1), color);
+    if (!pen) return;
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    HGDIOBJ oldBrush = SelectObject(dc, filled ? CreateSolidBrush(color) : GetStockObject(NULL_BRUSH));
+    MoveToEx(dc, right - ui(8), centerY - ui(7), nullptr);
+    LineTo(dc, right - ui(8), centerY + ui(7));
+    MoveToEx(dc, right - ui(13), centerY - ui(2), nullptr);
+    LineTo(dc, right - ui(3), centerY - ui(2));
+    MoveToEx(dc, right - ui(8), centerY + ui(7), nullptr);
+    LineTo(dc, right - ui(12), centerY + ui(11));
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    if (filled) DeleteObject(oldBrush);
+    DeleteObject(pen);
+}
+
+void drawEmptyClipboardIcon(HDC dc, int centerX, int top, COLORREF color) {
+    HPEN pen = CreatePen(PS_SOLID, ui(1), color);
+    if (!pen) return;
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    RoundRect(dc, centerX - ui(14), top + ui(6), centerX + ui(14), top + ui(38), ui(4), ui(4));
+    RoundRect(dc, centerX - ui(7), top, centerX + ui(7), top + ui(10), ui(3), ui(3));
+    MoveToEx(dc, centerX - ui(7), top + ui(20), nullptr);
+    LineTo(dc, centerX + ui(7), top + ui(20));
+    MoveToEx(dc, centerX - ui(7), top + ui(27), nullptr);
+    LineTo(dc, centerX + ui(3), top + ui(27));
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
+void drawDeleteIcon(HDC dc, int x, int y, COLORREF color) {
+    drawGdiLine(dc, x, y, x + ui(10), y + ui(10), color);
+    drawGdiLine(dc, x + ui(10), y, x, y + ui(10), color);
+}
+
+void drawSearchIcon(HDC dc, int centerX, int centerY, COLORREF color) {
+    HPEN pen = CreatePen(PS_SOLID, ui(1), color);
+    if (!pen) return;
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Ellipse(dc, centerX - ui(5), centerY - ui(6), centerX + ui(5), centerY + ui(4));
+    MoveToEx(dc, centerX + ui(3), centerY + ui(4), nullptr);
+    LineTo(dc, centerX + ui(7), centerY + ui(8));
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
+void drawMetadataTag(HDC dc, const RECT& rect, const std::wstring& value,
+                     COLORREF background, COLORREF border, COLORREF text, int radius) {
+    drawGdiRoundedSurface(dc, rect, background, border, radius);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, text);
+    RECT textRect = rect;
+    DrawTextW(dc, value.c_str(), -1, &textRect,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+}
+
+void drawSettingsNavIcon(HDC dc, int index, int x, int y, COLORREF color) {
+    HPEN pen = CreatePen(PS_SOLID, ui(1), color);
+    if (!pen) return;
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    if (index == 0 || index == 1) {
+        for (int row = 0; row < 3; ++row) {
+            MoveToEx(dc, x + ui(4), y + ui(7 + row * 5), nullptr);
+            LineTo(dc, x + ui(20), y + ui(7 + row * 5));
+        }
+    } else if (index == 4) {
+        Ellipse(dc, x + ui(4), y + ui(3), x + ui(20), y + ui(19));
+        MoveToEx(dc, x + ui(12), y + ui(11), nullptr);
+        LineTo(dc, x + ui(12), y + ui(16));
+    } else {
+        Rectangle(dc, x + ui(5), y + ui(4), x + ui(19), y + ui(19));
+    }
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+}
+
+void drawSettingsThemeIcon(HDC dc, int mode, int centerX, int centerY, COLORREF color) {
+    const wchar_t* glyphs[] = {L"A", L"L", L"D"};
+    HFONT font = CreateFontW(-ui(11), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    if (!font) return;
+    HGDIOBJ oldFont = SelectObject(dc, font);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, color);
+    RECT rect{centerX - ui(9), centerY - ui(9), centerX + ui(9), centerY + ui(9)};
+    DrawTextW(dc, glyphs[std::clamp(mode, 0, 2)], -1, &rect,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(dc, oldFont);
+    DeleteObject(font);
+}
+
+void drawSettingsAccentDot(HDC dc, int left, int top, int size,
+                           COLORREF color, bool selected, COLORREF ringColor) {
+    HBRUSH brush = CreateSolidBrush(color);
+    if (!brush) return;
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+    Ellipse(dc, left, top, left + size, top + size);
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    DeleteObject(brush);
+    if (!selected) return;
+    HPEN ring = CreatePen(PS_SOLID, ui(1), ringColor);
+    if (!ring) return;
+    oldPen = SelectObject(dc, ring);
+    oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Ellipse(dc, left - ui(2), top - ui(2), left + size + ui(2), top + size + ui(2));
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(ring);
+}
 
 void refreshVisible() {
     if (!g_app->popup) return;
@@ -1861,37 +2012,7 @@ bool drawImagePreview(HDC dc, const ClipItem& item, const RECT& rowRect) {
         return result != GDI_ERROR;
     };
 
-    if (!g_app || g_app->gdiplusToken == 0 || g_app->scrollAnimating || g_app->scrollDragging) {
-        return drawWithStretch();
-    }
-    HBITMAP bitmap = CreateDIBitmap(dc, &header, CBM_INIT,
-                                    payload.data() + bitsOffset, bitmapInfo, DIB_RGB_COLORS);
-    if (!bitmap) return drawWithStretch();
-    bool drawn = false;
-    {
-        Gdiplus::Bitmap source(bitmap, nullptr);
-        if (source.GetLastStatus() == Gdiplus::Ok) {
-            Gdiplus::Graphics graphics(dc);
-            configureGdiGraphics(graphics);
-            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-            graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
-            const float imageWidth = static_cast<float>(source.GetWidth());
-            const float imageHeight = static_cast<float>(source.GetHeight());
-            const float scale = std::min(static_cast<float>(width) / imageWidth,
-                                         static_cast<float>(height) / imageHeight);
-            const float targetWidth = imageWidth * scale;
-            const float targetHeight = imageHeight * scale;
-            const Gdiplus::RectF destination(
-                static_cast<float>(rowRect.left) + (static_cast<float>(width) - targetWidth) / 2.0f,
-                static_cast<float>(rowRect.top) + (static_cast<float>(height) - targetHeight) / 2.0f,
-                targetWidth, targetHeight);
-            drawn = graphics.DrawImage(&source, destination, 0.0f, 0.0f,
-                                       imageWidth, imageHeight, Gdiplus::UnitPixel) == Gdiplus::Ok;
-            graphics.Flush(Gdiplus::FlushIntentionSync);
-        }
-    }
-    DeleteObject(bitmap);
-    return drawn || drawWithStretch();
+    return drawWithStretch();
 }
 
 void sendPaste(PasteMode mode = PasteMode::Automatic) {
@@ -2023,6 +2144,7 @@ HICON clipLiteIcon() {
 }
 
 void openSettings();
+void setSettingsToggleValue(HWND hwnd, bool enabled);
 
 bool addTrayIcon() {
     NOTIFYICONDATAW icon{};
@@ -2084,122 +2206,36 @@ void showTrayMenu() {
     else if (command == kTrayExit) PostQuitMessage(0);
 }
 
-LRESULT CALLBACK lowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
-    if (code == HC_ACTION && g_app && g_app->keyboardHook) {
-        const auto* key = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
-        const bool keyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
-        const bool keyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
-        const bool injected = (key->flags & LLKHF_INJECTED) != 0;
-        const bool winKey = key->vkCode == VK_LWIN || key->vkCode == VK_RWIN;
-        if (injected) return CallNextHookEx(nullptr, code, wParam, lParam);
-
-        if (g_app->winKeyDown && !winKey &&
-            static_cast<DWORD>(key->time - g_app->winKeyDownTime) > 10000) {
-            g_app->winKeyDown = false;
-            g_app->suppressWinV = false;
-            g_app->suppressVKeyUp = false;
-            g_app->winKeyForwarded = false;
-        }
-
-        const auto replayWinKeyDown = [&]() {
-            INPUT input{};
-            input.type = INPUT_KEYBOARD;
-            input.ki.wVk = static_cast<WORD>(g_app->pendingWinKey);
-            return SendInput(1, &input, sizeof(input)) == 1;
-        };
-
-        if (winKey) {
-            if (keyDown) {
-                if (g_app->winKeyDown) return 1;
-                g_app->winKeyDown = true;
-                g_app->pendingWinKey = static_cast<UINT>(key->vkCode);
-                g_app->winKeyDownTime = key->time;
-                g_app->winKeyForwarded = false;
-                return 1;
-            }
-            if (keyUp) {
-                if (g_app->winKeyDown && g_app->suppressWinV) {
-                    g_app->winKeyDown = false;
-                    g_app->suppressWinV = false;
-                    return 1;
-                }
-                if (g_app->winKeyDown) {
-                    g_app->winKeyDown = false;
-                    g_app->winKeyForwarded = replayWinKeyDown();
-                }
-                if (g_app->winKeyForwarded) {
-                    g_app->winKeyForwarded = false;
-                    return CallNextHookEx(nullptr, code, wParam, lParam);
-                }
-                return 1;
-            }
-        }
-
-        if (g_app->winKeyDown && keyDown && key->vkCode == 'V') {
-            g_app->suppressWinV = true;
-            g_app->suppressVKeyUp = true;
-            PostMessageW(g_app->hidden, kShowPopupMessage, 0, 0);
-            return 1;
-        }
-        if (g_app->winKeyDown && keyDown) {
-            g_app->winKeyDown = false;
-            g_app->winKeyForwarded = replayWinKeyDown();
-        }
-        if (keyUp && g_app->suppressVKeyUp && key->vkCode == 'V') {
-            g_app->suppressVKeyUp = false;
-            return 1;
-        }
-    }
-    return CallNextHookEx(nullptr, code, wParam, lParam);
-}
-
-bool registerConfiguredHotkey(int id, const ShortcutBinding& binding) {
-    if (!g_app || !g_app->hidden || binding.modifiers == 0 || binding.virtualKey == 0) return false;
-    return RegisterHotKey(g_app->hidden, id, binding.modifiers | MOD_NOREPEAT,
-                          binding.virtualKey) != FALSE;
-}
-
 void registerHotkeys() {
-    UnregisterHotKey(g_app->hidden, kHotkeyAltV);
-    UnregisterHotKey(g_app->hidden, kHotkeyWinV);
-    UnregisterHotKey(g_app->hidden, kHotkeySettings);
-    UnregisterHotKey(g_app->hidden, kHotkeyPause);
-    if (g_app->keyboardHook) {
-        UnhookWindowsHookEx(g_app->keyboardHook);
-        g_app->keyboardHook = nullptr;
-    }
-    g_app->winKeyDown = false;
-    g_app->suppressWinV = false;
-    g_app->suppressVKeyUp = false;
-    g_app->winKeyForwarded = false;
-    g_app->pendingWinKey = VK_LWIN;
-    g_app->winKeyDownTime = 0;
-    g_app->shortcutRegistrationWarning = false;
-    auto registerWithFallback = [&](int id, ShortcutBinding& binding,
-                                     const ShortcutBinding& fallback) {
-        if (registerConfiguredHotkey(id, binding)) return;
-        appendDiagnosticLog("WARN", "hotkey: configured shortcut registration failed");
-        g_app->shortcutRegistrationWarning = true;
-        binding = fallback;
-        registerConfiguredHotkey(id, binding);
-    };
-    registerWithFallback(kHotkeyAltV, g_app->settingsData.historyHotkey,
-                         ShortcutBinding{MOD_ALT, 'V'});
-    registerWithFallback(kHotkeySettings, g_app->settingsData.settingsHotkey,
-                         ShortcutBinding{MOD_CONTROL | MOD_ALT, 'S'});
-    registerWithFallback(kHotkeyPause, g_app->settingsData.pauseHotkey,
-                         ShortcutBinding{MOD_CONTROL | MOD_SHIFT, 'P'});
-    if (g_app->settingsData.winV) {
-        g_app->keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, lowLevelKeyboardProc,
-                                                 GetModuleHandleW(nullptr), 0);
-        if (!g_app->keyboardHook) {
-            appendDiagnosticLog("ERROR", "hotkey: unable to install Win+V interceptor",
-                                GetLastError());
-            MessageBoxW(g_app->hidden, tr(L"Unable to replace Win+V.", L"无法替换 Win+V。"),
-                        L"ClipLite", MB_OK | MB_ICONWARNING);
-            g_app->settingsData.winV = false;
+    if (!g_app || !g_app->hidden) return;
+    const HotkeyManager::Callbacks callbacks{
+        [] { showPopup(); },
+        [] { openSettings(); },
+        [] {
+            g_app->settingsData.pauseMonitoring = !g_app->settingsData.pauseMonitoring;
+            if (g_app->settings) {
+                setSettingsToggleValue(GetDlgItem(g_app->settings, kSettingPause),
+                                       g_app->settingsData.pauseMonitoring);
+                InvalidateRect(g_app->settings, nullptr, FALSE);
+            }
             saveSettings(g_app->settingsData);
         }
+    };
+    const bool registered = g_app->hotkeys.configure(
+        g_app->hidden,
+        HotkeyBinding{g_app->settingsData.historyHotkey.modifiers,
+                      g_app->settingsData.historyHotkey.virtualKey},
+        HotkeyBinding{g_app->settingsData.settingsHotkey.modifiers,
+                      g_app->settingsData.settingsHotkey.virtualKey},
+        HotkeyBinding{g_app->settingsData.pauseHotkey.modifiers,
+                      g_app->settingsData.pauseHotkey.virtualKey},
+        g_app->settingsData.winV, callbacks);
+    g_app->shortcutRegistrationWarning = !registered || g_app->hotkeys.registrationWarning();
+    if (g_app->hotkeys.registrationWarning() && g_app->settingsData.winV &&
+        !g_app->hotkeys.interceptorInstalled()) {
+        appendDiagnosticLog("ERROR", "hotkey: unable to install Win+V interceptor", GetLastError());
+        g_app->settingsData.winV = false;
+        saveSettings(g_app->settingsData);
     }
     if (g_app->shortcutRegistrationWarning && g_app->settings) {
         InvalidateRect(g_app->settings, nullptr, FALSE);
@@ -2299,8 +2335,6 @@ bool isAutomaticFilterActive(int slot) {
     if (command == kFilterFiles) return g_app->filterType == 3 && !g_app->pinnedOnly;
     return false;
 }
-
-void paintSettingsEditBorders(HWND hwnd, HDC dc);
 
 struct SettingsRowLayout {
     const wchar_t* label = nullptr;
@@ -2533,6 +2567,299 @@ int settingsContentY(int logicalY) {
     return ui(logicalY) - ui(scrollable ? g_app->settingsScrollOffset : 0);
 }
 
+D2D1_COLOR_F directColor(COLORREF value, float alpha = 1.0f) {
+    return D2D1::ColorF(static_cast<float>(GetRValue(value)) / 255.0f,
+                        static_cast<float>(GetGValue(value)) / 255.0f,
+                        static_cast<float>(GetBValue(value)) / 255.0f, alpha);
+}
+
+D2D1_RECT_F directRect(const RECT& rect) {
+    return D2D1::RectF(static_cast<float>(rect.left), static_cast<float>(rect.top),
+                       static_cast<float>(rect.right), static_cast<float>(rect.bottom));
+}
+
+void directRounded(RenderContext& renderer, const RECT& rect, COLORREF fill,
+                   COLORREF border, int radius, float borderWidth = 1.0f) {
+    const D2D1_RECT_F bounds = directRect(rect);
+    const float boundedRadius = std::min(static_cast<float>(ui(radius)),
+                                         std::min(bounds.right - bounds.left,
+                                                  bounds.bottom - bounds.top) / 2.0f);
+    const D2D1_ROUNDED_RECT rounded{bounds, boundedRadius, boundedRadius};
+    renderer.fillRoundedRect(rounded, directColor(fill));
+    if (borderWidth > 0.0f) renderer.strokeRoundedRect(rounded, directColor(border), borderWidth);
+}
+
+bool paintSettingsDirect(HWND hwnd) {
+    if (!g_app->settingsWindow.renderer().attached() && !g_app->settingsWindow.attach(hwnd, g_uiDpi)) return false;
+    RenderContext& renderer = g_app->settingsWindow.renderer();
+    if (!renderer.beginDraw()) return false;
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    COLORREF windowBackground = settingsThemeColor(RGB(240, 244, 248), RGB(21, 26, 34));
+    COLORREF sidebarBackground = settingsThemeColor(RGB(232, 238, 245), RGB(26, 33, 44));
+    COLORREF cardBackground = settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
+    COLORREF line = settingsThemeColor(RGB(200, 211, 222), RGB(46, 57, 71));
+    COLORREF text = settingsThemeColor(RGB(30, 41, 59), RGB(226, 232, 240));
+    COLORREF secondary = settingsThemeColor(RGB(95, 113, 131), RGB(143, 161, 179));
+    COLORREF accent = settingsAccentColor();
+    if (highContrastEnabled()) {
+        windowBackground = GetSysColor(COLOR_WINDOW);
+        sidebarBackground = GetSysColor(COLOR_BTNFACE);
+        cardBackground = GetSysColor(COLOR_WINDOW);
+        line = GetSysColor(COLOR_WINDOWTEXT);
+        text = GetSysColor(COLOR_WINDOWTEXT);
+        secondary = GetSysColor(COLOR_WINDOWTEXT);
+        accent = GetSysColor(COLOR_HIGHLIGHT);
+    }
+    renderer.clear(directColor(windowBackground));
+    renderer.fillRect(D2D1::RectF(0.0f, 0.0f, static_cast<float>(ui(kSettingsSidebarWidth)),
+                                  static_cast<float>(client.bottom)), directColor(sidebarBackground));
+    renderer.fillRect(D2D1::RectF(static_cast<float>(ui(kSettingsSidebarWidth)), 0.0f,
+                                  static_cast<float>(client.right),
+                                  static_cast<float>(ui(kSettingsHeaderHeight))),
+                      directColor(cardBackground));
+    renderer.drawLine(D2D1::Point2F(static_cast<float>(ui(kSettingsSidebarWidth)), 0.0f),
+                      D2D1::Point2F(static_cast<float>(ui(kSettingsSidebarWidth)),
+                                    static_cast<float>(client.bottom)), directColor(line));
+    renderer.drawLine(D2D1::Point2F(static_cast<float>(ui(kSettingsSidebarWidth)),
+                                    static_cast<float>(ui(kSettingsHeaderHeight - 1))),
+                      D2D1::Point2F(static_cast<float>(client.right),
+                                    static_cast<float>(ui(kSettingsHeaderHeight - 1))), directColor(line));
+
+    renderer.drawText(L"ClipLite", RECT{ui(24), ui(18), ui(156), ui(44)}, 13.0f,
+                      directColor(secondary), DWRITE_FONT_WEIGHT_SEMI_BOLD);
+    const wchar_t* navLabels[] = {
+        settingsLocale().navGeneral, settingsLocale().navShortcuts, settingsLocale().navStorage,
+        settingsLocale().navPrivacy, settingsLocale().navAbout
+    };
+    const int activeTop = 50 + g_app->settingsTab * 38;
+    directRounded(renderer, RECT{ui(12), ui(activeTop), ui(168), ui(activeTop + 34)},
+                  settingsAccentSoftColor(), settingsAccentSoftColor(), 6, 0.0f);
+    for (int i = 0; i < 5; ++i) {
+        const int top = 54 + i * 38;
+        const bool active = i == g_app->settingsTab;
+        const bool hovered = i == g_app->hoveredSettingsTab;
+        const COLORREF navColor = active || hovered ? accent : secondary;
+        renderer.fillEllipse(D2D1::Ellipse(D2D1::Point2F(static_cast<float>(ui(30)),
+                                                          static_cast<float>(ui(top + 14))),
+                                           static_cast<float>(ui(3)), static_cast<float>(ui(3))),
+                            directColor(navColor));
+        renderer.drawText(navLabels[i], RECT{ui(52), ui(top), ui(168), ui(top + 30)}, 13.0f,
+                          directColor(navColor));
+    }
+
+    const int contentLeft = ui(kSettingsSidebarWidth + 20);
+    const int contentRight = client.right - ui(20);
+    const wchar_t* titles[] = {
+        settingsLocale().titleGeneral, settingsLocale().titleShortcuts, settingsLocale().titleStorage,
+        settingsLocale().titlePrivacy, settingsLocale().titleAbout
+    };
+    renderer.drawText(titles[g_app->settingsTab], RECT{contentLeft, ui(18), contentRight, ui(48)},
+                      18.0f, directColor(text), DWRITE_FONT_WEIGHT_SEMI_BOLD);
+    const int themeWidth = ui(kSettingsThemeWidth);
+    const int themeLeft = contentRight - themeWidth;
+    directRounded(renderer, RECT{themeLeft, ui(14), themeLeft + themeWidth, ui(44)},
+                  settingsThemeColor(RGB(232, 238, 245), RGB(26, 33, 44)), line, 15);
+    const int themeMode = std::clamp(g_app->settingsData.themeMode, 0, 2);
+    for (int i = 0; i < 3; ++i) {
+        const RECT segment{themeLeft + ui(3 + i * kSettingsThemeSegmentWidth), ui(17),
+                           themeLeft + ui(3 + (i + 1) * kSettingsThemeSegmentWidth), ui(41)};
+        if (themeMode == i || g_app->hoveredSettingsThemeMode == i) {
+            directRounded(renderer, segment, themeMode == i ? accent : settingsAccentSoftColor(),
+                          themeMode == i ? accent : settingsAccentSoftColor(), 12, 0.0f);
+        }
+        renderer.drawText(i == 0 ? L"A" : (i == 1 ? L"L" : L"D"), segment, 11.0f,
+                          directColor(themeMode == i ? RGB(255, 255, 255) : secondary),
+                          DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER,
+                          DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
+    const COLORREF accentColors[] = {
+        RGB(37, 99, 235), RGB(124, 58, 237), RGB(39, 124, 97), RGB(217, 119, 6)
+    };
+    const int accentSize = ui(14);
+    const int accentGap = ui(6);
+    const int accentLeft = themeLeft - ui(14) - accentSize * 4 - accentGap * 3;
+    for (int i = 0; i < kAccentCount; ++i) {
+        const int left = accentLeft + i * (accentSize + accentGap);
+        renderer.fillEllipse(D2D1::Ellipse(D2D1::Point2F(left + accentSize / 2.0f,
+                                                          ui(21) + accentSize / 2.0f),
+                                           accentSize / 2.0f, accentSize / 2.0f),
+                            directColor(accentColors[i]));
+        if (g_app->settingsData.accent == i) {
+            renderer.strokeEllipse(D2D1::Ellipse(D2D1::Point2F(left + accentSize / 2.0f,
+                                                               ui(21) + accentSize / 2.0f),
+                                                accentSize / 2.0f + ui(2),
+                                                accentSize / 2.0f + ui(2)),
+                                   directColor(text), 1.0f);
+        }
+    }
+
+    const SettingsLayout layout = buildSettingsLayout(hwnd);
+    auto* target = renderer.target();
+    if (target) {
+        target->PushAxisAlignedClip(D2D1::RectF(static_cast<float>(ui(kSettingsSidebarWidth)),
+                                                static_cast<float>(ui(kSettingsHeaderHeight)),
+                                                static_cast<float>(client.right),
+                                                static_cast<float>(client.bottom)),
+                                    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    }
+    for (const SettingsCardLayout& card : layout.cards) {
+        directRounded(renderer, RECT{contentLeft, settingsContentY(card.top), contentRight,
+                                     settingsContentY(card.bottom)}, cardBackground, line, 10);
+        renderer.drawText(card.title, RECT{contentLeft + ui(14), settingsContentY(card.top + 10),
+                                           contentRight - ui(14), settingsContentY(card.top + 32)},
+                          13.0f, directColor(text), DWRITE_FONT_WEIGHT_SEMI_BOLD);
+        renderer.drawLine(D2D1::Point2F(static_cast<float>(contentLeft + ui(14)),
+                                        static_cast<float>(settingsContentY(card.top + 38))),
+                          D2D1::Point2F(static_cast<float>(contentRight - ui(14)),
+                                        static_cast<float>(settingsContentY(card.top + 38))),
+                          directColor(line));
+        for (const SettingsRowLayout& row : card.rows) {
+            if (!row.label) continue;
+            const int labelRight = row.controlX.empty() ? contentRight - ui(14) : ui(row.controlX.front() - 8);
+            renderer.drawText(row.label, RECT{contentLeft + ui(14), settingsContentY(row.top + 8),
+                                              labelRight, settingsContentY(row.top + row.height - 8)},
+                              13.0f, directColor(text));
+        }
+    }
+    if (g_app->settingsTab == 2 && layout.cards.size() >= 3) {
+        const std::size_t counts[] = {
+            g_app->store.countType(ClipType::Text), g_app->store.countType(ClipType::Image),
+            g_app->store.countType(ClipType::Files), 0
+        };
+        for (const ClipItem& item : g_app->store.items()) if (item.pinned) ++const_cast<std::size_t&>(counts[3]);
+        const wchar_t* labels[] = {settingsLocale().text, settingsLocale().images,
+                                   settingsLocale().files, settingsLocale().pinned};
+        for (int i = 0; i < 4; ++i) {
+            wchar_t value[32]{};
+            swprintf_s(value, L"%zu", counts[i]);
+            const int x = contentLeft + ui(16 + (i % 2) * 190);
+            const int y = layout.cards[2].top + 68 + (i / 2) * 23;
+            renderer.drawText(labels[i], RECT{x, settingsContentY(y), x + ui(44), settingsContentY(y + 20)},
+                              12.0f, directColor(secondary));
+            renderer.drawText(value, RECT{x + ui(50), settingsContentY(y), x + ui(100),
+                                          settingsContentY(y + 20)}, 12.0f, directColor(text));
+        }
+    }
+    if (target) target->PopAxisAlignedClip();
+    return renderer.endDraw();
+}
+
+bool paintPopupDirect(HWND hwnd) {
+    if (!g_app->historyWindow.renderer().attached() && !g_app->historyWindow.attach(hwnd, g_uiDpi)) return false;
+    RenderContext& renderer = g_app->historyWindow.renderer();
+    if (!renderer.beginDraw()) return false;
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const COLORREF background = highContrastEnabled() ? GetSysColor(COLOR_WINDOW) :
+        settingsThemeColor(RGB(242, 244, 247), RGB(38, 42, 48));
+    const COLORREF text = highContrastEnabled() ? GetSysColor(COLOR_WINDOWTEXT) :
+        settingsThemeColor(RGB(26, 26, 26), RGB(240, 243, 247));
+    const COLORREF secondary = highContrastEnabled() ? GetSysColor(COLOR_WINDOWTEXT) :
+        settingsThemeColor(RGB(102, 102, 102), RGB(175, 183, 193));
+    const COLORREF border = highContrastEnabled() ? GetSysColor(COLOR_WINDOWTEXT) :
+        settingsThemeColor(RGB(209, 213, 219), RGB(75, 83, 92));
+    const COLORREF card = highContrastEnabled() ? GetSysColor(COLOR_WINDOW) :
+        settingsThemeColor(RGB(255, 255, 255), RGB(48, 53, 60));
+    const COLORREF accent = highContrastEnabled() ? GetSysColor(COLOR_HIGHLIGHT) : settingsAccentColor();
+    renderer.clear(directColor(background));
+    directRounded(renderer, RECT{ui(1), ui(1), client.right - ui(1), client.bottom - ui(1)},
+                  background, border, 8);
+    renderer.drawText(settingsLocale().popupTitle, RECT{ui(16), ui(14), ui(82), ui(46)},
+                      13.0f, directColor(text), DWRITE_FONT_WEIGHT_SEMI_BOLD);
+    directRounded(renderer, RECT{ui(kPopupSearchLeft), ui(12), ui(kPopupSearchRight), ui(48)},
+                  card, g_app->searchEdit && GetFocus() == g_app->searchEdit ? accent : border, 6);
+    renderer.drawText(L"/", RECT{ui(kPopupSearchLeft + 7), ui(12), ui(kPopupSearchLeft + 22), ui(48)},
+                      16.0f, directColor(secondary), DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                      DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    const int filterClip = ui(kPopupFilterTop);
+    auto* target = renderer.target();
+    if (target) target->PushAxisAlignedClip(D2D1::RectF(static_cast<float>(ui(16)),
+                                                        static_cast<float>(filterClip),
+                                                        static_cast<float>(client.right - ui(16)),
+                                                        static_cast<float>(ui(kPopupFilterBottom))),
+                                            D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    const wchar_t* filterLabels[] = {settingsLocale().popupFilterAll, settingsLocale().popupFilterPinned,
+        settingsLocale().popupFilterText, settingsLocale().popupFilterImages,
+        settingsLocale().popupFilterFiles, settingsLocale().popupFilterOther};
+    for (int slot = 0; slot < 6; ++slot) {
+        const RECT chip = automaticFilterRect(slot, g_app->filterScrollOffset);
+        const bool active = isAutomaticFilterActive(slot);
+        const bool hovered = slot == g_app->hoveredFilter;
+        const COLORREF chipColor = active ? accent : (hovered ? settingsAccentSoftColor() : card);
+        directRounded(renderer, chip, chipColor, active || hovered ? accent : border, 4);
+        renderer.drawText(filterLabels[slot], chip, 11.0f,
+                          directColor(active ? RGB(255, 255, 255) : (hovered ? accent : secondary)),
+                          DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER,
+                          DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
+    if (target) target->PopAxisAlignedClip();
+
+    const int listBottom = client.bottom - ui(kPopupBottomPadding);
+    if (target) target->PushAxisAlignedClip(D2D1::RectF(static_cast<float>(ui(12)),
+                                                        static_cast<float>(ui(kPopupListTop)),
+                                                        static_cast<float>(client.right - ui(1)),
+                                                        static_cast<float>(listBottom)),
+                                            D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    const int stride = popupScrollStride();
+    const int firstRow = g_app->scrollPosition / std::max(1, stride);
+    const int remainder = g_app->scrollPosition % std::max(1, stride);
+    int y = ui(kPopupListTop) - remainder;
+    for (int row = firstRow; row < static_cast<int>(g_app->visible.size()); ++row) {
+        const ClipItem& item = g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]];
+        const int height = popupCardHeight(item);
+        if (y >= listBottom) break;
+        const RECT rowRect{ui(16), y, client.right - ui(16), y + height};
+        const bool selected = row == g_app->selected;
+        const bool hovered = row == g_app->hoveredRow;
+        directRounded(renderer, rowRect, selected ? settingsAccentSoftColor() : card,
+                      selected || hovered ? accent : settingsThemeColor(RGB(234, 234, 234), RGB(67, 74, 82)), 6);
+        if (selected) directRounded(renderer,
+            RECT{rowRect.left + ui(4), rowRect.top + ui(12), rowRect.left + ui(7), rowRect.bottom - ui(12)},
+            accent, accent, 2, 0.0f);
+        const RECT preview{rowRect.left + ui(12), y + ui(10), rowRect.right - ui(12), y + ui(48)};
+        bool imageDrawn = false;
+        if (isImageType(item.type)) {
+            std::string imagePayload;
+            if (g_app->store.readPayload(g_app->visible[static_cast<std::size_t>(row)], imagePayload)) {
+                imageDrawn = renderer.drawDib(
+                    imagePayload,
+                    RECT{rowRect.left + ui(12), y + ui(10), rowRect.left + ui(56), y + ui(54)});
+            }
+        }
+        if (!imageDrawn) {
+            const std::wstring previewText = isImageType(item.type)
+                ? std::wstring(settingsLocale().popupImagePreview) : localizedPopupPreview(item);
+            renderer.drawText(previewText, preview, 13.0f, directColor(text));
+        }
+        const std::wstring source = item.source.empty() ? settingsLocale().popupClipboardSource : utf8ToWide(item.source);
+        const RECT metadata{rowRect.left + ui(12), y + height - ui(24), rowRect.right - ui(12), y + height - ui(8)};
+        renderer.drawText(source + L"  " + automaticTypeLabel(item.type), metadata, 10.0f,
+                          directColor(secondary));
+        renderer.drawText(formatRelativeTime(item.timestamp),
+                          RECT{rowRect.right - ui(92), metadata.top, rowRect.right - ui(12), metadata.bottom},
+                          10.0f, directColor(secondary), DWRITE_FONT_WEIGHT_NORMAL,
+                          DWRITE_TEXT_ALIGNMENT_TRAILING);
+        if (item.pinned) {
+            renderer.fillEllipse(D2D1::Ellipse(D2D1::Point2F(static_cast<float>(rowRect.right - ui(18)),
+                                                             static_cast<float>(metadata.top + ui(8))),
+                                              static_cast<float>(ui(3)), static_cast<float>(ui(3))),
+                                directColor(RGB(245, 158, 11)));
+        }
+        y += height + ui(kPopupCardGap);
+    }
+    if (g_app->visible.empty()) {
+        renderer.drawText(settingsLocale().popupEmpty,
+                          RECT{ui(24), ui(kPopupListTop + 54), client.right - ui(24),
+                               ui(kPopupListTop + 86)}, 13.0f, directColor(secondary),
+                          DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER,
+                          DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
+    if (target) target->PopAxisAlignedClip();
+    return renderer.endDraw();
+}
+
+#if 0 // Replaced by the Direct2D/DirectWrite window painters above.
 void paintSettingsContent(HWND hwnd, HDC dc) {
     RECT client{};
     GetClientRect(hwnd, &client);
@@ -3153,6 +3480,7 @@ void paintPopup(HWND hwnd, HDC dc, const RECT* updateRect) {
     DeleteObject(bitmap);
     DeleteDC(buffer);
 }
+#endif
 
 bool settingsToggleValue(HWND hwnd);
 void setSettingsToggleValue(HWND hwnd, bool enabled);
@@ -4296,6 +4624,7 @@ void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
     const bool highContrast = highContrastEnabled();
     const bool hovered = g_app->hoveredSettingsControl == GetDlgCtrlID(item.hwndItem);
     const bool checked = settingsToggleValue(item.hwndItem);
+#if 0 // Legacy GDI+ branch; the fallback below is the only active path.
     if (g_app->gdiplusToken != 0) {
         auto makeColor = [](COLORREF value) {
             return Gdiplus::Color(255, GetRValue(value), GetGValue(value), GetBValue(value));
@@ -4387,6 +4716,7 @@ void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
         }
         return;
     }
+#endif
     const COLORREF surface = highContrast ? GetSysColor(COLOR_WINDOW) :
         settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
     const COLORREF knobSurface = highContrast ? GetSysColor(COLOR_WINDOW) :
@@ -4626,6 +4956,7 @@ void paintLanguageDropdown(HWND hwnd, HDC dc) {
         settingsThemeColor(RGB(30, 36, 46), RGB(238, 241, 245));
     const COLORREF accent = highContrast ? GetSysColor(COLOR_HIGHLIGHT) : settingsAccentColor();
 
+#if 0
     if (g_app->gdiplusToken != 0) {
         auto makeColor = [](COLORREF value, BYTE alpha = 255) {
             return Gdiplus::Color(alpha, GetRValue(value), GetGValue(value), GetBValue(value));
@@ -4674,6 +5005,10 @@ void paintLanguageDropdown(HWND hwnd, HDC dc) {
             addRoundedRect(rowPath, rowRect, static_cast<float>(ui(4)));
             graphics.FillPath(&rowBrush, &rowPath);
         }
+    }
+#else
+    if (false) {
+#endif
     } else {
         HBRUSH brush = CreateSolidBrush(background);
         RECT renderRect{0, 0, contentWidth, renderHeight};
@@ -4730,13 +5065,12 @@ void paintSettingsLanguageCombo(HWND hwnd, HDC dc) {
                              : settingsThemeColor(RGB(205, 219, 215), RGB(82, 92, 102)));
     const COLORREF text = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
         settingsThemeColor(RGB(30, 36, 46), RGB(238, 241, 245));
-    const COLORREF arrow = highContrast ? GetSysColor(COLOR_HIGHLIGHT) :
-        settingsThemeColor(RGB(75, 85, 82), RGB(190, 199, 207));
     HDC bufferDc = CreateCompatibleDC(dc);
     HBITMAP bufferBitmap = bufferDc ? CreateCompatibleBitmap(dc, width, height) : nullptr;
     HGDIOBJ oldBitmap = bufferBitmap ? SelectObject(bufferDc, bufferBitmap) : nullptr;
     HDC renderDc = bufferBitmap ? bufferDc : dc;
 
+#if 0
     if (g_app->gdiplusToken != 0) {
         auto makeColor = [](COLORREF value) {
             return Gdiplus::Color(255, GetRValue(value), GetGValue(value), GetBValue(value));
@@ -4774,6 +5108,9 @@ void paintSettingsLanguageCombo(HWND hwnd, HDC dc) {
         arrowPath.AddLine(arrowX, arrowY + ui(5), arrowX - ui(4), arrowY);
         Gdiplus::SolidBrush arrowBrush(makeColor(arrow));
         graphics.FillPath(&arrowBrush, &arrowPath);
+#else
+    if (false) {
+#endif
     } else {
         HBRUSH brush = CreateSolidBrush(background);
         FillRect(renderDc, &client, brush);
@@ -4820,6 +5157,7 @@ void paintSettingsEditFrame(HWND hwnd) {
         (focused ? settingsAccentColor() :
          hovered ? settingsThemeColor(RGB(120, 145, 137), RGB(119, 132, 145)) :
                    settingsThemeColor(RGB(205, 219, 215), RGB(82, 92, 102)));
+#if 0
     if (g_app->gdiplusToken != 0) {
         auto makeColor = [](COLORREF value) {
             return Gdiplus::Color(255, GetRValue(value), GetGValue(value), GetBValue(value));
@@ -4861,6 +5199,9 @@ void paintSettingsEditFrame(HWND hwnd) {
         SelectObject(dc, oldBrush);
         SelectObject(dc, oldPen);
         DeleteObject(pen);
+#else
+    if (false) {
+#endif
     } else {
         HPEN clearPen = CreatePen(PS_SOLID, 5, surface);
         HGDIOBJ previousPen = SelectObject(dc, clearPen);
@@ -4955,6 +5296,7 @@ void paintSettingsEdit(HWND hwnd, HDC dc, WNDPROC oldProc) {
                   &placeholder, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
 
+#if 0
     if (g_app->gdiplusToken != 0) {
         auto makeColor = [](COLORREF value) {
             return Gdiplus::Color(255, GetRValue(value), GetGValue(value), GetBValue(value));
@@ -4987,6 +5329,26 @@ void paintSettingsEdit(HWND hwnd, HDC dc, WNDPROC oldProc) {
         SelectObject(bufferDc, oldBrush);
         SelectObject(bufferDc, oldPen);
         DeleteObject(pen);
+    } else {
+        if (focused && !highContrast) {
+            HPEN shadowPen = CreatePen(PS_SOLID, 2, settingsAccentColor());
+            HGDIOBJ oldShadowPen = SelectObject(bufferDc, shadowPen);
+            HGDIOBJ oldShadowBrush = SelectObject(bufferDc, GetStockObject(NULL_BRUSH));
+            RoundRect(bufferDc, 1, 1, width - 1, height - 1, ui(12), ui(12));
+            SelectObject(bufferDc, oldShadowBrush);
+            SelectObject(bufferDc, oldShadowPen);
+            DeleteObject(shadowPen);
+        }
+        HPEN pen = CreatePen(PS_SOLID, 1, border);
+        HGDIOBJ oldPen = SelectObject(bufferDc, pen);
+        HGDIOBJ oldBrush = SelectObject(bufferDc, GetStockObject(NULL_BRUSH));
+        RoundRect(bufferDc, 1, 1, width - 1, height - 1, ui(12), ui(12));
+        SelectObject(bufferDc, oldBrush);
+        SelectObject(bufferDc, oldPen);
+        DeleteObject(pen);
+#else
+    if (false) {
+#endif
     } else {
         if (focused && !highContrast) {
             HPEN shadowPen = CreatePen(PS_SOLID, 2, settingsAccentColor());
@@ -5107,6 +5469,7 @@ void invalidateSettingsEditBorder(HWND edit) {
     if (settingsEditBorderRect(edit, parent, rect)) InvalidateRect(parent, &rect, FALSE);
 }
 
+#if 0
 void paintSettingsEditBorders(HWND hwnd, HDC dc) {
     const int ids[] = {kSettingMaxItems, kSettingRetentionDays, kSettingMaxDiskMb,
                        kSettingMaxContentMb, kSettingIgnoredApps, kSettingSensitiveExpiry};
@@ -5155,6 +5518,7 @@ void paintSettingsEditBorders(HWND hwnd, HDC dc) {
         }
     }
 }
+#endif
 
 void configureSettingsEdit(HWND hwnd) {
     if (!hwnd) return;
@@ -5351,6 +5715,31 @@ void subclassSettingsControls(HWND hwnd) {
     }
 }
 
+void processClipboardUpdate() {
+    if (!g_app || g_app->settingsData.pauseMonitoring) return;
+    ClipType type{};
+    std::string payload;
+    std::string source;
+    if (captureClipboard(type, payload, source)) {
+        const std::size_t maxPayload = static_cast<std::size_t>(g_app->settingsData.maxContentMb) *
+            1024u * 1024u;
+        if (payload.size() > maxPayload || isIgnoredClipboardSource(source)) return;
+        const auto hash = clipLiteHash(payload);
+        if (hash != g_app->ignoredClipboardHash) {
+            const std::uint64_t expiresAt = g_app->settingsData.sensitiveExpiryHours > 0 &&
+                containsSensitiveMarker(type, payload)
+                ? nowUnix() + static_cast<std::uint64_t>(g_app->settingsData.sensitiveExpiryHours) * 3600ULL
+                : 0;
+            if (!g_app->store.append(type, payload, hash, source, expiresAt)) {
+                appendDiagnosticLog("ERROR", "clipboard: unable to append history record");
+            }
+        } else {
+            g_app->ignoredClipboardHash = 0;
+        }
+    }
+    if (g_app->popup) refreshVisible();
+}
+
 LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     if (hwnd == g_app->settings && message == WM_DRAWITEM) {
         const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
@@ -5382,6 +5771,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         wchar_t className[64]{};
         GetClassNameW(hwnd, className, 64);
         if (std::wcscmp(className, L"ClipLiteSettings") == 0) {
+            g_app->settingsWindow.attach(hwnd, g_uiDpi);
             g_app->settingsControlsTab = -1;
             g_app->settingsFont = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
@@ -5417,6 +5807,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (std::wcscmp(className, L"ClipLitePopup") == 0) {
+            g_app->historyWindow.attach(hwnd, g_uiDpi);
             g_app->popupFont = CreateFontW(-ui(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                            CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
@@ -5461,6 +5852,28 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     if (message == WM_ERASEBKGND && (hwnd == g_app->settings || hwnd == g_app->popup)) {
         return 1;
     }
+    if (message == WM_DPICHANGED && (hwnd == g_app->settings || hwnd == g_app->popup)) {
+        g_uiDpi = HIWORD(wParam);
+        const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
+        if (suggested) {
+            SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
+                         suggested->right - suggested->left, suggested->bottom - suggested->top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        if (hwnd == g_app->settings) {
+            g_app->settingsWindow.resize(0, 0, g_uiDpi);
+            updateSettingsTabControls(hwnd);
+        } else {
+            g_app->historyWindow.resize(0, 0, g_uiDpi);
+        }
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
+    if (message == WM_SIZE && hwnd == g_app->settings) {
+        g_app->settingsWindow.resize(LOWORD(lParam), HIWORD(lParam), g_uiDpi);
+    } else if (message == WM_SIZE && hwnd == g_app->popup) {
+        g_app->historyWindow.resize(LOWORD(lParam), HIWORD(lParam), g_uiDpi);
+    }
     if (hwnd == g_app->languageDropdown && message == WM_ERASEBKGND) return 1;
     if ((message == WM_CTLCOLORSTATIC || message == WM_CTLCOLOREDIT || message == WM_CTLCOLORBTN ||
          message == WM_CTLCOLORLISTBOX) &&
@@ -5488,9 +5901,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
     if (hwnd == g_app->settings && message == WM_PAINT) {
         PAINTSTRUCT ps{};
-        HDC dc = BeginPaint(hwnd, &ps);
-        paintSettings(hwnd, dc);
+        BeginPaint(hwnd, &ps);
         EndPaint(hwnd, &ps);
+        paintSettingsDirect(hwnd);
         return 0;
     }
     if (hwnd == g_app->languageDropdown) {
@@ -5559,12 +5972,14 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
     }
     if (message == WM_DESTROY && hwnd == g_app->popup) {
+        g_app->historyWindow.detach();
         if (g_app->popupFont) DeleteObject(g_app->popupFont);
         if (g_app->popupInputBrush) DeleteObject(g_app->popupInputBrush);
         g_app->popupFont = nullptr;
         g_app->popupInputBrush = nullptr;
     }
     if (message == WM_DESTROY && hwnd == g_app->settings) {
+        g_app->settingsWindow.detach();
         if (g_app->languageDropdown) {
             DestroyWindow(g_app->languageDropdown);
             g_app->languageDropdown = nullptr;
@@ -5599,19 +6014,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == WM_HOTKEY) {
-            if (wParam == kHotkeySettings) {
-                openSettings();
-            } else if (wParam == kHotkeyPause) {
-                g_app->settingsData.pauseMonitoring = !g_app->settingsData.pauseMonitoring;
-                if (g_app->settings) {
-                    setSettingsToggleValue(GetDlgItem(g_app->settings, kSettingPause),
-                                           g_app->settingsData.pauseMonitoring);
-                    InvalidateRect(g_app->settings, nullptr, FALSE);
-                }
-                saveSettings(g_app->settingsData);
-            } else if (wParam == kHotkeyAltV || wParam == kHotkeyWinV) {
-                showPopup();
-            }
+            g_app->hotkeys.handleMessage(message, wParam);
             return 0;
         }
         if (message == kShowPopupMessage) {
@@ -5633,28 +6036,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             return 0;
         }
-        if (message == WM_CLIPBOARDUPDATE) {
-            if (g_app->settingsData.pauseMonitoring) return 0;
-            ClipType type{};
-            std::string payload;
-            std::string source;
-            if (captureClipboard(type, payload, source)) {
-                const std::size_t maxPayload = static_cast<std::size_t>(g_app->settingsData.maxContentMb) * 1024u * 1024u;
-                if (payload.size() > maxPayload || isIgnoredClipboardSource(source)) return 0;
-                const auto hash = clipLiteHash(payload);
-                if (hash != g_app->ignoredClipboardHash) {
-                    const std::uint64_t expiresAt = g_app->settingsData.sensitiveExpiryHours > 0 &&
-                        containsSensitiveMarker(type, payload)
-                        ? nowUnix() + static_cast<std::uint64_t>(g_app->settingsData.sensitiveExpiryHours) * 3600ULL
-                        : 0;
-                    if (!g_app->store.append(type, payload, hash, source, expiresAt)) {
-                        appendDiagnosticLog("ERROR", "clipboard: unable to append history record");
-                    }
-                } else {
-                    g_app->ignoredClipboardHash = 0;
-                }
-            }
-            if (g_app->popup) refreshVisible();
+        if (g_app->clipboardMonitor.handleMessage(message)) {
             return 0;
         }
     }
@@ -6311,9 +6693,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         if (message == WM_PAINT) {
             PAINTSTRUCT ps{};
-            HDC dc = BeginPaint(hwnd, &ps);
-            paintPopup(hwnd, dc, &ps.rcPaint);
+            BeginPaint(hwnd, &ps);
             EndPaint(hwnd, &ps);
+            paintPopupDirect(hwnd);
             return 0;
         }
         if (message == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE) {
@@ -6372,8 +6754,12 @@ void openSettings() {
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    const HRESULT comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool comInitialized = SUCCEEDED(comResult);
     AppState app;
     g_app = &app;
+    const bool renderInitialized = RenderContext::initializeShared();
+    if (!renderInitialized) appendDiagnosticLog("WARN", "startup: Direct2D shared factories unavailable");
     appendDiagnosticLog("INFO", "startup: process initialization started");
     g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
     loadSettings(app.settingsData);
@@ -6385,13 +6771,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         !app.store.setDataDirectory(utf8ToWide(app.settingsData.dataDirectory))) {
         app.settingsData.dataDirectory.clear();
     }
-    HANDLE mutex = CreateMutexW(nullptr, TRUE, L"ClipLite.SingleInstance");
-    const DWORD mutexError = GetLastError();
-    if (!mutex) {
+    if (!app.lifecycle.acquireSingleInstance(L"ClipLite.SingleInstance")) {
+        const DWORD mutexError = app.lifecycle.lastError();
         appendDiagnosticLog("ERROR", "startup: single-instance lock creation failed", mutexError);
         showStartupFailure(settingsLocale().unableCreateMutex);
         return 1;
     }
+    const DWORD mutexError = app.lifecycle.lastError();
     const bool commandExit = wcsstr(commandLine, L"--exit") || wcsstr(commandLine, L"/exit");
     const bool commandHistory = wcsstr(commandLine, L"--history") || wcsstr(commandLine, L"/history");
     const bool commandSettings = wcsstr(commandLine, L"--settings") || wcsstr(commandLine, L"/settings");
@@ -6407,14 +6793,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
                 PostMessageW(existing, kShowSettingsMessage, 0, 0);
             }
         }
-        CloseHandle(mutex);
+        RenderContext::shutdownShared();
+        if (comInitialized) CoUninitialize();
         return 0;
     }
     if (!app.store.open()) {
         appendDiagnosticLog("ERROR", "startup: history storage open failed");
         showStartupFailure(settingsLocale().unableOpenStore);
-        ReleaseMutex(mutex);
-        CloseHandle(mutex);
+        RenderContext::shutdownShared();
+        if (comInitialized) CoUninitialize();
         return 1;
     }
     appendDiagnosticLog("INFO", "startup: history storage opened");
@@ -6461,22 +6848,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     if (!app.hidden) {
         appendDiagnosticLog("ERROR", "startup: background window creation failed", GetLastError());
         showStartupFailure(settingsLocale().unableCreateBackground);
-        ReleaseMutex(mutex);
-        CloseHandle(mutex);
+        RenderContext::shutdownShared();
+        if (comInitialized) CoUninitialize();
         return 1;
     }
-    Gdiplus::GdiplusStartupInput gdiplusInput;
-    if (Gdiplus::GdiplusStartup(&app.gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
-        app.gdiplusToken = 0;
-    }
     SetTimer(app.hidden, kExpiryTimer, 60000, nullptr);
-    if (!AddClipboardFormatListener(app.hidden)) {
+    if (!app.clipboardMonitor.start(app.hidden, [] { processClipboardUpdate(); })) {
         appendDiagnosticLog("ERROR", "startup: clipboard listener registration failed", GetLastError());
         showStartupFailure(settingsLocale().unableMonitorClipboard);
         DestroyWindow(app.hidden);
-        if (app.gdiplusToken != 0) Gdiplus::GdiplusShutdown(app.gdiplusToken);
-        ReleaseMutex(mutex);
-        CloseHandle(mutex);
+        RenderContext::shutdownShared();
+        if (comInitialized) CoUninitialize();
         return 1;
     }
     appendDiagnosticLog("INFO", "startup: clipboard listener registered");
@@ -6498,14 +6880,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         DispatchMessageW(&message);
     }
     appendDiagnosticLog("INFO", "shutdown: process cleanup started");
-    RemoveClipboardFormatListener(app.hidden);
+    app.clipboardMonitor.stop();
     KillTimer(app.hidden, kExpiryTimer);
     removeTrayIcon();
-    UnregisterHotKey(app.hidden, kHotkeyAltV);
-    UnregisterHotKey(app.hidden, kHotkeyWinV);
-    if (app.keyboardHook) UnhookWindowsHookEx(app.keyboardHook);
-    if (app.gdiplusToken != 0) Gdiplus::GdiplusShutdown(app.gdiplusToken);
-    ReleaseMutex(mutex);
-    CloseHandle(mutex);
+    app.hotkeys.stop();
+    app.historyWindow.detach();
+    app.settingsWindow.detach();
+    RenderContext::shutdownShared();
+    app.lifecycle.releaseSingleInstance();
+    if (comInitialized) CoUninitialize();
     return 0;
 }
