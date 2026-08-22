@@ -53,6 +53,7 @@ private:
     bool createTarget(UINT width, UINT height);
     bool createBrush(D2D1_COLOR_F color);
     bool handleDeviceLost(HRESULT result);
+    static bool initializeWic();
 
     HWND hwnd_ = nullptr;
     UINT dpi_ = 96;

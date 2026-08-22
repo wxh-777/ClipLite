@@ -41,20 +41,18 @@ bool RenderContext::initializeShared() {
         d2dFactory_.Reset();
         return false;
     }
-    if (!wicFactory_) {
-        HRESULT result = CoCreateInstance(CLSID_WICImagingFactory2, nullptr, CLSCTX_INPROC_SERVER,
-                                           IID_PPV_ARGS(wicFactory_.GetAddressOf()));
-        if (FAILED(result)) {
-            result = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                                       IID_PPV_ARGS(wicFactory_.GetAddressOf()));
-        }
-        if (FAILED(result)) {
-            writeFactory_.Reset();
-            d2dFactory_.Reset();
-            return false;
-        }
-    }
     return true;
+}
+
+bool RenderContext::initializeWic() {
+    if (wicFactory_) return true;
+    HRESULT result = CoCreateInstance(CLSID_WICImagingFactory2, nullptr, CLSCTX_INPROC_SERVER,
+                                       IID_PPV_ARGS(wicFactory_.GetAddressOf()));
+    if (FAILED(result)) {
+        result = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_PPV_ARGS(wicFactory_.GetAddressOf()));
+    }
+    return SUCCEEDED(result);
 }
 
 void RenderContext::shutdownShared() {
@@ -190,7 +188,7 @@ void RenderContext::strokeEllipse(const D2D1_ELLIPSE& ellipse, D2D1_COLOR_F colo
 }
 
 bool RenderContext::drawDib(const std::string& payload, const RECT& destination) {
-    if (!target_ || !drawing_ || !wicFactory_ || payload.size() < sizeof(BITMAPINFOHEADER)) {
+    if (!target_ || !drawing_ || payload.size() < sizeof(BITMAPINFOHEADER) || !initializeWic()) {
         return false;
     }
     BITMAPINFOHEADER header{};
