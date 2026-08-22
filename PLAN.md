@@ -205,7 +205,7 @@ f506adfb7bd7045981c97e60882f2bfa8e36a99c
 
 ## 七、当前下一步
 
-1. 删除迁移期间保留的不可编译旧绘制源码，继续拆分设置和历史消息处理。
+1. 继续拆分设置和历史消息处理，减少 `main.cpp` 的消息分发职责。
 2. 将原生控件的自定义绘制和语言下拉改为 DirectWrite/Direct2D 或恢复为系统控件。
 3. 增加 WIC 图片格式、设备丢失、125%/150%/200% DPI 和高对比度实机验证。
 4. 在管理员窗口、任务管理器、远程桌面和安全桌面记录 Win+V 边界结果。
@@ -215,7 +215,7 @@ f506adfb7bd7045981c97e60882f2bfa8e36a99c
 - 已新增 `app_lifecycle`、`clipboard_monitor`、`hotkey_manager`、`render_context`、`history_window` 和 `settings_window` 模块。
 - 设置窗口和历史窗口主背景、卡片、筛选条、历史文字和统计文字改由 Direct2D/DirectWrite 绘制；DPI、尺寸变化和设备目标重建进入窗口级上下文。
 - WIC 工厂共享，24/32 位 DIB 和常见 DIBV5 图片仅在可见历史行按需复制、缩放和绘制，不建立常驻图片缓存。
-- GDI+ 已从目标链接和运行时初始化中移除；迁移期间的旧绘制块已禁用，待下一轮直接删除源码。
+- GDI+、旧双缓冲主绘制函数和迁移期间的不可编译旧绘制源码已删除，目标仅保留 Direct2D/DirectWrite 主绘制路径。
 - Win+V 低级钩子已移入独立模块，异常超时、重复 Win 键、注入事件、普通 Win 组合和卸载状态均由模块清理。
 - Release 构建、CTest、窗口压力 `100/100` 和剪贴板压力 `10000/10000` 通过。
-- 当前资源测量：启动设置场景 Working Set `37.9 MB`、Private Bytes `25.8 MB`、句柄 `328`、GDI `26`、USER `57`；尚未达到计划预算，需继续优化并在目标 Windows 版本复测。
+- 当前资源测量：启动设置场景 Working Set `37.0 MB`、Private Bytes `25.88 MB`、Commit `25.88 MB`、CPU `578.12 ms`、句柄 `320`、GDI `26`、USER `57`；GPU Dedicated/Shared 计数器在当前环境未返回数据。尚未达到计划预算，需继续优化并在目标 Windows 版本复测。
