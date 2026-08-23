@@ -16,3 +16,7 @@ settings.ini
 # Local test and diagnostic output
 *.log
 *.dmp
+
+# Internal project guidance; keep these out of public source releases
+AGENTS.md
+PLAN.md

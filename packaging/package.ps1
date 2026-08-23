@@ -1,6 +1,6 @@
 param(
     [string]$Configuration = "Release",
-    [string]$Version = "0.1.0"
+    [string]$Version = "1.0.0"
 )
 
 $root = Split-Path -Parent $PSScriptRoot
@@ -18,10 +18,20 @@ if (Test-Path $portableOut) {
 }
 New-Item -ItemType Directory -Path $portableOut | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $portableOut "data") | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $portableOut "docs\screenshots") | Out-Null
 New-Item -ItemType File -Path (Join-Path $portableOut "portable.flag") | Out-Null
 Copy-Item $exe (Join-Path $portableOut "ClipLite.exe")
 Copy-Item (Join-Path $root "README.md") $portableOut
+Copy-Item (Join-Path $root "README.en.md") $portableOut
 Copy-Item (Join-Path $root "CHANGELOG.md") $portableOut
+Copy-Item (Join-Path $root "CHANGELOG.en.md") $portableOut
+Copy-Item (Join-Path $root "LICENSE.md") $portableOut
+Copy-Item (Join-Path $root "CONTRIBUTING.md") $portableOut
+Copy-Item (Join-Path $root "CONTRIBUTING.en.md") $portableOut
+Copy-Item (Join-Path $root "SECURITY.md") $portableOut
+Copy-Item (Join-Path $root "SECURITY.en.md") $portableOut
+Copy-Item (Join-Path $root "docs\screenshots\history.png") (Join-Path $portableOut "docs\screenshots")
+Copy-Item (Join-Path $root "docs\screenshots\settings.png") (Join-Path $portableOut "docs\screenshots")
 Copy-Item (Join-Path $root "resources\support-wechat.png") $portableOut
 Copy-Item (Join-Path $root "resources\support-alipay.png") $portableOut
 Copy-Item (Join-Path $root "resources\support-qq.jpg") $portableOut

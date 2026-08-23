@@ -1,6 +1,6 @@
 #define AppName "ClipLite"
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #define AppVersion "1.0.0"
 #endif
 #ifndef SourceRoot
   #define SourceRoot ".."
@@ -25,6 +25,7 @@ OutputBaseFilename=ClipLite-Setup-{#AppVersion}-x64
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+LicenseFile={#SourceRoot}\LICENSE.md
 UninstallDisplayIcon={app}\ClipLite.exe
 ChangesAssociations=no
 
@@ -34,7 +35,16 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 [Files]
 Source: "{#SourceRoot}\build-x64\Release\ClipLite.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\README.en.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\CHANGELOG.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\CHANGELOG.en.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\LICENSE.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\CONTRIBUTING.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\CONTRIBUTING.en.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\SECURITY.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\SECURITY.en.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\docs\screenshots\history.png"; DestDir: "{app}\docs\screenshots"; Flags: ignoreversion
+Source: "{#SourceRoot}\docs\screenshots\settings.png"; DestDir: "{app}\docs\screenshots"; Flags: ignoreversion
 Source: "{#SourceRoot}\resources\support-wechat.png"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\resources\support-alipay.png"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\resources\support-qq.jpg"; DestDir: "{app}"; Flags: ignoreversion
