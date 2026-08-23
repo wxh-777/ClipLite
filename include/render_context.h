@@ -2,7 +2,11 @@
 #define CLIPLITE_RENDER_CONTEXT_H
 
 #include <d2d1.h>
+#include <d2d1_1.h>
+#include <d3d11.h>
 #include <dwrite.h>
+#include <dxgi1_2.h>
+#include <dxgi1_3.h>
 #include <wincodec.h>
 #include <windows.h>
 
@@ -54,15 +58,21 @@ private:
     bool createBrush(D2D1_COLOR_F color);
     bool handleDeviceLost(HRESULT result);
     static bool initializeWic();
+    bool createTargetBitmap();
 
     HWND hwnd_ = nullptr;
     UINT dpi_ = 96;
     bool drawing_ = false;
     bool softwareFallback_ = false;
-    Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> target_;
+    Microsoft::WRL::ComPtr<ID3D11Device> d3dDevice_;
+    Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice_;
+    Microsoft::WRL::ComPtr<IDXGISwapChain1> swapChain_;
+    Microsoft::WRL::ComPtr<ID2D1Device> d2dDevice_;
+    Microsoft::WRL::ComPtr<ID2D1DeviceContext> target_;
+    Microsoft::WRL::ComPtr<ID2D1Bitmap1> targetBitmap_;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush_;
 
-    static Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;
+    static Microsoft::WRL::ComPtr<ID2D1Factory1> d2dFactory_;
     static Microsoft::WRL::ComPtr<IDWriteFactory> writeFactory_;
     static Microsoft::WRL::ComPtr<IWICImagingFactory> wicFactory_;
 };

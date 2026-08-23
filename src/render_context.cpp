@@ -6,7 +6,7 @@
 
 using Microsoft::WRL::ComPtr;
 
-ComPtr<ID2D1Factory> RenderContext::d2dFactory_;
+ComPtr<ID2D1Factory1> RenderContext::d2dFactory_;
 ComPtr<IDWriteFactory> RenderContext::writeFactory_;
 ComPtr<IWICImagingFactory> RenderContext::wicFactory_;
 
@@ -28,9 +28,9 @@ RenderContext::~RenderContext() {
 }
 
 bool RenderContext::initializeShared() {
-    if (d2dFactory_ && writeFactory_ && wicFactory_) return true;
+    if (d2dFactory_ && writeFactory_) return true;
 
-    if (!d2dFactory_ && FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,
+    if (!d2dFactory_ && FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED,
                                                  d2dFactory_.GetAddressOf()))) {
         return false;
     }
@@ -78,7 +78,13 @@ bool RenderContext::attach(HWND hwnd, UINT dpi) {
 void RenderContext::detach() {
     drawing_ = false;
     brush_.Reset();
+    if (target_) target_->SetTarget(nullptr);
+    targetBitmap_.Reset();
     target_.Reset();
+    d2dDevice_.Reset();
+    swapChain_.Reset();
+    dxgiDevice_.Reset();
+    d3dDevice_.Reset();
     hwnd_ = nullptr;
     softwareFallback_ = false;
 }
@@ -99,35 +105,70 @@ bool RenderContext::resize(UINT width, UINT height, UINT dpi) {
         width = static_cast<UINT>(std::max(1L, client.right - client.left));
         height = static_cast<UINT>(std::max(1L, client.bottom - client.top));
     }
-    const HRESULT result = target_->Resize(D2D1::SizeU(width, height));
-    return SUCCEEDED(result) || handleDeviceLost(result);
+    brush_.Reset();
+    target_->SetTarget(nullptr);
+    targetBitmap_.Reset();
+    HRESULT result = swapChain_->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+    if (FAILED(result)) return handleDeviceLost(result);
+    return createTargetBitmap();
 }
 
 bool RenderContext::createTarget(UINT width, UINT height) {
     if (!d2dFactory_ || !hwnd_) return false;
-    const D2D1_RENDER_TARGET_PROPERTIES properties = D2D1::RenderTargetProperties(
-        D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
-                                                            D2D1_ALPHA_MODE_IGNORE),
-        0.0f, 0.0f, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_FEATURE_LEVEL_DEFAULT);
-    const D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProperties =
-        D2D1::HwndRenderTargetProperties(hwnd_, D2D1::SizeU(width, height),
-                                         D2D1_PRESENT_OPTIONS_RETAIN_CONTENTS);
-    HRESULT result = d2dFactory_->CreateHwndRenderTarget(properties, hwndProperties,
-                                                           target_.GetAddressOf());
+    const D3D_FEATURE_LEVEL featureLevels[] = {
+        D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1
+    };
+    D3D_FEATURE_LEVEL selectedLevel{};
+    HRESULT result = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+                                        D3D11_CREATE_DEVICE_BGRA_SUPPORT, featureLevels,
+                                        ARRAYSIZE(featureLevels), D3D11_SDK_VERSION,
+                                        d3dDevice_.GetAddressOf(), &selectedLevel, nullptr);
     softwareFallback_ = false;
     if (FAILED(result)) {
-        const D2D1_RENDER_TARGET_PROPERTIES softwareProperties = D2D1::RenderTargetProperties(
-            D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
-        result = d2dFactory_->CreateHwndRenderTarget(softwareProperties, hwndProperties,
-                                                      target_.GetAddressOf());
+        result = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr,
+                                    D3D11_CREATE_DEVICE_BGRA_SUPPORT, featureLevels,
+                                    ARRAYSIZE(featureLevels), D3D11_SDK_VERSION,
+                                    d3dDevice_.GetAddressOf(), &selectedLevel, nullptr);
         softwareFallback_ = SUCCEEDED(result);
     }
-    if (FAILED(result)) {
-        target_.Reset();
-        return false;
-    }
-    // The window code already converts logical coordinates to physical pixels.
+    if (FAILED(result) || FAILED(d3dDevice_.As(&dxgiDevice_))) return false;
+
+    result = d2dFactory_->CreateDevice(dxgiDevice_.Get(), d2dDevice_.GetAddressOf());
+    if (FAILED(result) || FAILED(d2dDevice_->CreateDeviceContext(
+            D2D1_DEVICE_CONTEXT_OPTIONS_NONE, target_.GetAddressOf()))) return false;
+
+    ComPtr<IDXGIFactory2> factory;
+    result = CreateDXGIFactory2(0, IID_PPV_ARGS(factory.GetAddressOf()));
+    if (FAILED(result)) return false;
+    DXGI_SWAP_CHAIN_DESC1 description{};
+    description.Width = width;
+    description.Height = height;
+    description.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    description.SampleDesc.Count = 1;
+    description.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    description.BufferCount = 2;
+    description.Scaling = DXGI_SCALING_STRETCH;
+    description.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    result = factory->CreateSwapChainForHwnd(d3dDevice_.Get(), hwnd_, &description, nullptr,
+                                             nullptr, swapChain_.GetAddressOf());
+    if (FAILED(result)) return false;
+    factory->MakeWindowAssociation(hwnd_, DXGI_MWA_NO_ALT_ENTER);
+    return createTargetBitmap();
+}
+
+bool RenderContext::createTargetBitmap() {
+    if (!target_ || !swapChain_) return false;
+    ComPtr<IDXGISurface> surface;
+    HRESULT result = swapChain_->GetBuffer(0, IID_PPV_ARGS(surface.GetAddressOf()));
+    if (FAILED(result)) return false;
+    const D2D1_BITMAP_PROPERTIES1 properties = D2D1::BitmapProperties1(
+        D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+        96.0f, 96.0f);
+    result = target_->CreateBitmapFromDxgiSurface(surface.Get(), &properties,
+                                                   targetBitmap_.GetAddressOf());
+    if (FAILED(result)) return false;
+    target_->SetTarget(targetBitmap_.Get());
     target_->SetDpi(96.0f, 96.0f);
     return true;
 }
@@ -142,7 +183,11 @@ bool RenderContext::beginDraw() {
 bool RenderContext::endDraw() {
     if (!target_ || !drawing_) return false;
     drawing_ = false;
-    return SUCCEEDED(handleDeviceLost(target_->EndDraw()));
+    HRESULT result = target_->EndDraw();
+    if (FAILED(result)) return handleDeviceLost(result);
+    result = swapChain_->Present(1, 0);
+    if (FAILED(result)) return handleDeviceLost(result);
+    return true;
 }
 
 bool RenderContext::handleDeviceLost(HRESULT result) {
@@ -150,7 +195,13 @@ bool RenderContext::handleDeviceLost(HRESULT result) {
         return SUCCEEDED(result);
     }
     brush_.Reset();
+    if (target_) target_->SetTarget(nullptr);
+    targetBitmap_.Reset();
     target_.Reset();
+    d2dDevice_.Reset();
+    swapChain_.Reset();
+    dxgiDevice_.Reset();
+    d3dDevice_.Reset();
     if (!hwnd_) return false;
     RECT client{};
     GetClientRect(hwnd_, &client);

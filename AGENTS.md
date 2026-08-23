@@ -36,7 +36,7 @@ Direct2D、DirectWrite、WIC、DWM 和 DPAPI 均视为 Windows 系统能力，�
 - `src/app_lifecycle.cpp`：COM/DPI 之外的单实例句柄生命周期。
 - `src/clipboard_monitor.cpp`：剪贴板监听注册、注销和更新回调。
 - `src/hotkey_manager.cpp`：RegisterHotKey 和独立 Win+V 低级钩子状态机。
-- `src/render_context.cpp`：共享 Direct2D、DirectWrite、WIC Factory 和窗口级渲染资源。
+- `src/render_context.cpp`：共享 Direct2D 1.1/DirectWrite/WIC Factory，窗口级 D3D11 设备、DXGI swap chain、DeviceContext 和渲染资源。
 - `src/history_window.cpp`、`src/settings_window.cpp`：历史窗口和设置窗口的渲染资源边界。
 - `src/clip_store.cpp`：追加式历史存储、CRC、重建、删除、搜索和 DPAPI 相关逻辑。
 - `include/clip_store.h`：存储公共数据结构和接口。
