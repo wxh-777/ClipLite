@@ -214,8 +214,9 @@ f506adfb7bd7045981c97e60882f2bfa8e36a99c
 
 - 已新增 `app_lifecycle`、`clipboard_monitor`、`hotkey_manager`、`render_context`、`history_window` 和 `settings_window` 模块。
 - 设置窗口和历史窗口主背景、卡片、筛选条、历史文字和统计文字改由 Direct2D/DirectWrite 绘制；DPI、尺寸变化和设备目标重建进入窗口级上下文。
+- 设置开关、快捷键、清理按钮、目录按钮和语言选择恢复为标准 Win32 控件，删除对应 owner-draw、GDI 双缓冲和自绘下拉代码。
 - WIC 工厂共享，24/32 位 DIB 和常见 DIBV5 图片仅在可见历史行按需复制、缩放和绘制，不建立常驻图片缓存。
 - GDI+、旧双缓冲主绘制函数和迁移期间的不可编译旧绘制源码已删除，目标仅保留 Direct2D/DirectWrite 主绘制路径。
 - Win+V 低级钩子已移入独立模块，异常超时、重复 Win 键、注入事件、普通 Win 组合和卸载状态均由模块清理。
 - Release 构建、CTest、窗口压力 `100/100` 和剪贴板压力 `10000/10000` 通过。
-- 当前资源测量：启动设置场景 Working Set `37.0 MB`、Private Bytes `25.88 MB`、Commit `25.88 MB`、CPU `578.12 ms`、句柄 `320`、GDI `26`、USER `57`；GPU Dedicated/Shared 计数器在当前环境未返回数据。尚未达到计划预算，需继续优化并在目标 Windows 版本复测。
+- 当前资源测量：启动设置场景 Working Set `37.62 MB`、Private Bytes `25.95 MB`、Commit `25.95 MB`、CPU `531.25 ms`、句柄 `322`、GDI `20`、USER `58`；GPU Dedicated/Shared 计数器在当前环境未返回数据。尚未达到计划预算，需继续优化并在目标 Windows 版本复测。

@@ -113,13 +113,11 @@ constexpr UINT kShowSettingsMessage = WM_APP + 3;
 constexpr UINT kExitMessage = WM_APP + 4;
 constexpr UINT_PTR kExpiryTimer = 3;
 constexpr UINT_PTR kSettingsToggleTimer = 4;
-constexpr UINT_PTR kSettingsDropdownTimer = 5;
 constexpr UINT_PTR kSettingsSyncTimer = 6;
 constexpr UINT_PTR kSettingsThemeTimer = 7;
 constexpr UINT_PTR kSettingsActionFeedbackTimer = 8;
 constexpr UINT_PTR kPopupScrollTimer = 9;
 constexpr DWORD kSettingsToggleAnimationMs = 160;
-constexpr DWORD kSettingsDropdownAnimationMs = 150;
 constexpr DWORD kSettingsThemeAnimationMs = 180;
 constexpr DWORD kPopupScrollAnimationMs = 105;
 constexpr UINT kSettingsSyncDelayMs = 300;
@@ -146,8 +144,6 @@ constexpr int kSettingsSidebarWidth = 180;
 constexpr int kSettingsHeaderHeight = 58;
 constexpr int kSettingsToggleWidth = 36;
 constexpr int kSettingsToggleHeight = 20;
-constexpr int kSettingsTrackWidth = 36;
-constexpr int kSettingsTrackHeight = 20;
 constexpr int kSettingsThemeWidth = 102;
 constexpr int kSettingsThemeSegmentWidth = 32;
 constexpr int kSettingsShortcutPage = 1;
@@ -196,11 +192,6 @@ struct AppState {
     HWND targetWindow = nullptr;
     HFONT popupFont = nullptr;
     HFONT settingsFont = nullptr;
-    HFONT settingsMultilineFont = nullptr;
-    HBRUSH popupInputBrush = nullptr;
-    HBRUSH settingsBackgroundBrush = nullptr;
-    HBRUSH settingsCardBrush = nullptr;
-    HBRUSH settingsInputBrush = nullptr;
     WNDPROC oldEditProc = nullptr;
     POINT popupPoint{};
     int selected = 0;
@@ -237,11 +228,6 @@ struct AppState {
     bool settingsThemeToDark = false;
     float settingsThemeProgressValue = 1.0f;
     LONGLONG settingsThemeStartTicks = 0;
-    HWND languageDropdown = nullptr;
-    int languageDropdownHover = -1;
-    LONGLONG languageDropdownStartTicks = 0;
-    float languageDropdownFrom = 0.0f;
-    float languageDropdownTo = 0.0f;
     bool restoringSettingsControls = false;
     bool settingsClosing = false;
     int settingsTab = 0;
@@ -1401,154 +1387,6 @@ bool popupScrollThumbAt(int x, int y) {
            y >= thumbTop && y < thumbTop + thumbHeight;
 }
 
-void drawGdiLine(HDC dc, int x1, int y1, int x2, int y2, COLORREF color, float width = 1.0f) {
-    HPEN pen = CreatePen(PS_SOLID, std::max(1, static_cast<int>(width + 0.5f)), color);
-    if (!pen) return;
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    MoveToEx(dc, x1, y1, nullptr);
-    LineTo(dc, x2, y2);
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
-}
-
-void drawGdiRoundedSurface(HDC dc, const RECT& rect, COLORREF fill, COLORREF border, int radius) {
-    HBRUSH brush = CreateSolidBrush(fill);
-    HPEN pen = CreatePen(PS_SOLID, ui(1), border);
-    if (!brush || !pen) {
-        if (brush) DeleteObject(brush);
-        if (pen) DeleteObject(pen);
-        return;
-    }
-    HGDIOBJ oldBrush = SelectObject(dc, brush);
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, ui(radius), ui(radius));
-    SelectObject(dc, oldPen);
-    SelectObject(dc, oldBrush);
-    DeleteObject(pen);
-    DeleteObject(brush);
-}
-
-void drawPinIcon(HDC dc, int right, int centerY, COLORREF color, bool filled) {
-    HPEN pen = CreatePen(PS_SOLID, ui(1), color);
-    if (!pen) return;
-    HBRUSH brush = filled ? CreateSolidBrush(color) : nullptr;
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    HGDIOBJ oldBrush = SelectObject(dc, brush ? brush : GetStockObject(NULL_BRUSH));
-    MoveToEx(dc, right - ui(8), centerY - ui(7), nullptr);
-    LineTo(dc, right - ui(8), centerY + ui(7));
-    MoveToEx(dc, right - ui(13), centerY - ui(2), nullptr);
-    LineTo(dc, right - ui(3), centerY - ui(2));
-    MoveToEx(dc, right - ui(8), centerY + ui(7), nullptr);
-    LineTo(dc, right - ui(12), centerY + ui(11));
-    SelectObject(dc, oldBrush);
-    SelectObject(dc, oldPen);
-    if (brush) DeleteObject(brush);
-    DeleteObject(pen);
-}
-
-void drawEmptyClipboardIcon(HDC dc, int centerX, int top, COLORREF color) {
-    HPEN pen = CreatePen(PS_SOLID, ui(1), color);
-    if (!pen) return;
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-    RoundRect(dc, centerX - ui(14), top + ui(6), centerX + ui(14), top + ui(38), ui(4), ui(4));
-    RoundRect(dc, centerX - ui(7), top, centerX + ui(7), top + ui(10), ui(3), ui(3));
-    MoveToEx(dc, centerX - ui(7), top + ui(20), nullptr);
-    LineTo(dc, centerX + ui(7), top + ui(20));
-    MoveToEx(dc, centerX - ui(7), top + ui(27), nullptr);
-    LineTo(dc, centerX + ui(3), top + ui(27));
-    SelectObject(dc, oldBrush);
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
-}
-
-void drawDeleteIcon(HDC dc, int x, int y, COLORREF color) {
-    drawGdiLine(dc, x, y, x + ui(10), y + ui(10), color);
-    drawGdiLine(dc, x + ui(10), y, x, y + ui(10), color);
-}
-
-void drawSearchIcon(HDC dc, int centerX, int centerY, COLORREF color) {
-    HPEN pen = CreatePen(PS_SOLID, ui(1), color);
-    if (!pen) return;
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-    Ellipse(dc, centerX - ui(5), centerY - ui(6), centerX + ui(5), centerY + ui(4));
-    MoveToEx(dc, centerX + ui(3), centerY + ui(4), nullptr);
-    LineTo(dc, centerX + ui(7), centerY + ui(8));
-    SelectObject(dc, oldBrush);
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
-}
-
-void drawMetadataTag(HDC dc, const RECT& rect, const std::wstring& value,
-                     COLORREF background, COLORREF border, COLORREF text, int radius) {
-    drawGdiRoundedSurface(dc, rect, background, border, radius);
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, text);
-    RECT textRect = rect;
-    DrawTextW(dc, value.c_str(), -1, &textRect,
-              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-}
-
-void drawSettingsNavIcon(HDC dc, int index, int x, int y, COLORREF color) {
-    HPEN pen = CreatePen(PS_SOLID, ui(1), color);
-    if (!pen) return;
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-    if (index == 0 || index == 1) {
-        for (int row = 0; row < 3; ++row) {
-            MoveToEx(dc, x + ui(4), y + ui(7 + row * 5), nullptr);
-            LineTo(dc, x + ui(20), y + ui(7 + row * 5));
-        }
-    } else if (index == 4) {
-        Ellipse(dc, x + ui(4), y + ui(3), x + ui(20), y + ui(19));
-        MoveToEx(dc, x + ui(12), y + ui(11), nullptr);
-        LineTo(dc, x + ui(12), y + ui(16));
-    } else {
-        Rectangle(dc, x + ui(5), y + ui(4), x + ui(19), y + ui(19));
-    }
-    SelectObject(dc, oldBrush);
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
-}
-
-void drawSettingsThemeIcon(HDC dc, int mode, int centerX, int centerY, COLORREF color) {
-    const wchar_t* glyphs[] = {L"A", L"L", L"D"};
-    HFONT font = CreateFontW(-ui(11), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    if (!font) return;
-    HGDIOBJ oldFont = SelectObject(dc, font);
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, color);
-    RECT rect{centerX - ui(9), centerY - ui(9), centerX + ui(9), centerY + ui(9)};
-    DrawTextW(dc, glyphs[std::clamp(mode, 0, 2)], -1, &rect,
-              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    SelectObject(dc, oldFont);
-    DeleteObject(font);
-}
-
-void drawSettingsAccentDot(HDC dc, int left, int top, int size,
-                           COLORREF color, bool selected, COLORREF ringColor) {
-    HBRUSH brush = CreateSolidBrush(color);
-    if (!brush) return;
-    HGDIOBJ oldBrush = SelectObject(dc, brush);
-    HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
-    Ellipse(dc, left, top, left + size, top + size);
-    SelectObject(dc, oldPen);
-    SelectObject(dc, oldBrush);
-    DeleteObject(brush);
-    if (!selected) return;
-    HPEN ring = CreatePen(PS_SOLID, ui(1), ringColor);
-    if (!ring) return;
-    oldPen = SelectObject(dc, ring);
-    oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-    Ellipse(dc, left - ui(2), top - ui(2), left + size + ui(2), top + size + ui(2));
-    SelectObject(dc, oldBrush);
-    SelectObject(dc, oldPen);
-    DeleteObject(ring);
-}
-
 void refreshVisible() {
     if (!g_app->popup) return;
     const std::vector<std::size_t> candidates = g_app->store.search(g_app->query);
@@ -1595,55 +1433,6 @@ void scrollPopup(int delta) {
 
 void notifyPasteFailure() {
     MessageBeep(MB_ICONWARNING);
-}
-
-bool drawImagePreview(HDC dc, const ClipItem& item, const RECT& rowRect) {
-    std::string payload;
-    if (!g_app->store.readPayload(&item - g_app->store.items().data(), payload)) return false;
-    if (payload.size() < sizeof(BITMAPINFOHEADER)) return false;
-
-    BITMAPINFOHEADER header{};
-    std::memcpy(&header, payload.data(), sizeof(header));
-    if (header.biSize < sizeof(BITMAPINFOHEADER) || header.biSize > payload.size() ||
-        header.biWidth <= 0 || header.biHeight == 0 || header.biPlanes != 1 ||
-        header.biBitCount == 0 || header.biBitCount > 32 ||
-        header.biWidth > 10000 || header.biHeight < -10000 || header.biHeight > 10000) {
-        return false;
-    }
-    std::size_t colorEntries = 0;
-    if (header.biBitCount <= 8) colorEntries = std::size_t{1} << header.biBitCount;
-    if (header.biCompression == BI_BITFIELDS && header.biSize == sizeof(BITMAPINFOHEADER)) {
-        colorEntries = 3;
-    }
-    const std::size_t bitsOffset = header.biSize + colorEntries * sizeof(RGBQUAD);
-    if (bitsOffset >= payload.size()) return false;
-
-    const auto* bitmapInfo = reinterpret_cast<const BITMAPINFO*>(payload.data());
-    const int width = rowRect.right - rowRect.left;
-    const int height = rowRect.bottom - rowRect.top;
-    const auto drawWithStretch = [&]() {
-        const float imageWidth = static_cast<float>(header.biWidth);
-        const float imageHeight = static_cast<float>(std::abs(header.biHeight));
-        const float scale = std::min(static_cast<float>(width) / imageWidth,
-                                     static_cast<float>(height) / imageHeight);
-        const int targetWidth = std::max(1, static_cast<int>(imageWidth * scale + 0.5f));
-        const int targetHeight = std::max(1, static_cast<int>(imageHeight * scale + 0.5f));
-        const int targetLeft = rowRect.left + (width - targetWidth) / 2;
-        const int targetTop = rowRect.top + (height - targetHeight) / 2;
-        const bool scrolling = g_app && (g_app->scrollAnimating || g_app->scrollDragging);
-        const int previousMode = SetStretchBltMode(dc, scrolling ? COLORONCOLOR : HALFTONE);
-        POINT previousOrigin{};
-        SetBrushOrgEx(dc, 0, 0, &previousOrigin);
-        const int result = StretchDIBits(dc, targetLeft, targetTop, targetWidth, targetHeight,
-                                         0, 0, header.biWidth, std::abs(header.biHeight),
-                                         payload.data() + bitsOffset, bitmapInfo,
-                                         DIB_RGB_COLORS, SRCCOPY);
-        SetBrushOrgEx(dc, previousOrigin.x, previousOrigin.y, nullptr);
-        SetStretchBltMode(dc, previousMode);
-        return result != GDI_ERROR;
-    };
-
-    return drawWithStretch();
 }
 
 void sendPaste(PasteMode mode = PasteMode::Automatic) {
@@ -2628,7 +2417,7 @@ void createSettingsControlsModern(HWND hwnd) {
     auto createToggle = [hwnd](int id, int x, int y, bool checked) {
         HWND control = CreateWindowW(L"BUTTON", L"",
                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP |
-                                         BS_CHECKBOX | BS_OWNERDRAW,
+                                          BS_AUTOCHECKBOX,
                                       ui(x), ui(y), ui(kSettingsToggleWidth), ui(kSettingsToggleHeight), hwnd,
                                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
                                      GetModuleHandleW(nullptr), nullptr);
@@ -2638,7 +2427,7 @@ void createSettingsControlsModern(HWND hwnd) {
     };
     auto createShortcut = [hwnd](int id, int y, const ShortcutBinding& binding) {
         HWND control = CreateWindowW(L"BUTTON", formatShortcut(binding).c_str(),
-                                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                                      ui(520), ui(y), ui(150), ui(30), hwnd,
                                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
                                      GetModuleHandleW(nullptr), nullptr);
@@ -2663,13 +2452,17 @@ void createSettingsControlsModern(HWND hwnd) {
     createShortcut(kSettingShortcutClearFilter, 462, g_app->settingsData.popupClearFilterHotkey);
     createShortcut(kSettingShortcutDelete, 506, g_app->settingsData.popupDeleteHotkey);
 
-    HWND language = CreateWindowW(L"STATIC", L"",
-                                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | SS_NOTIFY,
+    HWND language = CreateWindowW(L"COMBOBOX", L"",
+                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
                                   ui(520), ui(147), ui(180), ui(30), hwnd,
                                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingLanguage)),
                                   GetModuleHandleW(nullptr), nullptr);
     const int languageSelection = g_app->settingsData.language < 0
         ? 0 : g_app->settingsData.language + 1;
+    SendMessageW(language, CB_ADDSTRING, 0,
+                 reinterpret_cast<LPARAM>(settingsLocale().autoLanguage));
+    SendMessageW(language, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"English"));
+    SendMessageW(language, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"简体中文"));
     setSettingsLanguageSelection(language, languageSelection);
 
     wchar_t value[32]{};
@@ -2705,7 +2498,7 @@ void createSettingsControlsModern(HWND hwnd) {
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingDataDirectory)),
                     GetModuleHandleW(nullptr), nullptr);
     CreateWindowW(L"BUTTON", settingsLocale().browse,
-                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                   ui(888), ui(252), ui(64), ui(30), hwnd,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingBrowseDataDirectory)),
                   GetModuleHandleW(nullptr), nullptr);
@@ -2743,7 +2536,7 @@ void createSettingsControlsModern(HWND hwnd) {
     }
 
     CreateWindowW(L"BUTTON", settingsLocale().clearHistory,
-                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, ui(232), ui(360), ui(120), ui(30), hwnd,
+                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, ui(232), ui(360), ui(120), ui(30), hwnd,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingClear)),
                   GetModuleHandleW(nullptr), nullptr);
     const int clearIds[] = {kSettingClearText, kSettingClearImage, kSettingClearFiles};
@@ -2752,13 +2545,13 @@ void createSettingsControlsModern(HWND hwnd) {
     };
     for (int i = 0; i < kStorageCategoryCount; ++i) {
         CreateWindowW(L"BUTTON", clearLabels[i],
-                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, ui(232 + i * 82), ui(324),
+                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, ui(232 + i * 82), ui(324),
                       ui(84), ui(26), hwnd,
                       reinterpret_cast<HMENU>(static_cast<INT_PTR>(clearIds[i])),
                       GetModuleHandleW(nullptr), nullptr);
     }
     CreateWindowW(L"BUTTON", settingsLocale().openLog,
-                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, ui(520), ui(298), ui(150), ui(30), hwnd,
+                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, ui(520), ui(298), ui(150), ui(30), hwnd,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingOpenLog)),
                   GetModuleHandleW(nullptr), nullptr);
 }
@@ -2784,6 +2577,13 @@ void refreshSettingsLocalizedControls(HWND hwnd) {
             SetWindowTextW(clear, clearLabels[i]);
         }
     }
+    if (HWND language = GetDlgItem(hwnd, kSettingLanguage)) {
+        const int selection = settingsLanguageSelection(language);
+        SendMessageW(language, CB_DELETESTRING, 0, 0);
+        SendMessageW(language, CB_INSERTSTRING, 0,
+                     reinterpret_cast<LPARAM>(settingsLocale().autoLanguage));
+        setSettingsLanguageSelection(language, selection);
+    }
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
@@ -2791,10 +2591,6 @@ void updateSettingsTabControls(HWND hwnd) {
     g_app->hoveredSettingsControl = 0;
     if (g_app->shortcutCaptureControl) cancelSettingsShortcutCapture(hwnd);
     g_app->settingsScrollOffset = std::clamp(g_app->settingsScrollOffset, 0, settingsScrollMax(hwnd));
-    if (g_app->languageDropdown) {
-        DestroyWindow(g_app->languageDropdown);
-        KillTimer(hwnd, kSettingsDropdownTimer);
-    }
     const int ids[] = {kSettingDark, kSettingWinV, kSettingLanguage, kSettingPause,
                         kSettingStartup, kSettingStartupSettings, kSettingStartupNotification,
                         kSettingEncrypt, kSettingMaxItems,
@@ -2931,37 +2727,11 @@ void applyFontToChildren(HWND parent, HFONT font) {
     }
 }
 
-void refreshSettingsBrushes() {
-    if (!g_app->settings) return;
-    const bool highContrast = highContrastEnabled();
-    const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW) :
-        settingsThemeColor(RGB(240, 244, 248), RGB(21, 26, 34));
-    const COLORREF card = highContrast ? GetSysColor(COLOR_WINDOW) :
-        settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
-    const COLORREF input = highContrast ? GetSysColor(COLOR_WINDOW) :
-        settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
-    if (g_app->settingsBackgroundBrush) DeleteObject(g_app->settingsBackgroundBrush);
-    if (g_app->settingsCardBrush) DeleteObject(g_app->settingsCardBrush);
-    if (g_app->settingsInputBrush) DeleteObject(g_app->settingsInputBrush);
-    g_app->settingsBackgroundBrush = CreateSolidBrush(background);
-    g_app->settingsCardBrush = CreateSolidBrush(card);
-    g_app->settingsInputBrush = CreateSolidBrush(input);
-}
-
 void appendPopupPinMenu(HMENU menu) {
     AppendMenuW(menu, MF_STRING | (g_app->popupPinned ? MF_CHECKED : 0),
                 kMenuPopupPinned,
                 g_app->popupPinned
                     ? settingsLocale().popupUnpin : settingsLocale().popupPin);
-}
-
-void refreshPopupBrush() {
-    if (!g_app->popup) return;
-    if (g_app->popupInputBrush) DeleteObject(g_app->popupInputBrush);
-    const COLORREF input = highContrastEnabled()
-        ? GetSysColor(COLOR_WINDOW)
-        : settingsThemeColor(RGB(255, 255, 255), RGB(43, 47, 54));
-    g_app->popupInputBrush = CreateSolidBrush(input);
 }
 
 void refreshSettingsFrame(HWND hwnd) {
@@ -3032,8 +2802,6 @@ int settingsAccentAtPoint(HWND hwnd, int x, int y) {
 
 void invalidateSettingsTheme(HWND hwnd) {
     if (!hwnd) return;
-    refreshSettingsBrushes();
-    refreshPopupBrush();
     for (HWND child = GetWindow(hwnd, GW_CHILD); child;
          child = GetWindow(child, GW_HWNDNEXT)) {
         InvalidateRect(child, nullptr, FALSE);
@@ -3075,12 +2843,16 @@ void setSettingsToggleValue(HWND hwnd, bool enabled) {
 
 int settingsLanguageSelection(HWND hwnd) {
     if (!hwnd) return 0;
+    const LRESULT selection = SendMessageW(hwnd, CB_GETCURSEL, 0, 0);
+    if (selection != CB_ERR) return std::clamp(static_cast<int>(selection), 0, 2);
     return std::clamp(static_cast<int>(GetWindowLongPtrW(hwnd, GWLP_USERDATA)), 0, 2);
 }
 
 void setSettingsLanguageSelection(HWND hwnd, int selection) {
     if (!hwnd) return;
-    SetWindowLongPtrW(hwnd, GWLP_USERDATA, std::clamp(selection, 0, 2));
+    const int normalized = std::clamp(selection, 0, 2);
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, normalized);
+    SendMessageW(hwnd, CB_SETCURSEL, normalized, 0);
 }
 
 std::wstring normalizeDataDirectory(const std::wstring& value) {
@@ -3566,137 +3338,6 @@ void animateSettingsToggle(HWND hwnd) {
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
-float languageDropdownProgress() {
-    if (!g_app->languageDropdown) return 0.0f;
-    const LONGLONG elapsed = settingsToggleClock() - g_app->languageDropdownStartTicks;
-    const float progress = std::min(1.0f, static_cast<float>(elapsed) * 1000.0f /
-        static_cast<float>(settingsToggleClockFrequency() * kSettingsDropdownAnimationMs));
-    if (progress >= 1.0f) return g_app->languageDropdownTo;
-    const float eased = progress * progress * (3.0f - 2.0f * progress);
-    return g_app->languageDropdownFrom +
-        (g_app->languageDropdownTo - g_app->languageDropdownFrom) * eased;
-}
-
-void positionLanguageDropdown(HWND settings, float progress) {
-    if (!g_app->languageDropdown) return;
-    HWND combo = GetDlgItem(settings, kSettingLanguage);
-    if (!combo) return;
-    RECT comboRect{};
-    GetWindowRect(combo, &comboRect);
-    POINT topLeft{comboRect.left, comboRect.bottom + ui(4)};
-    const int width = comboRect.right - comboRect.left;
-    const int fullHeight = ui(90);
-    const int height = std::max(1, static_cast<int>(fullHeight * progress + 0.5f));
-    SetWindowPos(g_app->languageDropdown, HWND_TOP, topLeft.x, topLeft.y, width, height,
-                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    BringWindowToTop(g_app->languageDropdown);
-}
-
-void animateLanguageDropdown(HWND settings, float target) {
-    if (!g_app->languageDropdown) return;
-    g_app->languageDropdownFrom = languageDropdownProgress();
-    g_app->languageDropdownTo = target;
-    g_app->languageDropdownStartTicks = settingsToggleClock();
-    SetTimer(settings, kSettingsDropdownTimer, 8, nullptr);
-    positionLanguageDropdown(settings, g_app->languageDropdownFrom);
-    InvalidateRect(g_app->languageDropdown, nullptr, FALSE);
-}
-
-void toggleLanguageDropdown(HWND settings) {
-    if (!g_app->languageDropdown) {
-        g_app->languageDropdownHover = -1;
-        g_app->languageDropdownFrom = 0.0f;
-        g_app->languageDropdownTo = 1.0f;
-        g_app->languageDropdownStartTicks = settingsToggleClock();
-        HWND combo = GetDlgItem(settings, kSettingLanguage);
-        if (!combo) return;
-        RECT comboRect{};
-        GetWindowRect(combo, &comboRect);
-        POINT topLeft{comboRect.left, comboRect.bottom + ui(4)};
-        const int width = comboRect.right - comboRect.left;
-        g_app->languageDropdown = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"ClipLiteDropdown", L"", WS_POPUP | WS_VISIBLE,
-            topLeft.x, topLeft.y, width, 1, settings, nullptr,
-            GetModuleHandleW(nullptr), nullptr);
-        if (!g_app->languageDropdown) return;
-        SetWindowPos(g_app->languageDropdown, HWND_TOP, topLeft.x, topLeft.y, width, 1,
-                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        BringWindowToTop(g_app->languageDropdown);
-        SetTimer(settings, kSettingsDropdownTimer, 8, nullptr);
-        return;
-    }
-    animateLanguageDropdown(settings, g_app->languageDropdownTo > 0.5f ? 0.0f : 1.0f);
-}
-
-void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
-    const bool highContrast = highContrastEnabled();
-    const bool hovered = g_app->hoveredSettingsControl == GetDlgCtrlID(item.hwndItem);
-    const bool checked = settingsToggleValue(item.hwndItem);
-    const COLORREF surface = highContrast ? GetSysColor(COLOR_WINDOW) :
-        settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
-    const COLORREF knobSurface = highContrast ? GetSysColor(COLOR_WINDOW) :
-        settingsThemeColor(RGB(255, 255, 255), RGB(47, 53, 60));
-    const COLORREF accent = highContrast ? GetSysColor(COLOR_HIGHLIGHT) : settingsAccentColor();
-    HBRUSH surfaceBrush = CreateSolidBrush(surface);
-    FillRect(item.hDC, &item.rcItem, surfaceBrush);
-    HGDIOBJ oldSurfaceBrush = SelectObject(item.hDC, surfaceBrush);
-    HGDIOBJ oldSurfacePen = SelectObject(item.hDC, GetStockObject(NULL_PEN));
-    RoundRect(item.hDC, item.rcItem.left, item.rcItem.top, item.rcItem.right, item.rcItem.bottom,
-              item.rcItem.bottom - item.rcItem.top, item.rcItem.bottom - item.rcItem.top);
-    SelectObject(item.hDC, oldSurfacePen);
-    SelectObject(item.hDC, oldSurfaceBrush);
-    DeleteObject(surfaceBrush);
-    const COLORREF track = checked
-        ? (hovered ? settingsThemeColor(RGB(51, 145, 115), RGB(82, 180, 177)) : accent)
-        : (hovered ? settingsThemeColor(RGB(174, 191, 187), RGB(95, 105, 116))
-                   : settingsThemeColor(RGB(197, 208, 208), RGB(75, 84, 95)));
-    const COLORREF trackBorder = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        (checked ? track : settingsThemeColor(RGB(155, 171, 167), RGB(112, 123, 135)));
-    RECT bounds = item.rcItem;
-    const int centerY = (bounds.top + bounds.bottom) / 2;
-    const LONG trackWidth = static_cast<LONG>(ui(kSettingsTrackWidth));
-    const int trackHeight = ui(kSettingsTrackHeight);
-    const LONG trackRight = bounds.right;
-    const int trackLeft = std::max(bounds.left, trackRight - trackWidth);
-    const int trackInset = 1;
-    RECT trackRect{trackLeft + trackInset, centerY - trackHeight / 2 + trackInset,
-                   trackRight - trackInset, centerY + (trackHeight + 1) / 2 - trackInset};
-    HBRUSH trackBrush = CreateSolidBrush(track);
-    HPEN trackPen = CreatePen(PS_SOLID, ui(1), trackBorder);
-    HGDIOBJ oldBrush = SelectObject(item.hDC, trackBrush);
-    HGDIOBJ oldPen = SelectObject(item.hDC, trackPen);
-    RoundRect(item.hDC, trackRect.left, trackRect.top, trackRect.right, trackRect.bottom,
-              trackHeight - trackInset * 2, trackHeight - trackInset * 2);
-    SelectObject(item.hDC, oldPen);
-    SelectObject(item.hDC, oldBrush);
-    DeleteObject(trackPen);
-    DeleteObject(trackBrush);
-
-    const int knobSize = ui(16);
-    const int knobMargin = ui(2);
-    const float position = settingsTogglePosition(item.hwndItem);
-    const int knobTravel = trackRect.right - trackRect.left - knobMargin * 2 - knobSize;
-    const int knobLeft = trackRect.left + knobMargin + static_cast<int>(knobTravel * position);
-    RECT knobRect{knobLeft, centerY - knobSize / 2,
-                  knobLeft + knobSize, centerY + (knobSize + 1) / 2};
-    HBRUSH knobBrush = CreateSolidBrush(knobSurface);
-    HPEN knobPen = CreatePen(PS_SOLID, ui(1), highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        settingsThemeColor(RGB(224, 231, 228), RGB(214, 220, 226)));
-    HGDIOBJ previousBrush = SelectObject(item.hDC, knobBrush);
-    HGDIOBJ previousPen = SelectObject(item.hDC, knobPen);
-    Ellipse(item.hDC, knobRect.left, knobRect.top, knobRect.right, knobRect.bottom);
-    SelectObject(item.hDC, previousPen);
-    SelectObject(item.hDC, previousBrush);
-    DeleteObject(knobPen);
-    DeleteObject(knobBrush);
-}
-
-bool isSettingsActionButton(int id) {
-    return id == kSettingClear || id == kSettingClearText ||
-           id == kSettingClearImage || id == kSettingClearFiles ||
-           id == kSettingBrowseDataDirectory || id == kSettingOpenLog;
-}
-
 bool isSettingsClearAction(int id) {
     return id == kSettingClear || id == kSettingClearText ||
            id == kSettingClearImage || id == kSettingClearFiles;
@@ -3758,338 +3399,6 @@ void setSettingsActionFeedback(HWND hwnd, const std::wstring& message, bool succ
     g_app->settingsActionFeedbackSuccess = success;
     SetTimer(hwnd, kSettingsActionFeedbackTimer, kSettingsActionFeedbackMs, nullptr);
     InvalidateRect(hwnd, nullptr, FALSE);
-}
-
-void drawSettingsButton(const DRAWITEMSTRUCT& item) {
-    const int id = GetDlgCtrlID(item.hwndItem);
-    const bool neutral = id == kSettingBrowseDataDirectory || id == kSettingOpenLog;
-    const bool hovered = g_app->hoveredSettingsControl == id;
-    const bool pressed = (item.itemState & ODS_SELECTED) != 0;
-    const bool focused = (item.itemState & ODS_FOCUS) != 0 || GetFocus() == item.hwndItem;
-    const bool highContrast = highContrastEnabled();
-    const COLORREF background = neutral
-        ? (highContrast ? GetSysColor(COLOR_BTNFACE) :
-           settingsThemeColor(pressed ? RGB(226, 232, 240) :
-                              (hovered ? RGB(239, 246, 255) : RGB(248, 250, 252)),
-                              pressed ? RGB(55, 65, 81) : RGB(30, 41, 59)))
-        : (highContrast ? GetSysColor(pressed ? COLOR_HIGHLIGHT : COLOR_BTNFACE) :
-           settingsThemeColor(pressed ? RGB(254, 226, 226) :
-                              (hovered ? RGB(254, 242, 242) : RGB(255, 247, 247)),
-                              pressed ? RGB(93, 42, 52) :
-                              (hovered ? RGB(67, 35, 42) : RGB(52, 42, 48))));
-    const COLORREF border = neutral
-        ? (highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-           (hovered || pressed ? settingsAccentColor() :
-                                 settingsThemeColor(RGB(200, 211, 222), RGB(74, 88, 104))))
-        : (highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-           settingsThemeColor(hovered || pressed ? RGB(239, 68, 68) : RGB(252, 165, 165),
-                              hovered || pressed ? RGB(248, 113, 113) : RGB(139, 70, 80)));
-    const COLORREF text = neutral
-        ? (highContrast ? GetSysColor(COLOR_WINDOWTEXT) : settingsAccentColor())
-        : (highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-           settingsThemeColor(pressed ? RGB(153, 27, 27) : RGB(185, 28, 28),
-                              RGB(248, 160, 160)));
-    const int offset = pressed ? ui(1) : 0;
-    RECT buttonRect = item.rcItem;
-    OffsetRect(&buttonRect, 0, offset);
-    drawGdiRoundedSurface(item.hDC, buttonRect, background, border, 7);
-    wchar_t label[256]{};
-    GetWindowTextW(item.hwndItem, label, static_cast<int>(sizeof(label) / sizeof(label[0])));
-    SetBkMode(item.hDC, TRANSPARENT);
-    SetTextColor(item.hDC, text);
-    DrawTextW(item.hDC, label, -1, &buttonRect,
-              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    if (focused && !highContrast) {
-        RECT focusRect = buttonRect;
-        InflateRect(&focusRect, -ui(3), -ui(3));
-        DrawFocusRect(item.hDC, &focusRect);
-    }
-}
-
-void drawSettingsShortcut(const DRAWITEMSTRUCT& item) {
-    const bool capturing = g_app->shortcutCaptureControl == item.hwndItem;
-    const bool focused = (item.itemState & ODS_FOCUS) != 0 || GetFocus() == item.hwndItem;
-    const bool hovered = g_app->hoveredSettingsControl == GetDlgCtrlID(item.hwndItem);
-    const COLORREF background = settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
-    const COLORREF border = highContrastEnabled() ? GetSysColor(COLOR_WINDOWTEXT) :
-        (capturing || focused ? settingsAccentColor() :
-         hovered ? settingsAccentColor() :
-                   settingsThemeColor(RGB(200, 211, 222), RGB(74, 88, 104)));
-    drawGdiRoundedSurface(item.hDC, item.rcItem, background, border, 6);
-    wchar_t label[128]{};
-    GetWindowTextW(item.hwndItem, label, static_cast<int>(sizeof(label) / sizeof(label[0])));
-    SetBkMode(item.hDC, TRANSPARENT);
-    SetTextColor(item.hDC, capturing ? settingsAccentColor() :
-                                    settingsThemeColor(settingsAccentColor(), RGB(238, 241, 245)));
-    DrawTextW(item.hDC, label, -1, const_cast<RECT*>(&item.rcItem),
-              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-}
-
-void drawSettingsLanguage(const DRAWITEMSTRUCT& item) {
-    const COLORREF input = settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
-    const COLORREF selected = settingsAccentSoftColor();
-    const COLORREF text = settingsThemeColor(RGB(30, 36, 46), RGB(238, 241, 245));
-    const bool hovered = g_app->hoveredSettingsControl == GetDlgCtrlID(item.hwndItem);
-    HBRUSH brush = CreateSolidBrush((item.itemState & ODS_SELECTED) ? selected :
-                                    (hovered ? settingsAccentSoftColor() : input));
-    FillRect(item.hDC, &item.rcItem, brush);
-    DeleteObject(brush);
-    wchar_t value[64]{};
-    const int index = item.itemID == static_cast<UINT>(-1)
-        ? static_cast<int>(SendMessageW(item.hwndItem, CB_GETCURSEL, 0, 0))
-        : static_cast<int>(item.itemID);
-    if (index >= 0) SendMessageW(item.hwndItem, CB_GETLBTEXT, index, reinterpret_cast<LPARAM>(value));
-    SetBkMode(item.hDC, TRANSPARENT);
-    SetTextColor(item.hDC, text);
-    RECT textRect = item.rcItem;
-    textRect.left += ui(8);
-    DrawTextW(item.hDC, value, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-}
-
-int languageDropdownRowAt(int y) {
-    const int row = y / ui(30);
-    return row >= 0 && row < 3 ? row : -1;
-}
-
-void paintLanguageDropdown(HWND hwnd, HDC dc) {
-    RECT windowRect{};
-    GetWindowRect(hwnd, &windowRect);
-    const int width = windowRect.right - windowRect.left;
-    const int height = windowRect.bottom - windowRect.top;
-    const int contentWidth = width;
-    const int renderHeight = height;
-    HDC bufferDc = CreateCompatibleDC(dc);
-    HBITMAP bufferBitmap = bufferDc ? CreateCompatibleBitmap(dc, contentWidth, renderHeight) : nullptr;
-    HGDIOBJ oldBitmap = bufferBitmap ? SelectObject(bufferDc, bufferBitmap) : nullptr;
-    HDC renderDc = bufferBitmap ? bufferDc : dc;
-    const bool highContrast = highContrastEnabled();
-    const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW) :
-        settingsThemeColor(RGB(255, 255, 255), RGB(38, 43, 49));
-    const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        settingsThemeColor(RGB(205, 219, 215), RGB(82, 92, 102));
-    const COLORREF text = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        settingsThemeColor(RGB(30, 36, 46), RGB(238, 241, 245));
-    const COLORREF accent = highContrast ? GetSysColor(COLOR_HIGHLIGHT) : settingsAccentColor();
-
-
-        HBRUSH brush = CreateSolidBrush(background);
-        RECT renderRect{0, 0, contentWidth, renderHeight};
-        FillRect(renderDc, &renderRect, brush);
-        DeleteObject(brush);
-        HPEN pen = CreatePen(PS_SOLID, ui(1), border);
-        HGDIOBJ oldPen = SelectObject(renderDc, pen);
-        HGDIOBJ oldBrush = SelectObject(renderDc, GetStockObject(NULL_BRUSH));
-        RoundRect(renderDc, 0, 0, contentWidth, renderHeight, ui(6), ui(6));
-        SelectObject(renderDc, oldBrush);
-        SelectObject(renderDc, oldPen);
-        DeleteObject(pen);
-
-    HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(renderDc, g_app->settingsFont));
-    SetBkMode(renderDc, TRANSPARENT);
-    const wchar_t* labels[] = {settingsLocale().autoLanguage, L"English", L"简体中文"};
-    const int selected = settingsLanguageSelection(
-        GetDlgItem(g_app->settings, kSettingLanguage));
-    for (int row = 0; row < 3; ++row) {
-        if (row * ui(30) >= renderHeight) break;
-        RECT rowRect{ui(10), ui(row * 30 + 3), contentWidth - ui(30), ui(row * 30 + 27)};
-        SetTextColor(renderDc, text);
-        DrawTextW(renderDc, labels[row], -1, &rowRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        if (row == selected) {
-            RECT checkRect{contentWidth - ui(26), ui(row * 30 + 3),
-                           contentWidth - ui(8), ui(row * 30 + 27)};
-            SetTextColor(renderDc, accent);
-            DrawTextW(renderDc, L"\x2713", -1, &checkRect,
-                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        }
-    }
-    SelectObject(renderDc, oldFont);
-    if (bufferBitmap) {
-        BitBlt(dc, 0, 0, contentWidth, renderHeight, bufferDc, 0, 0, SRCCOPY);
-        SelectObject(bufferDc, oldBitmap);
-        DeleteObject(bufferBitmap);
-        DeleteDC(bufferDc);
-    }
-}
-
-void paintSettingsLanguageCombo(HWND hwnd, HDC dc) {
-    RECT client{};
-    GetClientRect(hwnd, &client);
-    const int width = client.right - client.left;
-    const int height = client.bottom - client.top;
-    const bool highContrast = highContrastEnabled();
-    const bool active = g_app->languageDropdown != nullptr;
-    const bool hovered = g_app->hoveredSettingsControl == kSettingLanguage;
-    const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW) :
-        settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
-    const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        ((active || hovered) ? settingsAccentColor()
-                             : settingsThemeColor(RGB(205, 219, 215), RGB(82, 92, 102)));
-    const COLORREF text = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        settingsThemeColor(RGB(30, 36, 46), RGB(238, 241, 245));
-    HDC bufferDc = CreateCompatibleDC(dc);
-    HBITMAP bufferBitmap = bufferDc ? CreateCompatibleBitmap(dc, width, height) : nullptr;
-    HGDIOBJ oldBitmap = bufferBitmap ? SelectObject(bufferDc, bufferBitmap) : nullptr;
-    HDC renderDc = bufferBitmap ? bufferDc : dc;
-
-
-        HBRUSH brush = CreateSolidBrush(background);
-        FillRect(renderDc, &client, brush);
-        DeleteObject(brush);
-        HPEN pen = CreatePen(PS_SOLID, ui(1), border);
-        HGDIOBJ oldPen = SelectObject(renderDc, pen);
-        HGDIOBJ oldBrush = SelectObject(renderDc, GetStockObject(NULL_BRUSH));
-        RoundRect(renderDc, 0, 0, width, height, ui(4), ui(4));
-        SelectObject(renderDc, oldBrush);
-        SelectObject(renderDc, oldPen);
-        DeleteObject(pen);
-
-    wchar_t value[64]{};
-    const int index = settingsLanguageSelection(hwnd);
-    const wchar_t* labels[] = {settingsLocale().autoLanguage, L"English", L"简体中文"};
-    wcscpy_s(value, labels[index]);
-    HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(renderDc, g_app->settingsFont));
-    SetBkMode(renderDc, TRANSPARENT);
-    SetTextColor(renderDc, text);
-    RECT textRect{ui(10), 0, width - ui(28), height};
-    DrawTextW(renderDc, value, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    SelectObject(renderDc, oldFont);
-    if (bufferBitmap) {
-        BitBlt(dc, 0, 0, width, height, bufferDc, 0, 0, SRCCOPY);
-        SelectObject(bufferDc, oldBitmap);
-        DeleteObject(bufferBitmap);
-        DeleteDC(bufferDc);
-    }
-}
-
-void paintSettingsEditFrame(HWND hwnd) {
-    HDC dc = GetWindowDC(hwnd);
-    if (!dc) return;
-    RECT windowRect{};
-    GetWindowRect(hwnd, &windowRect);
-    RECT rect{0, 0, windowRect.right - windowRect.left, windowRect.bottom - windowRect.top};
-    const bool focused = GetFocus() == hwnd;
-    const bool hovered = g_app->hoveredSettingsControl == GetDlgCtrlID(hwnd);
-    const bool highContrast = highContrastEnabled();
-    const COLORREF surface = highContrast ? GetSysColor(COLOR_WINDOW) :
-        settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
-    const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        (focused ? settingsAccentColor() :
-         hovered ? settingsThemeColor(RGB(120, 145, 137), RGB(119, 132, 145)) :
-                   settingsThemeColor(RGB(205, 219, 215), RGB(82, 92, 102)));
-
-        HPEN clearPen = CreatePen(PS_SOLID, 5, surface);
-        HGDIOBJ previousPen = SelectObject(dc, clearPen);
-        HGDIOBJ previousBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-        RoundRect(dc, 0, 0, rect.right, rect.bottom, ui(12), ui(12));
-        SelectObject(dc, previousBrush);
-        SelectObject(dc, previousPen);
-        DeleteObject(clearPen);
-        if (focused && !highContrast) {
-            HPEN shadowPen = CreatePen(PS_SOLID, 2, settingsAccentColor());
-            HGDIOBJ oldShadowPen = SelectObject(dc, shadowPen);
-            HGDIOBJ oldShadowBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-            RoundRect(dc, 0, 0, rect.right, rect.bottom, ui(12), ui(12));
-            SelectObject(dc, oldShadowBrush);
-            SelectObject(dc, oldShadowPen);
-            DeleteObject(shadowPen);
-        }
-        HPEN pen = CreatePen(PS_SOLID, 1, border);
-        HGDIOBJ oldPen = SelectObject(dc, pen);
-        HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-        RoundRect(dc, 0, 0, rect.right, rect.bottom, ui(12), ui(12));
-        SelectObject(dc, oldBrush);
-        SelectObject(dc, oldPen);
-        DeleteObject(pen);
-    ReleaseDC(hwnd, dc);
-}
-
-void paintSettingsEditPlaceholder(HWND hwnd) {
-    if (!hwnd || GetDlgCtrlID(hwnd) != kSettingIgnoredApps ||
-        GetWindowTextLengthW(hwnd) != 0 || GetFocus() == hwnd) {
-        return;
-    }
-    HDC dc = GetDC(hwnd);
-    if (!dc) return;
-    RECT client{};
-    GetClientRect(hwnd, &client);
-    client.left = ui(10);
-    client.top = ui(8);
-    client.right -= ui(10);
-    client.bottom -= ui(8);
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, highContrastEnabled() ? GetSysColor(COLOR_GRAYTEXT) :
-        settingsThemeColor(RGB(150, 160, 157), RGB(145, 155, 166)));
-    DrawTextW(dc, settingsLocale().ignoredAppsPlaceholder, -1, &client,
-              DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
-    ReleaseDC(hwnd, dc);
-}
-
-void paintSettingsEdit(HWND hwnd, HDC dc, WNDPROC oldProc) {
-    RECT client{};
-    GetClientRect(hwnd, &client);
-    const int width = client.right - client.left;
-    const int height = client.bottom - client.top;
-    HDC bufferDc = CreateCompatibleDC(dc);
-    HBITMAP bufferBitmap = bufferDc ? CreateCompatibleBitmap(dc, width, height) : nullptr;
-    if (!bufferDc || !bufferBitmap) {
-        if (bufferBitmap) DeleteObject(bufferBitmap);
-        if (bufferDc) DeleteDC(bufferDc);
-        CallWindowProcW(oldProc, hwnd, WM_PRINTCLIENT,
-                        reinterpret_cast<WPARAM>(dc), PRF_CLIENT);
-        return;
-    }
-    HGDIOBJ oldBitmap = SelectObject(bufferDc, bufferBitmap);
-    const bool highContrast = highContrastEnabled();
-    const int id = GetDlgCtrlID(hwnd);
-    const bool focused = GetFocus() == hwnd;
-    const bool hovered = g_app->hoveredSettingsControl == id;
-    const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW) :
-        settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
-    const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        (focused ? settingsAccentColor()
-                 : hovered ? settingsAccentColor()
-                           : settingsThemeColor(RGB(200, 211, 222), RGB(74, 88, 104)));
-    HBRUSH backgroundBrush = CreateSolidBrush(background);
-    FillRect(bufferDc, &client, backgroundBrush);
-    DeleteObject(backgroundBrush);
-
-    HRGN clip = CreateRoundRectRgn(0, 0, width + 1, height + 1, ui(12), ui(12));
-    SelectClipRgn(bufferDc, clip);
-    CallWindowProcW(oldProc, hwnd, WM_PRINTCLIENT,
-                    reinterpret_cast<WPARAM>(bufferDc), PRF_CLIENT);
-    SelectClipRgn(bufferDc, nullptr);
-    DeleteObject(clip);
-
-    if (id == kSettingIgnoredApps && GetWindowTextLengthW(hwnd) == 0 && !focused) {
-        RECT placeholder{ui(10), ui(8), width - ui(10), height - ui(8)};
-        SetBkMode(bufferDc, TRANSPARENT);
-        SetTextColor(bufferDc, highContrast ? GetSysColor(COLOR_GRAYTEXT) :
-            settingsThemeColor(RGB(150, 160, 157), RGB(145, 155, 166)));
-        DrawTextW(bufferDc, settingsLocale().ignoredAppsPlaceholder, -1,
-                  &placeholder, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
-    }
-
-
-        if (focused && !highContrast) {
-            HPEN shadowPen = CreatePen(PS_SOLID, 2, settingsAccentColor());
-            HGDIOBJ oldShadowPen = SelectObject(bufferDc, shadowPen);
-            HGDIOBJ oldShadowBrush = SelectObject(bufferDc, GetStockObject(NULL_BRUSH));
-            RoundRect(bufferDc, 1, 1, width - 1, height - 1, ui(12), ui(12));
-            SelectObject(bufferDc, oldShadowBrush);
-            SelectObject(bufferDc, oldShadowPen);
-            DeleteObject(shadowPen);
-        }
-        HPEN pen = CreatePen(PS_SOLID, 1, border);
-        HGDIOBJ oldPen = SelectObject(bufferDc, pen);
-        HGDIOBJ oldBrush = SelectObject(bufferDc, GetStockObject(NULL_BRUSH));
-        RoundRect(bufferDc, 1, 1, width - 1, height - 1, ui(12), ui(12));
-        SelectObject(bufferDc, oldBrush);
-        SelectObject(bufferDc, oldPen);
-        DeleteObject(pen);
-    BitBlt(dc, 0, 0, width, height, bufferDc, 0, 0, SRCCOPY);
-    SelectObject(bufferDc, oldBitmap);
-    DeleteObject(bufferBitmap);
-    DeleteDC(bufferDc);
 }
 
 bool settingsNumericEditRange(int id, long& minimum, long& maximum) {
@@ -4174,21 +3483,6 @@ void stripSettingsNumericLeadingZeros(HWND hwnd) {
     SendMessageW(hwnd, EM_SETSEL, caret, caret);
 }
 
-bool settingsEditBorderRect(HWND edit, HWND parent, RECT& rect) {
-    if (!edit || !parent || !IsWindowVisible(edit)) return false;
-    GetWindowRect(edit, &rect);
-    MapWindowPoints(nullptr, parent, reinterpret_cast<POINT*>(&rect), 2);
-    InflateRect(&rect, ui(1), ui(1));
-    return true;
-}
-
-void invalidateSettingsEditBorder(HWND edit) {
-    HWND parent = edit ? GetParent(edit) : nullptr;
-    RECT rect{};
-    if (settingsEditBorderRect(edit, parent, rect)) InvalidateRect(parent, &rect, FALSE);
-}
-
-
 void configureSettingsEdit(HWND hwnd) {
     if (!hwnd) return;
     const int id = GetDlgCtrlID(hwnd);
@@ -4237,7 +3531,6 @@ void configureSettingsEdit(HWND hwnd) {
     }
     SendMessageW(hwnd, EM_SETRECT, 0, reinterpret_cast<LPARAM>(&format));
     InvalidateRect(hwnd, nullptr, FALSE);
-    invalidateSettingsEditBorder(hwnd);
 }
 
 LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -4250,7 +3543,6 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
         return 1;
     }
     if (isSettingsToggle(id) && message == WM_ERASEBKGND) return 1;
-    if (id == kSettingLanguage && message == WM_ERASEBKGND) return 1;
     if (isSettingsShortcut(id)) {
         if (message == WM_LBUTTONDOWN) {
             beginSettingsShortcutCapture(GetParent(hwnd), hwnd);
@@ -4279,47 +3571,11 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
         if ((message == WM_KEYDOWN || message == WM_SYSKEYDOWN) && wParam == VK_RETURN) return 0;
         if (message == WM_CHAR && (wParam == VK_RETURN || wParam == L'\n')) return 0;
     }
-    if (id == kSettingLanguage && message == WM_PAINT) {
-        PAINTSTRUCT ps{};
-        HDC dc = BeginPaint(hwnd, &ps);
-        paintSettingsLanguageCombo(hwnd, dc);
-        EndPaint(hwnd, &ps);
-        return 0;
-    }
-    if (id == kSettingLanguage && message == WM_LBUTTONDOWN) {
-        SendMessageW(hwnd, CB_SHOWDROPDOWN, FALSE, 0);
-        SetFocus(hwnd);
-        toggleLanguageDropdown(GetParent(hwnd));
-        return 0;
-    }
-    if (id == kSettingLanguage && message == WM_LBUTTONDBLCLK) {
-        SendMessageW(hwnd, CB_SHOWDROPDOWN, FALSE, 0);
-        SetFocus(hwnd);
-        toggleLanguageDropdown(GetParent(hwnd));
-        return 0;
-    }
-    if (id == kSettingLanguage &&
-        (message == WM_LBUTTONUP || message == WM_NCLBUTTONDOWN || message == WM_NCLBUTTONDBLCLK)) {
-        SendMessageW(hwnd, CB_SHOWDROPDOWN, FALSE, 0);
-        return 0;
-    }
-    if (id == kSettingLanguage && message == WM_KEYDOWN &&
-        (wParam == VK_SPACE || wParam == VK_RETURN || wParam == VK_DOWN || wParam == VK_F4)) {
-        SendMessageW(hwnd, CB_SHOWDROPDOWN, FALSE, 0);
-        toggleLanguageDropdown(GetParent(hwnd));
-        return 0;
-    }
-    if (message == WM_LBUTTONDOWN && g_app->languageDropdown) {
-        animateLanguageDropdown(GetParent(hwnd), 0.0f);
-    }
     if (message == WM_MOUSEMOVE) {
         SetCursor(std::wcscmp(className, L"Edit") == 0
             ? LoadCursorW(nullptr, IDC_IBEAM) : LoadCursorW(nullptr, IDC_HAND));
         if (g_app->hoveredSettingsControl != id) {
-            const int previous = g_app->hoveredSettingsControl;
             g_app->hoveredSettingsControl = id;
-            if (previous != 0) invalidateSettingsEditBorder(GetDlgItem(GetParent(hwnd), previous));
-            invalidateSettingsEditBorder(hwnd);
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};
@@ -4328,19 +3584,12 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
         SetCursor(LoadCursorW(nullptr, IDC_ARROW));
         if (g_app->hoveredSettingsControl == id) {
             g_app->hoveredSettingsControl = 0;
-            invalidateSettingsEditBorder(hwnd);
             InvalidateRect(hwnd, nullptr, FALSE);
         }
     } else if (message == WM_SETCURSOR) {
         SetCursor(std::wcscmp(className, L"Edit") == 0
             ? LoadCursorW(nullptr, IDC_IBEAM) : LoadCursorW(nullptr, IDC_HAND));
         return TRUE;
-    } else if (message == WM_PAINT && std::wcscmp(className, L"Edit") == 0) {
-        PAINTSTRUCT ps{};
-        HDC dc = BeginPaint(hwnd, &ps);
-        if (dc) paintSettingsEdit(hwnd, dc, oldProc);
-        EndPaint(hwnd, &ps);
-        return 0;
     } else if (message == WM_SETFOCUS || message == WM_KILLFOCUS) {
         const LRESULT result = CallWindowProcW(oldProc, hwnd, message, wParam, lParam);
         if (std::wcscmp(className, L"Edit") == 0) {
@@ -4354,7 +3603,6 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
             }
             configureSettingsEdit(hwnd);
         }
-        if (std::wcscmp(className, L"Edit") == 0) invalidateSettingsEditBorder(hwnd);
         InvalidateRect(hwnd, nullptr, FALSE);
         return result;
     } else if (message == WM_NCDESTROY) {
@@ -4372,9 +3620,7 @@ void subclassSettingsControls(HWND hwnd) {
         GetClassNameW(child, className, static_cast<int>(sizeof(className) / sizeof(className[0])));
         if (std::wcscmp(className, L"Button") != 0 &&
             std::wcscmp(className, L"ComboBox") != 0 &&
-            std::wcscmp(className, L"Edit") != 0 &&
-            !(std::wcscmp(className, L"Static") == 0 &&
-              GetDlgCtrlID(child) == kSettingLanguage)) {
+            std::wcscmp(className, L"Edit") != 0) {
             continue;
         }
         if (GetPropW(child, L"ClipLiteOldProc")) continue;
@@ -4410,32 +3656,6 @@ void processClipboardUpdate() {
 }
 
 LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
-    if (hwnd == g_app->settings && message == WM_DRAWITEM) {
-        const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
-        if (item && item->CtlType == ODT_BUTTON && isSettingsToggle(GetDlgCtrlID(item->hwndItem))) {
-            drawSettingsToggle(*item);
-            return TRUE;
-        }
-        if (item && item->CtlType == ODT_BUTTON && isSettingsShortcut(GetDlgCtrlID(item->hwndItem))) {
-            drawSettingsShortcut(*item);
-            return TRUE;
-        }
-        if (item && item->CtlType == ODT_BUTTON && isSettingsActionButton(GetDlgCtrlID(item->hwndItem))) {
-            drawSettingsButton(*item);
-            return TRUE;
-        }
-        if (item && item->CtlType == ODT_COMBOBOX && GetDlgCtrlID(item->hwndItem) == kSettingLanguage) {
-            drawSettingsLanguage(*item);
-            return TRUE;
-        }
-    }
-    if (hwnd == g_app->settings && message == WM_MEASUREITEM) {
-        auto* measure = reinterpret_cast<MEASUREITEMSTRUCT*>(lParam);
-        if (measure && measure->CtlType == ODT_COMBOBOX && measure->CtlID == kSettingLanguage) {
-            measure->itemHeight = 24;
-            return TRUE;
-        }
-    }
     if (message == WM_CREATE) {
         wchar_t className[64]{};
         GetClassNameW(hwnd, className, 64);
@@ -4445,19 +3665,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             g_app->settingsFont = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-            g_app->settingsMultilineFont = CreateFontW(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                                       CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-            const bool highContrast = highContrastEnabled();
-            const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW) :
-                settingsThemeColor(RGB(240, 244, 248), RGB(21, 26, 34));
-            const COLORREF card = highContrast ? GetSysColor(COLOR_WINDOW) :
-                settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
-            const COLORREF input = highContrast ? GetSysColor(COLOR_WINDOW) :
-                settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
-            g_app->settingsBackgroundBrush = CreateSolidBrush(background);
-            g_app->settingsCardBrush = CreateSolidBrush(card);
-            g_app->settingsInputBrush = CreateSolidBrush(input);
             createSettingsControlsModern(hwnd);
             subclassSettingsControls(hwnd);
             updateSettingsTabControls(hwnd);
@@ -4468,10 +3675,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 GetClassNameW(child, childClass,
                               static_cast<int>(sizeof(childClass) / sizeof(childClass[0])));
                 if (std::wcscmp(childClass, L"Edit") == 0) configureSettingsEdit(child);
-                if (GetDlgCtrlID(child) == kSettingIgnoredApps && g_app->settingsMultilineFont) {
-                    SendMessageW(child, WM_SETFONT,
-                                 reinterpret_cast<WPARAM>(g_app->settingsMultilineFont), TRUE);
-                }
             }
             return 0;
         }
@@ -4480,9 +3683,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             g_app->popupFont = CreateFontW(-ui(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                            CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-            g_app->popupInputBrush = CreateSolidBrush(highContrastEnabled()
-                ? GetSysColor(COLOR_WINDOW)
-                : settingsThemeColor(RGB(255, 255, 255), RGB(43, 47, 54)));
             const int searchEditWidth = kPopupSearchRight - kPopupSearchLeft - 30;
             g_app->searchEdit = CreateWindowExW(0, L"EDIT", L"",
                                                  WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOHSCROLL,
@@ -4543,31 +3743,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     } else if (message == WM_SIZE && hwnd == g_app->popup) {
         g_app->historyWindow.resize(LOWORD(lParam), HIWORD(lParam), g_uiDpi);
     }
-    if (hwnd == g_app->languageDropdown && message == WM_ERASEBKGND) return 1;
-    if ((message == WM_CTLCOLORSTATIC || message == WM_CTLCOLOREDIT || message == WM_CTLCOLORBTN ||
-         message == WM_CTLCOLORLISTBOX) &&
-        (hwnd == g_app->settings || hwnd == g_app->popup)) {
-        HDC dc = reinterpret_cast<HDC>(wParam);
-        const bool highContrast = highContrastEnabled();
-        SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-            settingsThemeColor(RGB(30, 41, 59), RGB(226, 232, 240)));
-        if (hwnd == g_app->settings && message == WM_CTLCOLOREDIT) {
-            SetBkMode(dc, OPAQUE);
-            SetBkColor(dc, highContrast ? GetSysColor(COLOR_WINDOW) :
-                settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48)));
-            return reinterpret_cast<LRESULT>(g_app->settingsInputBrush);
-        }
-        if (message == WM_CTLCOLOREDIT || message == WM_CTLCOLORLISTBOX) {
-            SetBkMode(dc, OPAQUE);
-            SetBkColor(dc, highContrast ? GetSysColor(COLOR_WINDOW) :
-                settingsThemeColor(RGB(255, 255, 255), RGB(43, 47, 54)));
-            return reinterpret_cast<LRESULT>(hwnd == g_app->popup
-                ? g_app->popupInputBrush : g_app->settingsInputBrush);
-        }
-        return reinterpret_cast<LRESULT>(hwnd == g_app->settings
-            ? g_app->settingsCardBrush : g_app->popupInputBrush);
-    }
     if (hwnd == g_app->settings && message == WM_PAINT) {
         PAINTSTRUCT ps{};
         BeginPaint(hwnd, &ps);
@@ -4575,102 +3750,21 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         paintSettingsDirect(hwnd);
         return 0;
     }
-    if (hwnd == g_app->languageDropdown) {
-        if (message == WM_MOUSEMOVE) {
-            RECT client{};
-            GetClientRect(hwnd, &client);
-            const int row = languageDropdownRowAt(GET_Y_LPARAM(lParam));
-            if (row != g_app->languageDropdownHover) {
-                const int previous = g_app->languageDropdownHover;
-                g_app->languageDropdownHover = row;
-                RECT previousRect{0, previous < 0 ? 0 : ui(previous * 30),
-                                  0, previous < 0 ? 0 : ui((previous + 1) * 30)};
-                RECT currentRect{0, row < 0 ? 0 : ui(row * 30),
-                                 0, row < 0 ? 0 : ui((row + 1) * 30)};
-                if (previous >= 0) {
-                    previousRect.right = client.right;
-                    InvalidateRect(hwnd, &previousRect, FALSE);
-                }
-                if (row >= 0) {
-                    currentRect.right = client.right;
-                    InvalidateRect(hwnd, &currentRect, FALSE);
-                }
-            }
-            TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};
-            TrackMouseEvent(&tracking);
-            return 0;
-        }
-        if (message == WM_MOUSELEAVE) {
-            if (g_app->languageDropdownHover >= 0) {
-                RECT rect{0, ui(g_app->languageDropdownHover * 30),
-                           0, ui((g_app->languageDropdownHover + 1) * 30)};
-                RECT client{};
-                GetClientRect(hwnd, &client);
-                rect.right = client.right;
-                InvalidateRect(hwnd, &rect, FALSE);
-                g_app->languageDropdownHover = -1;
-            }
-            return 0;
-        }
-        if (message == WM_SETCURSOR) {
-            SetCursor(LoadCursorW(nullptr, IDC_HAND));
-            return TRUE;
-        }
-        if (message == WM_LBUTTONUP) {
-            const int row = languageDropdownRowAt(GET_Y_LPARAM(lParam));
-            if (row >= 0) {
-                HWND combo = GetDlgItem(g_app->settings, kSettingLanguage);
-                setSettingsLanguageSelection(combo, row);
-                InvalidateRect(combo, nullptr, FALSE);
-                scheduleSettingsSync(g_app->settings);
-            }
-            animateLanguageDropdown(g_app->settings, 0.0f);
-            return 0;
-        }
-        if (message == WM_PAINT) {
-            PAINTSTRUCT ps{};
-            HDC dc = BeginPaint(hwnd, &ps);
-            paintLanguageDropdown(hwnd, dc);
-            EndPaint(hwnd, &ps);
-            return 0;
-        }
-        if (message == WM_DESTROY) {
-            g_app->languageDropdown = nullptr;
-            g_app->languageDropdownHover = -1;
-            return 0;
-        }
-    }
     if (message == WM_DESTROY && hwnd == g_app->popup) {
         g_app->historyWindow.detach();
         if (g_app->popupFont) DeleteObject(g_app->popupFont);
-        if (g_app->popupInputBrush) DeleteObject(g_app->popupInputBrush);
         g_app->popupFont = nullptr;
-        g_app->popupInputBrush = nullptr;
     }
     if (message == WM_DESTROY && hwnd == g_app->settings) {
         g_app->settingsWindow.detach();
-        if (g_app->languageDropdown) {
-            DestroyWindow(g_app->languageDropdown);
-            g_app->languageDropdown = nullptr;
-        }
         if (g_app->settingsFont) DeleteObject(g_app->settingsFont);
-        if (g_app->settingsMultilineFont) DeleteObject(g_app->settingsMultilineFont);
-        if (g_app->settingsBackgroundBrush) DeleteObject(g_app->settingsBackgroundBrush);
-        if (g_app->settingsCardBrush) DeleteObject(g_app->settingsCardBrush);
-        if (g_app->settingsInputBrush) DeleteObject(g_app->settingsInputBrush);
         g_app->settingsFont = nullptr;
-        g_app->settingsMultilineFont = nullptr;
-        g_app->settingsBackgroundBrush = nullptr;
-        g_app->settingsCardBrush = nullptr;
-        g_app->settingsInputBrush = nullptr;
         KillTimer(hwnd, kSettingsToggleTimer);
-        KillTimer(hwnd, kSettingsDropdownTimer);
         KillTimer(hwnd, kSettingsSyncTimer);
         KillTimer(hwnd, kSettingsThemeTimer);
         g_app->toggleAnimationControl = nullptr;
         g_app->settingsThemeAnimating = false;
         g_app->shortcutCaptureControl = nullptr;
-        g_app->languageDropdown = nullptr;
     }
     if (hwnd == g_app->hidden) {
         if (g_taskbarCreated != 0 && message == g_taskbarCreated) {
@@ -4716,26 +3810,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                                                       0, settingsScrollMax(hwnd));
             updateSettingsTabControls(hwnd);
             invalidatePopupList(hwnd);
-            return 0;
-        }
-        if (message == WM_TIMER && wParam == kSettingsDropdownTimer) {
-            if (!g_app->languageDropdown) {
-                KillTimer(hwnd, kSettingsDropdownTimer);
-                return 0;
-            }
-            if (settingsToggleClock() - g_app->languageDropdownStartTicks >=
-                settingsToggleClockFrequency() * kSettingsDropdownAnimationMs / 1000LL) {
-                const float target = g_app->languageDropdownTo;
-                if (target <= 0.0f) {
-                    DestroyWindow(g_app->languageDropdown);
-                } else {
-                    positionLanguageDropdown(hwnd, 1.0f);
-                }
-                KillTimer(hwnd, kSettingsDropdownTimer);
-            } else {
-                positionLanguageDropdown(hwnd, languageDropdownProgress());
-                InvalidateRect(g_app->languageDropdown, nullptr, FALSE);
-            }
             return 0;
         }
         if (message == WM_TIMER && wParam == kSettingsSyncTimer) {
@@ -4795,8 +3869,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 KillTimer(hwnd, kSettingsThemeTimer);
                 refreshSettingsFrame(hwnd);
             }
-            refreshSettingsBrushes();
-            refreshPopupBrush();
             for (HWND child = GetWindow(hwnd, GW_CHILD); child;
                  child = GetWindow(child, GW_HWNDNEXT)) {
                 InvalidateRect(child, nullptr, FALSE);
@@ -4871,7 +3943,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 return 0;
             }
             SetFocus(hwnd);
-            if (g_app->languageDropdown) animateLanguageDropdown(hwnd, 0.0f);
             const int toggleId = settingsToggleAtPoint(g_app->settingsTab, x, y);
             if (toggleId != 0) {
                 HWND toggle = GetDlgItem(hwnd, toggleId);
@@ -4911,11 +3982,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (LOWORD(wParam) == kSettingLanguage &&
                 (HIWORD(wParam) == CBN_DROPDOWN || HIWORD(wParam) == CBN_SELENDOK ||
                  HIWORD(wParam) == CBN_SELENDCANCEL)) {
-                HWND language = GetDlgItem(hwnd, kSettingLanguage);
-                SendMessageW(language, CB_SHOWDROPDOWN, FALSE, 0);
-                if (HIWORD(wParam) == CBN_DROPDOWN && !g_app->languageDropdown) {
-                    toggleLanguageDropdown(hwnd);
-                }
                 if (HIWORD(wParam) == CBN_SELENDOK) scheduleSettingsSync(hwnd);
                 return 0;
             }
@@ -5503,11 +4569,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     settingsClass.style = 0;
     settingsClass.lpszClassName = L"ClipLiteSettings";
     RegisterClassW(&settingsClass);
-    WNDCLASSW dropdownClass = popupClass;
-    dropdownClass.style = CS_HREDRAW | CS_VREDRAW;
-    dropdownClass.hbrBackground = nullptr;
-    dropdownClass.lpszClassName = L"ClipLiteDropdown";
-    RegisterClassW(&dropdownClass);
     WNDCLASSW hiddenClass = popupClass;
     hiddenClass.lpszClassName = L"ClipLiteHidden";
     RegisterClassW(&hiddenClass);
