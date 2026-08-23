@@ -20,8 +20,6 @@ Current release: **1.0.0** (Windows x64)
 
 ## Screenshots
 
-These screenshots were generated with isolated synthetic text and image data. They contain no real clipboard contents, user paths, or desktop background.
-
 History window with an image record:
 
 ![ClipLite history window](docs/screenshots/history.png)
@@ -32,7 +30,7 @@ Settings window:
 
 ## Performance and Size
 
-ClipLite is designed to stay quietly in the tray. It does not keep using browser-sized memory in the background and does not require a separate runtime.
+ClipLite is designed to stay quietly in the tray. It uses less memory than many clipboard history tools, making it suitable for long-running background use without requiring a separate runtime.
 
 - The Windows Task Manager showed about `2.5 MB` of memory in a local idle observation.
 - The main executable is about `446 KB`, smaller than an ordinary phone photo.

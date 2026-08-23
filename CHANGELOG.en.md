@@ -26,7 +26,7 @@ The first stable Windows x64 release of ClipLite, including installer and portab
 
 - Added PolyForm Noncommercial License 1.0.0, contribution guidance, and security reporting guidance.
 - Added Chinese and English user, contributor, and security documentation.
-- Added privacy-safe UI screenshots generated from isolated synthetic text and image data.
+- Added UI screenshots and bilingual documentation.
 - Added a measured Windows x64 Release baseline for memory, startup time, GDI/USER resources, and executable size to both READMEs.
 - Unified the CMake, Windows resource, installer, package script, about page, and HTML prototype version to `1.0.0`.
 

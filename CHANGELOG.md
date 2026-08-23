@@ -26,7 +26,7 @@ ClipLite 首个正式版本，提供 Windows x64 安装包和便携包。
 
 - 增加 `LICENSE.md`，采用 PolyForm Noncommercial License 1.0.0。
 - 增加面向贡献者的 `CONTRIBUTING.md` 和安全问题处理说明 `SECURITY.md`。
-- 增加中英文用户、贡献者和安全文档，以及使用隔离合成数据生成的功能截图。
+- 增加中英文用户、贡献者和安全文档，以及功能截图。
 - 在中英文 README 中增加本机 Release 的内存、启动耗时、GDI/USER 资源和程序体积实测基线。
 - 统一 CMake、Windows 文件资源、安装器、便携打包脚本、关于页和 HTML 原型中的版本号为 `1.0.0`。
 
