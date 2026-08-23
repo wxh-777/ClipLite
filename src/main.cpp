@@ -74,6 +74,7 @@ constexpr int kSettingBrowseDataDirectory = 35;
 constexpr int kSettingStartupSettings = 36;
 constexpr int kSettingStartupNotification = 37;
 constexpr int kSettingOpenLog = 38;
+constexpr int kSettingRunAsAdministrator = 39;
 constexpr int kSettingClearText = 40;
 constexpr int kSettingClearImage = 41;
 constexpr int kSettingClearFiles = 42;
@@ -106,6 +107,7 @@ constexpr UINT kShowPopupMessage = WM_APP + 1;
 constexpr UINT kTrayMessage = WM_APP + 2;
 constexpr UINT kShowSettingsMessage = WM_APP + 3;
 constexpr UINT kExitMessage = WM_APP + 4;
+constexpr UINT kClosePopupMessage = WM_APP + 5;
 constexpr UINT_PTR kExpiryTimer = 3;
 constexpr UINT_PTR kSettingsToggleTimer = 4;
 constexpr UINT_PTR kSettingsDropdownTimer = 5;
@@ -113,10 +115,15 @@ constexpr UINT_PTR kSettingsSyncTimer = 6;
 constexpr UINT_PTR kSettingsThemeTimer = 7;
 constexpr UINT_PTR kSettingsActionFeedbackTimer = 8;
 constexpr UINT_PTR kPopupScrollTimer = 9;
+constexpr UINT_PTR kPopupOpenGuardTimer = 10;
+constexpr UINT_PTR kPopupDeactivateTimer = 11;
+constexpr UINT_PTR kWinVReleaseTimer = 12;
 constexpr DWORD kSettingsToggleAnimationMs = 160;
 constexpr DWORD kSettingsDropdownAnimationMs = 150;
 constexpr DWORD kSettingsThemeAnimationMs = 180;
 constexpr DWORD kPopupScrollAnimationMs = 105;
+constexpr UINT kPopupOpenGuardMs = 120;
+constexpr UINT kPopupDeactivateDelayMs = 80;
 constexpr UINT kSettingsSyncDelayMs = 300;
 constexpr UINT kSettingsActionFeedbackMs = 2400;
 constexpr UINT kTrayId = 1;
@@ -131,6 +138,8 @@ constexpr int kPopupPinRight = 278;
 constexpr int kPopupCloseLeft = 282;
 constexpr int kPopupWidth = 320;
 constexpr int kPopupHeight = 500;
+constexpr int kPopupCornerRadius = 10;
+constexpr int kPopupBorderInset = 1;
 constexpr int kPopupListTop = 108;
 constexpr int kPopupBottomPadding = 14;
 constexpr int kPopupCardHeight = 92;
@@ -160,6 +169,8 @@ struct Settings {
     bool startWithWindows = false;
     bool showSettingsOnStartup = true;
     bool showStartupNotification = true;
+    bool historyWindowPinned = false;
+    bool runAsAdministrator = false;
     bool encryptData = false;
     int maxItems = 1000;
     int retentionDays = 30;
@@ -206,9 +217,12 @@ struct AppState {
     HBRUSH settingsInputBrush = nullptr;
     ULONG_PTR gdiplusToken = 0;
     HHOOK keyboardHook = nullptr;
+    bool winVHotkeyRegistered = false;
+    HHOOK popupMouseHook = nullptr;
     bool winKeyDown = false;
     bool suppressWinV = false;
     bool suppressVKeyUp = false;
+    bool pendingWinVPopup = false;
     bool winKeyForwarded = false;
     UINT pendingWinKey = VK_LWIN;
     DWORD winKeyDownTime = 0;
@@ -226,6 +240,10 @@ struct AppState {
     int filterDragStartX = 0;
     int filterDragStartOffset = 0;
     bool popupPinned = false;
+    bool popupOpening = false;
+    bool popupActivated = false;
+    bool popupOpenedByWinV = false;
+    DWORD popupOpenInputTick = 0;
     bool scrollDragging = false;
     int scrollDragStartY = 0;
     int scrollDragStartOffset = 0;
@@ -363,6 +381,7 @@ struct SettingsLocale {
     const wchar_t* startWithWindows;
     const wchar_t* showSettingsOnStartup;
     const wchar_t* showStartupNotification;
+    const wchar_t* runAsAdministrator;
     const wchar_t* importantSystemShortcut;
     const wchar_t* forceReplaceWinV;
     const wchar_t* globalShortcuts;
@@ -497,9 +516,9 @@ struct SettingsLocale {
 
 const SettingsLocale kEnglishSettingsLocale{
     L"Appearance and interaction", L"Dark theme", L"Language", L"System and integration",
-    L"Pause clipboard monitoring", L"Start with Windows", L"Important system shortcut",
-    L"Open settings after startup", L"Show startup notification",
-    L"Force replace Win + V", L"Global shortcuts", L"Open clipboard history", L"Open settings",
+    L"Pause clipboard monitoring", L"Start with Windows", L"Open settings after startup",
+    L"Show startup notification", L"Run ClipLite as administrator (restart required to disable)",
+    L"Important system shortcut", L"Force replace Win + V", L"Global shortcuts", L"Open clipboard history", L"Open settings",
     L"Pause/resume clipboard monitoring", L"History window shortcuts", L"Paste selected item",
     L"Paste as plain text", L"Paste as rich text", L"Close history window",
     L"Open settings in history window", L"Clear history filter", L"Delete selected record",
@@ -542,7 +561,7 @@ const SettingsLocale kEnglishSettingsLocale{
 
 const SettingsLocale kChineseSettingsLocale{
     L"界面与交互", L"深色主题", L"语言", L"系统与集成", L"暂停剪贴板监听", L"随 Windows 启动",
-    L"启动后打开设置", L"启动后显示系统提示",
+    L"启动后打开设置", L"启动后显示系统提示", L"以管理员权限运行（关闭后下次启动生效）",
     L"重要系统快捷键", L"强制替换 Win + V", L"全局快捷键", L"打开剪贴板历史", L"打开设置",
     L"暂停/恢复剪贴板监听", L"历史窗口快捷键", L"粘贴选中项目", L"粘贴为纯文本", L"粘贴为富文本",
     L"关闭历史窗口", L"在历史窗口打开设置", L"清除历史筛选", L"删除选中记录", L"注册状态",
@@ -682,6 +701,8 @@ void loadSettings(Settings& settings) {
         if (std::strncmp(line, "showSettingsOnStartup=1", 23) == 0) settings.showSettingsOnStartup = true;
         if (std::strncmp(line, "showStartupNotification=0", 25) == 0) settings.showStartupNotification = false;
         if (std::strncmp(line, "showStartupNotification=1", 25) == 0) settings.showStartupNotification = true;
+        if (std::strncmp(line, "historyWindowPinned=1", 21) == 0) settings.historyWindowPinned = true;
+        if (std::strncmp(line, "runAsAdministrator=1", 20) == 0) settings.runAsAdministrator = true;
         if (std::strncmp(line, "encryptData=1", 13) == 0) settings.encryptData = true;
         if (std::strncmp(line, "maxItems=", 9) == 0) settings.maxItems = std::clamp(std::atoi(line + 9), 0, 100000);
         if (std::strncmp(line, "retentionDays=", 14) == 0) settings.retentionDays = std::clamp(std::atoi(line + 14), 0, 36500);
@@ -800,6 +821,8 @@ void saveSettings(const Settings& settings) {
     std::fprintf(file, "winV=%d\ndark=%d\nthemeMode=%d\naccent=%d\n"
                          "pauseMonitoring=%d\nstartWithWindows=%d\n"
                          "showSettingsOnStartup=%d\nshowStartupNotification=%d\n"
+                         "historyWindowPinned=%d\n"
+                         "runAsAdministrator=%d\n"
                          "encryptData=%d\n"
                         "maxItems=%d\nretentionDays=%d\nmaxDiskMb=%d\nmaxContentMb=%d\n"
                         "dataDirectory=%s\n"
@@ -816,10 +839,12 @@ void saveSettings(const Settings& settings) {
                          "shortcutPopupDeleteModifiers=%u\nshortcutPopupDeleteKey=%u\n",
                   settings.winV ? 1 : 0, settings.dark ? 1 : 0,
                   settings.themeMode, settings.accent,
-                  settings.pauseMonitoring ? 1 : 0, settings.startWithWindows ? 1 : 0,
-                  settings.showSettingsOnStartup ? 1 : 0,
-                  settings.showStartupNotification ? 1 : 0,
-                  settings.encryptData ? 1 : 0,
+                   settings.pauseMonitoring ? 1 : 0, settings.startWithWindows ? 1 : 0,
+                   settings.showSettingsOnStartup ? 1 : 0,
+                   settings.showStartupNotification ? 1 : 0,
+                   settings.historyWindowPinned ? 1 : 0,
+                   settings.runAsAdministrator ? 1 : 0,
+                   settings.encryptData ? 1 : 0,
                   settings.maxItems,
                    settings.retentionDays, settings.maxDiskMb, settings.maxContentMb,
                    settings.dataDirectory.c_str(),
@@ -846,6 +871,36 @@ void saveSettings(const Settings& settings) {
         }
     }
     std::fclose(file);
+}
+
+bool processIsElevated() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+    TOKEN_ELEVATION elevation{};
+    DWORD size = 0;
+    const bool elevated = GetTokenInformation(token, TokenElevation, &elevation,
+                                               sizeof(elevation), &size) != FALSE &&
+        elevation.TokenIsElevated != 0;
+    CloseHandle(token);
+    return elevated;
+}
+
+bool launchElevatedRestart(const wchar_t* arguments) {
+    wchar_t executable[MAX_PATH]{};
+    const DWORD length = GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
+    if (length == 0 || length >= ARRAYSIZE(executable)) return false;
+    SHELLEXECUTEINFOW execute{sizeof(execute)};
+    execute.fMask = SEE_MASK_NOCLOSEPROCESS;
+    execute.lpVerb = L"runas";
+    execute.lpFile = executable;
+    execute.lpParameters = arguments;
+    execute.nShow = SW_SHOWNORMAL;
+    if (!ShellExecuteExW(&execute)) {
+        appendDiagnosticLog("WARN", "admin: unable to launch elevated restart", GetLastError());
+        return false;
+    }
+    if (execute.hProcess) CloseHandle(execute.hProcess);
+    return true;
 }
 
 void updateStartupRegistration(bool enabled) {
@@ -1434,46 +1489,27 @@ void addGdiRoundedRect(Gdiplus::GraphicsPath& path, const Gdiplus::RectF& rect, 
 }
 
 void drawGdiLine(HDC dc, int x1, int y1, int x2, int y2, COLORREF color, float width = 1.0f) {
-    if (g_app && g_app->gdiplusToken != 0) {
-        Gdiplus::Graphics graphics(dc);
-        configureGdiGraphics(graphics);
-        Gdiplus::Pen pen(makeGdiColor(color), width);
-        graphics.DrawLine(&pen, static_cast<float>(x1), static_cast<float>(y1),
-                          static_cast<float>(x2), static_cast<float>(y2));
-        return;
-    }
-    HPEN pen = CreatePen(PS_SOLID, std::max(1, static_cast<int>(width + 0.5f)), color);
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    MoveToEx(dc, x1, y1, nullptr);
-    LineTo(dc, x2, y2);
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
+    if (!g_app || g_app->gdiplusToken == 0) return;
+    Gdiplus::Graphics graphics(dc);
+    configureGdiGraphics(graphics);
+    Gdiplus::Pen pen(makeGdiColor(color), width);
+    graphics.DrawLine(&pen, static_cast<float>(x1), static_cast<float>(y1),
+                      static_cast<float>(x2), static_cast<float>(y2));
 }
 
 void drawGdiRoundedSurface(HDC dc, const RECT& rect, COLORREF fill, COLORREF border, int radius) {
-    if (g_app && g_app->gdiplusToken != 0) {
-        Gdiplus::Graphics graphics(dc);
-        configureGdiGraphics(graphics);
-        Gdiplus::GraphicsPath path;
-        addGdiRoundedRect(path, Gdiplus::RectF(
-            static_cast<float>(rect.left) + 0.5f, static_cast<float>(rect.top) + 0.5f,
-            static_cast<float>(rect.right - rect.left - 1),
-            static_cast<float>(rect.bottom - rect.top - 1)), static_cast<float>(ui(radius)));
-        Gdiplus::SolidBrush brush(makeGdiColor(fill));
-        Gdiplus::Pen pen(makeGdiColor(border), 1.0f);
-        graphics.FillPath(&brush, &path);
-        graphics.DrawPath(&pen, &path);
-        return;
-    }
-    HBRUSH brush = CreateSolidBrush(fill);
-    HPEN pen = CreatePen(PS_SOLID, ui(1), border);
-    HGDIOBJ oldBrush = SelectObject(dc, brush);
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, ui(radius), ui(radius));
-    SelectObject(dc, oldPen);
-    SelectObject(dc, oldBrush);
-    DeleteObject(pen);
-    DeleteObject(brush);
+    if (!g_app || g_app->gdiplusToken == 0) return;
+    Gdiplus::Graphics graphics(dc);
+    configureGdiGraphics(graphics);
+    Gdiplus::GraphicsPath path;
+    addGdiRoundedRect(path, Gdiplus::RectF(
+        static_cast<float>(rect.left) + 0.5f, static_cast<float>(rect.top) + 0.5f,
+        static_cast<float>(rect.right - rect.left - 1),
+        static_cast<float>(rect.bottom - rect.top - 1)), static_cast<float>(ui(radius)));
+    Gdiplus::SolidBrush brush(makeGdiColor(fill));
+    Gdiplus::Pen pen(makeGdiColor(border), 1.0f);
+    graphics.FillPath(&brush, &path);
+    graphics.DrawPath(&pen, &path);
 }
 
 void drawPinIcon(HDC dc, int right, int centerY, COLORREF color, bool filled = false) {
@@ -1532,59 +1568,35 @@ void drawPinIcon(HDC dc, int right, int centerY, COLORREF color, bool filled = f
 }
 
 void drawEmptyClipboardIcon(HDC dc, int centerX, int top, COLORREF color) {
-    if (g_app && g_app->gdiplusToken != 0) {
-        Gdiplus::Graphics graphics(dc);
-        configureGdiGraphics(graphics);
-        Gdiplus::Pen pen(makeGdiColor(color), 1.0f);
-        Gdiplus::GraphicsPath body;
-        addGdiRoundedRect(body, Gdiplus::RectF(
-            static_cast<float>(centerX - ui(14)), static_cast<float>(top + ui(6)),
-            static_cast<float>(ui(28)), static_cast<float>(ui(32))), static_cast<float>(ui(4)));
-        graphics.DrawPath(&pen, &body);
-        Gdiplus::GraphicsPath clip;
-        addGdiRoundedRect(clip, Gdiplus::RectF(
-            static_cast<float>(centerX - ui(7)), static_cast<float>(top),
-            static_cast<float>(ui(14)), static_cast<float>(ui(10))), static_cast<float>(ui(3)));
-        graphics.DrawPath(&pen, &clip);
-        graphics.DrawLine(&pen, static_cast<float>(centerX - ui(7)), static_cast<float>(top + ui(20)),
-                          static_cast<float>(centerX + ui(7)), static_cast<float>(top + ui(20)));
-        graphics.DrawLine(&pen, static_cast<float>(centerX - ui(7)), static_cast<float>(top + ui(27)),
-                          static_cast<float>(centerX + ui(3)), static_cast<float>(top + ui(27)));
-        return;
-    }
-    HPEN pen = CreatePen(PS_SOLID, ui(1), color);
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-    RoundRect(dc, centerX - ui(14), top + ui(6), centerX + ui(14), top + ui(38), ui(4), ui(4));
-    RoundRect(dc, centerX - ui(7), top, centerX + ui(7), top + ui(10), ui(3), ui(3));
-    MoveToEx(dc, centerX - ui(7), top + ui(20), nullptr);
-    LineTo(dc, centerX + ui(7), top + ui(20));
-    MoveToEx(dc, centerX - ui(7), top + ui(27), nullptr);
-    LineTo(dc, centerX + ui(3), top + ui(27));
-    SelectObject(dc, oldBrush);
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
+    if (!g_app || g_app->gdiplusToken == 0) return;
+    Gdiplus::Graphics graphics(dc);
+    configureGdiGraphics(graphics);
+    Gdiplus::Pen pen(makeGdiColor(color), 1.0f);
+    Gdiplus::GraphicsPath body;
+    addGdiRoundedRect(body, Gdiplus::RectF(
+        static_cast<float>(centerX - ui(14)), static_cast<float>(top + ui(6)),
+        static_cast<float>(ui(28)), static_cast<float>(ui(32))), static_cast<float>(ui(4)));
+    graphics.DrawPath(&pen, &body);
+    Gdiplus::GraphicsPath clip;
+    addGdiRoundedRect(clip, Gdiplus::RectF(
+        static_cast<float>(centerX - ui(7)), static_cast<float>(top),
+        static_cast<float>(ui(14)), static_cast<float>(ui(10))), static_cast<float>(ui(3)));
+    graphics.DrawPath(&pen, &clip);
+    graphics.DrawLine(&pen, static_cast<float>(centerX - ui(7)), static_cast<float>(top + ui(20)),
+                      static_cast<float>(centerX + ui(7)), static_cast<float>(top + ui(20)));
+    graphics.DrawLine(&pen, static_cast<float>(centerX - ui(7)), static_cast<float>(top + ui(27)),
+                      static_cast<float>(centerX + ui(3)), static_cast<float>(top + ui(27)));
 }
 
 void drawDeleteIcon(HDC dc, int x, int y, COLORREF color) {
-    if (g_app && g_app->gdiplusToken != 0) {
-        Gdiplus::Graphics graphics(dc);
-        configureGdiGraphics(graphics);
-        Gdiplus::Pen pen(makeGdiColor(color), 1.0f);
-        graphics.DrawLine(&pen, static_cast<float>(x), static_cast<float>(y),
-                          static_cast<float>(x + ui(10)), static_cast<float>(y + ui(10)));
-        graphics.DrawLine(&pen, static_cast<float>(x + ui(10)), static_cast<float>(y),
-                          static_cast<float>(x), static_cast<float>(y + ui(10)));
-        return;
-    }
-    HPEN pen = CreatePen(PS_SOLID, ui(1), color);
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    MoveToEx(dc, x, y, nullptr);
-    LineTo(dc, x + ui(10), y + ui(10));
-    MoveToEx(dc, x + ui(10), y, nullptr);
-    LineTo(dc, x, y + ui(10));
-    SelectObject(dc, oldPen);
-    DeleteObject(pen);
+    if (!g_app || g_app->gdiplusToken == 0) return;
+    Gdiplus::Graphics graphics(dc);
+    configureGdiGraphics(graphics);
+    Gdiplus::Pen pen(makeGdiColor(color), 1.0f);
+    graphics.DrawLine(&pen, static_cast<float>(x), static_cast<float>(y),
+                      static_cast<float>(x + ui(10)), static_cast<float>(y + ui(10)));
+    graphics.DrawLine(&pen, static_cast<float>(x + ui(10)), static_cast<float>(y),
+                      static_cast<float>(x), static_cast<float>(y + ui(10)));
 }
 
 void drawSearchIcon(HDC dc, int centerX, int centerY, COLORREF color) {
@@ -1605,35 +1617,21 @@ void drawSearchIcon(HDC dc, int centerX, int centerY, COLORREF color) {
 
 void drawMetadataTag(HDC dc, const RECT& rect, const std::wstring& value,
                      COLORREF background, COLORREF border, COLORREF text, int radius) {
-    if (g_app && g_app->gdiplusToken != 0) {
-        Gdiplus::Graphics graphics(dc);
-        configureGdiGraphics(graphics);
-        Gdiplus::GraphicsPath path;
-        addGdiRoundedRect(path, Gdiplus::RectF(
-            static_cast<float>(rect.left) + 0.5f, static_cast<float>(rect.top) + 0.5f,
-            static_cast<float>(rect.right - rect.left - 1),
-            static_cast<float>(rect.bottom - rect.top - 1)), static_cast<float>(ui(radius)));
-        Gdiplus::SolidBrush brush(makeGdiColor(background));
-        Gdiplus::Pen pen(makeGdiColor(border), 1.0f);
-        graphics.FillPath(&brush, &path);
-        graphics.DrawPath(&pen, &path);
-        SetTextColor(dc, text);
-        RECT textRect = rect;
-        DrawTextW(dc, value.c_str(), -1, &textRect,
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        return;
-    }
-    HBRUSH brush = CreateSolidBrush(background);
-    HPEN pen = CreatePen(PS_SOLID, ui(1), border);
-    HGDIOBJ oldBrush = SelectObject(dc, brush);
-    HGDIOBJ oldPen = SelectObject(dc, pen);
-    RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, ui(radius), ui(radius));
-    SelectObject(dc, oldPen);
-    SelectObject(dc, oldBrush);
-    DeleteObject(pen);
-    DeleteObject(brush);
+    if (!g_app || g_app->gdiplusToken == 0) return;
+    Gdiplus::Graphics graphics(dc);
+    configureGdiGraphics(graphics);
+    Gdiplus::GraphicsPath path;
+    addGdiRoundedRect(path, Gdiplus::RectF(
+        static_cast<float>(rect.left) + 0.5f, static_cast<float>(rect.top) + 0.5f,
+        static_cast<float>(rect.right - rect.left - 1),
+        static_cast<float>(rect.bottom - rect.top - 1)), static_cast<float>(ui(radius)));
+    Gdiplus::SolidBrush brush(makeGdiColor(background));
+    Gdiplus::Pen pen(makeGdiColor(border), 1.0f);
+    graphics.FillPath(&brush, &path);
+    graphics.DrawPath(&pen, &path);
     SetTextColor(dc, text);
-    DrawTextW(dc, value.c_str(), -1, const_cast<RECT*>(&rect),
+    RECT textRect = rect;
+    DrawTextW(dc, value.c_str(), -1, &textRect,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 }
 
@@ -1962,11 +1960,39 @@ void sendPaste(PasteMode mode = PasteMode::Automatic) {
     }
 }
 
-HICON clipLiteIcon();
+DWORD lastInputTick() {
+    LASTINPUTINFO info{sizeof(info)};
+    return GetLastInputInfo(&info) ? info.dwTime : 0;
+}
 
-void showPopup() {
+HICON clipLiteIcon();
+void updatePopupMouseHook();
+
+void applyPopupWindowFrame(HWND hwnd, int width, int height) {
+    if (!hwnd) return;
+    const int ellipse = ui(kPopupCornerRadius * 2);
+    HRGN region = CreateRoundRectRgn(0, 0, width, height, ellipse, ellipse);
+    if (region) SetWindowRgn(hwnd, region, TRUE);
+
+    // Keep the compositor's corner treatment aligned with the custom client frame on Windows 11.
+    constexpr DWORD kDwmWindowCornerPreference = 33;
+    constexpr DWORD kDwmCornerRound = 2;
+    DwmSetWindowAttribute(hwnd, kDwmWindowCornerPreference, &kDwmCornerRound,
+                          sizeof(kDwmCornerRound));
+}
+
+void showPopup(bool openedByWinV = false) {
     if (g_app->popup) {
+        g_app->popupOpenedByWinV = openedByWinV;
+        g_app->popupOpenInputTick = lastInputTick();
+        updatePopupMouseHook();
+        g_app->popupOpening = true;
+        g_app->popupActivated = false;
+        ShowWindow(g_app->popup, SW_SHOWNOACTIVATE);
+        SetWindowPos(g_app->popup, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
         SetForegroundWindow(g_app->popup);
+        SetTimer(g_app->popup, kPopupOpenGuardTimer, kPopupOpenGuardMs, nullptr);
         return;
     }
     g_app->targetWindow = GetForegroundWindow();
@@ -1986,6 +2012,10 @@ void showPopup() {
     g_app->hoveredDeleteRow = -1;
     g_app->hoveredPinRow = -1;
     g_app->hoveredHeader = false;
+    g_app->popupOpening = true;
+    g_app->popupActivated = false;
+    g_app->popupOpenedByWinV = openedByWinV;
+    g_app->popupOpenInputTick = lastInputTick();
     g_app->visible = g_app->store.search({});
 
     const int width = ui(kPopupWidth);
@@ -2002,32 +2032,50 @@ void showPopup() {
     g_app->popup = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"ClipLitePopup",
                                    L"ClipLite", WS_POPUP | WS_CLIPCHILDREN, x, y, width, height,
                                    nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
-    if (!g_app->popup) return;
+    if (!g_app->popup) {
+        g_app->popupOpening = false;
+        return;
+    }
+    updatePopupMouseHook();
     SendMessageW(g_app->popup, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(clipLiteIcon()));
     SendMessageW(g_app->popup, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(clipLiteIcon()));
-    SetWindowRgn(g_app->popup, CreateRoundRectRgn(0, 0, width, height,
-                                                  ui(8), ui(8)), TRUE);
+    applyPopupWindowFrame(g_app->popup, width, height);
     ShowWindow(g_app->popup, SW_SHOWNOACTIVATE);
+    SetWindowPos(g_app->popup, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
     SetForegroundWindow(g_app->popup);
+    SetTimer(g_app->popup, kPopupOpenGuardTimer, kPopupOpenGuardMs, nullptr);
 }
 
 void closePopup() {
+    if (g_app->popupMouseHook) {
+        UnhookWindowsHookEx(g_app->popupMouseHook);
+        g_app->popupMouseHook = nullptr;
+    }
     if (g_app->popup) {
         KillTimer(g_app->popup, kPopupScrollTimer);
+        KillTimer(g_app->popup, kPopupOpenGuardTimer);
+        KillTimer(g_app->popup, kPopupDeactivateTimer);
         DestroyWindow(g_app->popup);
     }
     g_app->popup = nullptr;
     g_app->searchEdit = nullptr;
-    g_app->popupPinned = false;
+    g_app->popupOpening = false;
+    g_app->popupActivated = false;
+    g_app->popupOpenedByWinV = false;
+    g_app->popupOpenInputTick = 0;
 }
 
 void setPopupPinned(bool pinned) {
     if (!g_app) return;
     g_app->popupPinned = pinned;
+    g_app->settingsData.historyWindowPinned = pinned;
+    saveSettings(g_app->settingsData);
     if (!g_app->popup) return;
     SetWindowPos(g_app->popup, pinned ? HWND_TOPMOST : HWND_NOTOPMOST,
                  0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     if (pinned) SetForegroundWindow(g_app->popup);
+    updatePopupMouseHook();
     InvalidateRect(g_app->popup, nullptr, FALSE);
 }
 
@@ -2097,6 +2145,53 @@ void showTrayMenu() {
     else if (command == kTrayExit) PostQuitMessage(0);
 }
 
+LRESULT CALLBACK popupMouseProc(int code, WPARAM wParam, LPARAM lParam) {
+    if (code == HC_ACTION && g_app && g_app->popupMouseHook && g_app->popup &&
+        g_app->popupOpenedByWinV && !g_app->popupPinned &&
+        !g_app->popupOpening &&
+        (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN ||
+         wParam == WM_MBUTTONDOWN || wParam == WM_XBUTTONDOWN)) {
+        const auto* mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
+        RECT popupRect{};
+        GetWindowRect(g_app->popup, &popupRect);
+        if (!PtInRect(&popupRect, mouse->pt)) {
+            PostMessageW(g_app->hidden, kClosePopupMessage, 0, 0);
+        }
+    }
+    return CallNextHookEx(nullptr, code, wParam, lParam);
+}
+
+void updatePopupMouseHook() {
+    if (!g_app) return;
+    if (g_app->popupMouseHook) {
+        UnhookWindowsHookEx(g_app->popupMouseHook);
+        g_app->popupMouseHook = nullptr;
+    }
+    if (g_app->popup && g_app->popupOpenedByWinV) {
+        g_app->popupMouseHook = SetWindowsHookExW(WH_MOUSE_LL, popupMouseProc,
+                                                  GetModuleHandleW(nullptr), 0);
+    }
+}
+
+void resetWinKeyState(bool releaseForwardedKey) {
+    if (!g_app) return;
+    if (g_app->hidden) KillTimer(g_app->hidden, kWinVReleaseTimer);
+    if (releaseForwardedKey && g_app->winKeyForwarded) {
+        INPUT input{};
+        input.type = INPUT_KEYBOARD;
+        input.ki.wVk = static_cast<WORD>(g_app->pendingWinKey);
+        input.ki.dwFlags = KEYEVENTF_KEYUP;
+        SendInput(1, &input, sizeof(input));
+    }
+    g_app->winKeyDown = false;
+    g_app->suppressWinV = false;
+    g_app->suppressVKeyUp = false;
+    g_app->pendingWinVPopup = false;
+    g_app->winKeyForwarded = false;
+    g_app->pendingWinKey = VK_LWIN;
+    g_app->winKeyDownTime = 0;
+}
+
 LRESULT CALLBACK lowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
     if (code == HC_ACTION && g_app && g_app->keyboardHook) {
         const auto* key = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
@@ -2105,14 +2200,6 @@ LRESULT CALLBACK lowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
         const bool injected = (key->flags & LLKHF_INJECTED) != 0;
         const bool winKey = key->vkCode == VK_LWIN || key->vkCode == VK_RWIN;
         if (injected) return CallNextHookEx(nullptr, code, wParam, lParam);
-
-        if (g_app->winKeyDown && !winKey &&
-            static_cast<DWORD>(key->time - g_app->winKeyDownTime) > 10000) {
-            g_app->winKeyDown = false;
-            g_app->suppressWinV = false;
-            g_app->suppressVKeyUp = false;
-            g_app->winKeyForwarded = false;
-        }
 
         const auto replayWinKeyDown = [&]() {
             INPUT input{};
@@ -2131,37 +2218,53 @@ LRESULT CALLBACK lowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
                 return 1;
             }
             if (keyUp) {
-                if (g_app->winKeyDown && g_app->suppressWinV) {
-                    g_app->winKeyDown = false;
-                    g_app->suppressWinV = false;
+                if (!g_app->winKeyDown) return CallNextHookEx(nullptr, code, wParam, lParam);
+                const bool showWinVPopup = g_app->suppressWinV && g_app->pendingWinVPopup;
+                if (showWinVPopup) {
+                    resetWinKeyState(false);
+                    PostMessageW(g_app->hidden, kShowPopupMessage, 1, 0);
                     return 1;
                 }
-                if (g_app->winKeyDown) {
-                    g_app->winKeyDown = false;
-                    g_app->winKeyForwarded = replayWinKeyDown();
+                if (!g_app->winKeyForwarded) {
+                    INPUT inputs[2]{};
+                    inputs[0].type = INPUT_KEYBOARD;
+                    inputs[0].ki.wVk = static_cast<WORD>(g_app->pendingWinKey);
+                    inputs[1] = inputs[0];
+                    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+                    if (SendInput(2, inputs, sizeof(INPUT)) != 2) {
+                        resetWinKeyState(false);
+                        return CallNextHookEx(nullptr, code, wParam, lParam);
+                    }
                 }
-                if (g_app->winKeyForwarded) {
-                    g_app->winKeyForwarded = false;
-                    return CallNextHookEx(nullptr, code, wParam, lParam);
-                }
-                return 1;
+                resetWinKeyState(false);
+                return CallNextHookEx(nullptr, code, wParam, lParam);
             }
         }
 
-        if (g_app->winKeyDown && keyDown && key->vkCode == 'V') {
-            g_app->suppressWinV = true;
-            g_app->suppressVKeyUp = true;
-            PostMessageW(g_app->hidden, kShowPopupMessage, 0, 0);
-            return 1;
-        }
         if (g_app->winKeyDown && keyDown) {
-            g_app->winKeyDown = false;
-            g_app->winKeyForwarded = replayWinKeyDown();
+            if (key->vkCode == 'V' && !g_app->winKeyForwarded) {
+                if (!g_app->suppressWinV) {
+                    g_app->suppressWinV = true;
+                    g_app->suppressVKeyUp = true;
+                    g_app->pendingWinVPopup = true;
+                    g_app->winKeyDown = false;
+                    g_app->winKeyForwarded = false;
+                    SetTimer(g_app->hidden, kWinVReleaseTimer, 8, nullptr);
+                }
+                return 1;
+            }
+            if (g_app->suppressWinV) return 1;
+            if (!g_app->winKeyForwarded && !replayWinKeyDown()) {
+                resetWinKeyState(false);
+            } else if (!g_app->winKeyForwarded) {
+                g_app->winKeyForwarded = true;
+            }
         }
         if (keyUp && g_app->suppressVKeyUp && key->vkCode == 'V') {
             g_app->suppressVKeyUp = false;
             return 1;
         }
+        if (g_app->winKeyDown && g_app->suppressWinV && keyUp) return 1;
     }
     return CallNextHookEx(nullptr, code, wParam, lParam);
 }
@@ -2177,16 +2280,12 @@ void registerHotkeys() {
     UnregisterHotKey(g_app->hidden, kHotkeyWinV);
     UnregisterHotKey(g_app->hidden, kHotkeySettings);
     UnregisterHotKey(g_app->hidden, kHotkeyPause);
+    g_app->winVHotkeyRegistered = false;
+    resetWinKeyState(true);
     if (g_app->keyboardHook) {
         UnhookWindowsHookEx(g_app->keyboardHook);
         g_app->keyboardHook = nullptr;
     }
-    g_app->winKeyDown = false;
-    g_app->suppressWinV = false;
-    g_app->suppressVKeyUp = false;
-    g_app->winKeyForwarded = false;
-    g_app->pendingWinKey = VK_LWIN;
-    g_app->winKeyDownTime = 0;
     g_app->shortcutRegistrationWarning = false;
     auto registerWithFallback = [&](int id, ShortcutBinding& binding,
                                      const ShortcutBinding& fallback) {
@@ -2205,13 +2304,22 @@ void registerHotkeys() {
     if (g_app->settingsData.winV) {
         g_app->keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, lowLevelKeyboardProc,
                                                  GetModuleHandleW(nullptr), 0);
+        if (g_app->keyboardHook) {
+            appendDiagnosticLog("INFO", "hotkey: Win+V low-level interceptor installed");
+        }
         if (!g_app->keyboardHook) {
             appendDiagnosticLog("ERROR", "hotkey: unable to install Win+V interceptor",
                                 GetLastError());
-            MessageBoxW(g_app->hidden, tr(L"Unable to replace Win+V.", L"无法替换 Win+V。"),
-                        L"ClipLite", MB_OK | MB_ICONWARNING);
-            g_app->settingsData.winV = false;
-            saveSettings(g_app->settingsData);
+            g_app->winVHotkeyRegistered = registerConfiguredHotkey(
+                kHotkeyWinV, ShortcutBinding{MOD_WIN, 'V'});
+            if (!g_app->winVHotkeyRegistered) {
+                MessageBoxW(g_app->hidden, tr(L"Unable to replace Win+V.", L"无法替换 Win+V。"),
+                            L"ClipLite", MB_OK | MB_ICONWARNING);
+                g_app->settingsData.winV = false;
+                saveSettings(g_app->settingsData);
+            } else {
+                appendDiagnosticLog("INFO", "hotkey: Win+V registered through RegisterHotKey fallback");
+            }
         }
     }
     if (g_app->shortcutRegistrationWarning && g_app->settings) {
@@ -2427,7 +2535,9 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
             makeSettingsRow(hwnd, settingsLocale().showSettingsOnStartup,
                             {kSettingStartupSettings}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().showStartupNotification,
-                            {kSettingStartupNotification}, {36}, {20}, contentWidth)
+                            {kSettingStartupNotification}, {36}, {20}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().runAsAdministrator,
+                            {kSettingRunAsAdministrator}, {36}, {20}, contentWidth)
         });
     } else if (g_app->settingsTab == kSettingsShortcutPage) {
         makeCard(settingsLocale().importantSystemShortcut, {
@@ -2973,11 +3083,15 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     HBRUSH brush = CreateSolidBrush(background);
     FillRect(dc, &client, brush);
     DeleteObject(brush);
-    const int popupBorderInset = ui(1);
+    const int popupFrameClip = SaveDC(dc);
+    IntersectClipRect(dc, ui(kPopupBorderInset), ui(kPopupBorderInset),
+                      client.right - ui(kPopupBorderInset),
+                      client.bottom - ui(kPopupBorderInset));
     drawGdiRoundedSurface(dc,
-                          RECT{popupBorderInset, popupBorderInset,
-                               client.right - popupBorderInset, client.bottom - popupBorderInset},
-                          background, border, 8);
+                          RECT{ui(kPopupBorderInset), ui(kPopupBorderInset),
+                               client.right - ui(kPopupBorderInset),
+                               client.bottom - ui(kPopupBorderInset)},
+                          background, border, kPopupCornerRadius);
 
     SetBkMode(dc, TRANSPARENT);
     HFONT titleFont = g_app->popupTitleFont;
@@ -3151,6 +3265,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         drawGdiRoundedSurface(dc, scrollRect, scrollColor, scrollColor, 3);
     }
     RestoreDC(dc, listClip);
+    RestoreDC(dc, popupFrameClip);
     SelectObject(dc, old);
 }
 
@@ -3337,6 +3452,7 @@ void createSettingsControlsModern(HWND hwnd) {
     createToggle(kSettingStartup, 640, 299, g_app->settingsData.startWithWindows);
     createToggle(kSettingStartupSettings, 640, 334, g_app->settingsData.showSettingsOnStartup);
     createToggle(kSettingStartupNotification, 640, 369, g_app->settingsData.showStartupNotification);
+    createToggle(kSettingRunAsAdministrator, 640, 404, g_app->settingsData.runAsAdministrator);
     createToggle(kSettingEncrypt, 640, 116, g_app->settingsData.encryptData);
     createShortcut(kSettingShortcutHistory, 110, g_app->settingsData.historyHotkey);
     createShortcut(kSettingShortcutSettings, 154, g_app->settingsData.settingsHotkey);
@@ -3482,7 +3598,8 @@ void updateSettingsTabControls(HWND hwnd) {
         KillTimer(hwnd, kSettingsDropdownTimer);
     }
     const int ids[] = {kSettingDark, kSettingWinV, kSettingLanguage, kSettingPause,
-                        kSettingStartup, kSettingStartupSettings, kSettingStartupNotification,
+                         kSettingStartup, kSettingStartupSettings, kSettingStartupNotification,
+                         kSettingRunAsAdministrator,
                         kSettingEncrypt, kSettingMaxItems,
                         kSettingRetentionDays, kSettingMaxDiskMb, kSettingMaxContentMb,
                         kSettingDataDirectory, kSettingBrowseDataDirectory,
@@ -3671,7 +3788,8 @@ void refreshSettingsFrame(HWND hwnd) {
 bool isSettingsToggle(int id) {
     return id == kSettingWinV || id == kSettingDark || id == kSettingPause ||
            id == kSettingStartup || id == kSettingStartupSettings ||
-           id == kSettingStartupNotification || id == kSettingEncrypt;
+           id == kSettingStartupNotification || id == kSettingRunAsAdministrator ||
+           id == kSettingEncrypt;
 }
 
 int settingsToggleAtPoint(int tab, int x, int y) {
@@ -3944,6 +4062,7 @@ bool syncSettingsFromControls(HWND hwnd) {
     HWND startup = GetDlgItem(hwnd, kSettingStartup);
     HWND startupSettings = GetDlgItem(hwnd, kSettingStartupSettings);
     HWND startupNotification = GetDlgItem(hwnd, kSettingStartupNotification);
+    HWND runAsAdministrator = GetDlgItem(hwnd, kSettingRunAsAdministrator);
     HWND encrypt = GetDlgItem(hwnd, kSettingEncrypt);
     HWND categoryMax[kStorageCategoryCount]{};
     HWND categoryDisk[kStorageCategoryCount]{};
@@ -3953,7 +4072,7 @@ bool syncSettingsFromControls(HWND hwnd) {
     }
     if (!win || !dark || !language || !pause || !maxItems || !retentionDays || !maxDiskMb ||
         !maxContentMb || !dataDirectory || !ignoredApps || !sensitiveExpiry || !startup ||
-        !startupSettings || !startupNotification || !encrypt) {
+        !startupSettings || !startupNotification || !runAsAdministrator || !encrypt) {
         return false;
     }
     for (int i = 0; i < kStorageCategoryCount; ++i) {
@@ -3967,6 +4086,7 @@ bool syncSettingsFromControls(HWND hwnd) {
     next.startWithWindows = settingsToggleValue(startup);
     next.showSettingsOnStartup = settingsToggleValue(startupSettings);
     next.showStartupNotification = settingsToggleValue(startupNotification);
+    next.runAsAdministrator = settingsToggleValue(runAsAdministrator);
     next.language = settingsLanguageSelection(language);
     next.language = next.language <= 0 ? -1 : next.language - 1;
 
@@ -4072,6 +4192,7 @@ bool syncSettingsFromControls(HWND hwnd) {
     const bool startupSettingsChanged = next.showSettingsOnStartup != previous.showSettingsOnStartup;
     const bool startupNotificationChanged =
         next.showStartupNotification != previous.showStartupNotification;
+    const bool adminModeChanged = next.runAsAdministrator != previous.runAsAdministrator;
     const bool maxItemsChanged = next.maxItems != previous.maxItems;
     const bool retentionChanged = next.retentionDays != previous.retentionDays;
     const bool maxDiskChanged = next.maxDiskMb != previous.maxDiskMb;
@@ -4079,7 +4200,7 @@ bool syncSettingsFromControls(HWND hwnd) {
     const bool categoryLimitsChanged = next.categoryLimits != previous.categoryLimits;
     const bool languageChanged = next.language != previous.language;
     const bool changed = darkChanged || themeModeChanged || winVChanged || startupChanged ||
-        startupSettingsChanged || startupNotificationChanged || maxItemsChanged ||
+        startupSettingsChanged || startupNotificationChanged || adminModeChanged || maxItemsChanged ||
         retentionChanged || maxDiskChanged || maxContentChanged || categoryLimitsChanged ||
         next.pauseMonitoring != previous.pauseMonitoring ||
         next.encryptData != previous.encryptData || next.language != previous.language ||
@@ -4126,6 +4247,18 @@ bool syncSettingsFromControls(HWND hwnd) {
         InvalidateRect(hwnd, nullptr, FALSE);
     }
     saveSettings(g_app->settingsData);
+    if (adminModeChanged && g_app->settingsData.runAsAdministrator && !processIsElevated()) {
+        if (!launchElevatedRestart(L"--elevated-restart --settings")) {
+            g_app->settingsData.runAsAdministrator = false;
+            setSettingsToggleValue(runAsAdministrator, false);
+            saveSettings(g_app->settingsData);
+            MessageBoxW(hwnd, tr(L"Unable to restart ClipLite with administrator rights.",
+                                  L"无法以管理员权限重新启动 ClipLite。"),
+                        L"ClipLite", MB_OK | MB_ICONWARNING);
+            return false;
+        }
+        PostQuitMessage(0);
+    }
     return true;
 }
 
@@ -5589,6 +5722,18 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                           g_app->popupPreviewFont, g_app->popupMetaFont);
         g_app->popupFont = nullptr;
         g_app->popupInputBrush = nullptr;
+        KillTimer(hwnd, kPopupOpenGuardTimer);
+        KillTimer(hwnd, kPopupDeactivateTimer);
+        if (g_app->popupMouseHook) {
+            UnhookWindowsHookEx(g_app->popupMouseHook);
+            g_app->popupMouseHook = nullptr;
+        }
+        g_app->popup = nullptr;
+        g_app->searchEdit = nullptr;
+        g_app->popupOpening = false;
+        g_app->popupActivated = false;
+        g_app->popupOpenedByWinV = false;
+        g_app->popupOpenInputTick = 0;
     }
     if (message == WM_DESTROY && hwnd == g_app->settings) {
         if (g_app->languageDropdown) {
@@ -5626,6 +5771,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             else if (lParam == WM_RBUTTONUP) showTrayMenu();
             return 0;
         }
+        if (message == kClosePopupMessage) {
+            if (!g_app->popupPinned) closePopup();
+            return 0;
+        }
         if (message == WM_HOTKEY) {
             if (wParam == kHotkeySettings) {
                 openSettings();
@@ -5643,7 +5792,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == kShowPopupMessage) {
-            showPopup();
+            showPopup(wParam != 0);
             return 0;
         }
         if (message == kShowSettingsMessage) {
@@ -5652,6 +5801,18 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         if (message == kExitMessage) {
             PostQuitMessage(0);
+            return 0;
+        }
+        if (message == WM_TIMER && wParam == kWinVReleaseTimer) {
+            const bool winDown = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 ||
+                (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
+            const bool vDown = (GetAsyncKeyState('V') & 0x8000) != 0;
+            if (winDown || vDown) return 0;
+            KillTimer(hwnd, kWinVReleaseTimer);
+            if (g_app->pendingWinVPopup) {
+                resetWinKeyState(false);
+                PostMessageW(hwnd, kShowPopupMessage, 1, 0);
+            }
             return 0;
         }
         if (message == WM_TIMER && wParam == kExpiryTimer) {
@@ -6014,13 +6175,53 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return TRUE;
         }
         if (message == WM_ACTIVATEAPP && !wParam) {
-            if (g_app->popupPinned) {
+            if (g_app->popupPinned || g_app->popupOpenedByWinV) {
                 const HWND target = GetForegroundWindow();
                 if (IsWindow(target) && target != hwnd) g_app->targetWindow = target;
                 return DefWindowProcW(hwnd, message, wParam, lParam);
             }
+            if (g_app->popupOpening || !g_app->popupActivated) {
+                return DefWindowProcW(hwnd, message, wParam, lParam);
+            }
             if (g_app->filterDragging || g_app->scrollDragging) return 0;
+            SetTimer(hwnd, kPopupDeactivateTimer, kPopupDeactivateDelayMs, nullptr);
+            return 0;
+        }
+        if (message == WM_ACTIVATEAPP && wParam) {
+            KillTimer(hwnd, kPopupDeactivateTimer);
+            if (!g_app->popupOpening && GetForegroundWindow() == hwnd) {
+                g_app->popupActivated = true;
+            }
+            return DefWindowProcW(hwnd, message, wParam, lParam);
+        }
+        if (message == WM_TIMER && wParam == kPopupDeactivateTimer) {
+            KillTimer(hwnd, kPopupDeactivateTimer);
+            const HWND foreground = GetForegroundWindow();
+            if (g_app->popup != hwnd || g_app->popupOpening ||
+                g_app->popupPinned || g_app->popupOpenedByWinV ||
+                g_app->filterDragging || g_app->scrollDragging ||
+                foreground == hwnd) {
+                return 0;
+            }
+            if (!g_app->popupOpenedByWinV && !g_app->popupActivated) return 0;
+            if (g_app->popupOpenedByWinV && g_app->popupOpenInputTick != 0 &&
+                lastInputTick() == g_app->popupOpenInputTick &&
+                (!IsWindow(g_app->targetWindow) || foreground == g_app->targetWindow)) {
+                SetTimer(hwnd, kPopupDeactivateTimer, kPopupDeactivateDelayMs, nullptr);
+                return 0;
+            }
             closePopup();
+            return 0;
+        }
+        if (message == WM_TIMER && wParam == kPopupOpenGuardTimer) {
+            KillTimer(hwnd, kPopupOpenGuardTimer);
+            if (g_app->popup == hwnd) {
+                g_app->popupOpening = false;
+                g_app->popupActivated = GetForegroundWindow() == hwnd;
+                if (!g_app->popupActivated && !g_app->popupOpenedByWinV) {
+                    SetTimer(hwnd, kPopupDeactivateTimer, kPopupDeactivateDelayMs, nullptr);
+                }
+            }
             return 0;
         }
         if (message == WM_TIMER && wParam == kPopupScrollTimer) {
@@ -6042,10 +6243,22 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == WM_NCACTIVATE && !wParam) {
-            if (g_app->popupPinned) return DefWindowProcW(hwnd, message, wParam, lParam);
+            if (g_app->popupPinned || g_app->popupOpenedByWinV) {
+                return DefWindowProcW(hwnd, message, wParam, lParam);
+            }
+            if (g_app->popupOpening || !g_app->popupActivated) {
+                return DefWindowProcW(hwnd, message, wParam, lParam);
+            }
             if (g_app->filterDragging || g_app->scrollDragging) return 0;
-            closePopup();
+            SetTimer(hwnd, kPopupDeactivateTimer, kPopupDeactivateDelayMs, nullptr);
             return 0;
+        }
+        if (message == WM_NCACTIVATE && wParam) {
+            KillTimer(hwnd, kPopupDeactivateTimer);
+            if (!g_app->popupOpening && GetForegroundWindow() == hwnd) {
+                g_app->popupActivated = true;
+            }
+            return DefWindowProcW(hwnd, message, wParam, lParam);
         }
         if (message == WM_COMMAND && LOWORD(wParam) == kSearchEdit &&
             HIWORD(wParam) == EN_CHANGE) {
@@ -6344,14 +6557,24 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             EndPaint(hwnd, &ps);
             return 0;
         }
+        if (message == WM_ACTIVATE &&
+            (LOWORD(wParam) == WA_ACTIVE || LOWORD(wParam) == WA_CLICKACTIVE)) {
+            KillTimer(hwnd, kPopupDeactivateTimer);
+            if (!g_app->popupOpening && GetForegroundWindow() == hwnd) {
+                g_app->popupActivated = true;
+            }
+        }
         if (message == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE) {
-            if (g_app->popupPinned) {
+            if (g_app->popupPinned || g_app->popupOpenedByWinV) {
                 const HWND target = reinterpret_cast<HWND>(lParam);
                 if (IsWindow(target) && target != hwnd) g_app->targetWindow = target;
                 return DefWindowProcW(hwnd, message, wParam, lParam);
             }
+            if (g_app->popupOpening || !g_app->popupActivated) {
+                return DefWindowProcW(hwnd, message, wParam, lParam);
+            }
             if (g_app->filterDragging) return 0;
-            closePopup();
+            SetTimer(hwnd, kPopupDeactivateTimer, kPopupDeactivateDelayMs, nullptr);
             return 0;
         }
     }
@@ -6412,6 +6635,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     appendDiagnosticLog("INFO", "startup: process initialization started");
     g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
     loadSettings(app.settingsData);
+    app.popupPinned = app.settingsData.historyWindowPinned;
     appendDiagnosticLog("INFO", "startup: settings loaded");
     app.store.setMaxItems(static_cast<std::size_t>(app.settingsData.maxItems));
     app.store.setEncryption(app.settingsData.encryptData);
@@ -6421,7 +6645,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         app.settingsData.dataDirectory.clear();
     }
     HANDLE mutex = CreateMutexW(nullptr, TRUE, L"ClipLite.SingleInstance");
-    const DWORD mutexError = GetLastError();
+    DWORD mutexError = GetLastError();
     if (!mutex) {
         appendDiagnosticLog("ERROR", "startup: single-instance lock creation failed", mutexError);
         showStartupFailure(settingsLocale().unableCreateMutex);
@@ -6430,6 +6654,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     const bool commandExit = wcsstr(commandLine, L"--exit") || wcsstr(commandLine, L"/exit");
     const bool commandHistory = wcsstr(commandLine, L"--history") || wcsstr(commandLine, L"/history");
     const bool commandSettings = wcsstr(commandLine, L"--settings") || wcsstr(commandLine, L"/settings");
+    const bool commandElevatedRestart = wcsstr(commandLine, L"--elevated-restart") != nullptr;
+    if (mutexError == ERROR_ALREADY_EXISTS && commandElevatedRestart) {
+        CloseHandle(mutex);
+        mutex = nullptr;
+        for (int attempt = 0; attempt < 50; ++attempt) {
+            Sleep(100);
+            mutex = CreateMutexW(nullptr, TRUE, L"ClipLite.SingleInstance");
+            if (!mutex) break;
+            mutexError = GetLastError();
+            if (mutexError != ERROR_ALREADY_EXISTS) break;
+            CloseHandle(mutex);
+            mutex = nullptr;
+        }
+        if (!mutex || mutexError == ERROR_ALREADY_EXISTS) {
+            appendDiagnosticLog("ERROR", "admin: elevated restart could not acquire single-instance lock");
+            if (mutex) CloseHandle(mutex);
+            return 1;
+        }
+    }
     if (mutexError == ERROR_ALREADY_EXISTS) {
         appendDiagnosticLog("INFO", "startup: existing instance received launch request");
         HWND existing = FindWindowExW(HWND_MESSAGE, nullptr, L"ClipLiteHidden", nullptr);
@@ -6444,6 +6687,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         }
         CloseHandle(mutex);
         return 0;
+    }
+    if (app.settingsData.runAsAdministrator && !processIsElevated() && !commandElevatedRestart) {
+        if (launchElevatedRestart(commandHistory ? L"--elevated-restart --history" :
+                                   (commandSettings ? L"--elevated-restart --settings" :
+                                                       L"--elevated-restart"))) {
+            ReleaseMutex(mutex);
+            CloseHandle(mutex);
+            return 0;
+        }
+        appendDiagnosticLog("WARN", "admin: continuing without administrator rights");
+        app.settingsData.runAsAdministrator = false;
+        saveSettings(app.settingsData);
     }
     if (!app.store.open()) {
         appendDiagnosticLog("ERROR", "startup: history storage open failed");
@@ -6539,6 +6794,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     UnregisterHotKey(app.hidden, kHotkeyAltV);
     UnregisterHotKey(app.hidden, kHotkeyWinV);
     if (app.keyboardHook) UnhookWindowsHookEx(app.keyboardHook);
+    if (app.popupMouseHook) UnhookWindowsHookEx(app.popupMouseHook);
     if (app.gdiplusToken != 0) Gdiplus::GdiplusShutdown(app.gdiplusToken);
     ReleaseMutex(mutex);
     CloseHandle(mutex);
