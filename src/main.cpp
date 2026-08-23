@@ -190,8 +190,16 @@ struct AppState {
     HWND settings = nullptr;
     HWND targetWindow = nullptr;
     HFONT popupFont = nullptr;
+    HFONT popupTitleFont = nullptr;
+    HFONT popupFilterFont = nullptr;
+    HFONT popupPreviewFont = nullptr;
+    HFONT popupMetaFont = nullptr;
     HFONT settingsFont = nullptr;
     HFONT settingsMultilineFont = nullptr;
+    HFONT settingsNavFont = nullptr;
+    HFONT settingsTitleFont = nullptr;
+    HFONT settingsCardTitleFont = nullptr;
+    HFONT settingsBodyFont = nullptr;
     HBRUSH popupInputBrush = nullptr;
     HBRUSH settingsBackgroundBrush = nullptr;
     HBRUSH settingsCardBrush = nullptr;
@@ -1341,7 +1349,12 @@ void invalidateSettingsNav(HWND hwnd, int tab) {
 
 void invalidatePopupList(HWND hwnd) {
     if (!hwnd) return;
-    InvalidateRect(hwnd, nullptr, FALSE);
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    RECT listRect{ui(kPopupListTop), ui(kPopupListTop), client.right,
+                  client.bottom - ui(kPopupBottomPadding)};
+    listRect.left = ui(12);
+    InvalidateRect(hwnd, &listRect, FALSE);
 }
 
 void invalidateFilterBar(HWND hwnd);
@@ -2533,6 +2546,39 @@ int settingsContentY(int logicalY) {
     return ui(logicalY) - ui(scrollable ? g_app->settingsScrollOffset : 0);
 }
 
+HFONT createCachedFont(int size, int weight, const wchar_t* face) {
+    return CreateFontW(-ui(size), 0, 0, 0, weight, FALSE, FALSE, FALSE,
+                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                       CLEARTYPE_QUALITY, DEFAULT_PITCH, face);
+}
+
+void releasePaintFonts(HFONT& first, HFONT& second, HFONT& third, HFONT& fourth) {
+    if (first) DeleteObject(first);
+    if (second) DeleteObject(second);
+    if (third) DeleteObject(third);
+    if (fourth) DeleteObject(fourth);
+    first = nullptr;
+    second = nullptr;
+    third = nullptr;
+    fourth = nullptr;
+}
+
+void createSettingsPaintFonts() {
+    if (!g_app) return;
+    g_app->settingsNavFont = createCachedFont(13, FW_NORMAL, L"Microsoft YaHei");
+    g_app->settingsTitleFont = createCachedFont(18, FW_SEMIBOLD, L"Microsoft YaHei");
+    g_app->settingsCardTitleFont = createCachedFont(13, FW_SEMIBOLD, L"Microsoft YaHei");
+    g_app->settingsBodyFont = createCachedFont(13, FW_NORMAL, L"Microsoft YaHei");
+}
+
+void createPopupPaintFonts() {
+    if (!g_app) return;
+    g_app->popupTitleFont = createCachedFont(13, FW_SEMIBOLD, L"Microsoft YaHei");
+    g_app->popupFilterFont = createCachedFont(11, FW_NORMAL, L"Microsoft YaHei");
+    g_app->popupPreviewFont = createCachedFont(13, FW_NORMAL, L"Microsoft YaHei");
+    g_app->popupMetaFont = createCachedFont(10, FW_NORMAL, L"Microsoft YaHei");
+}
+
 void paintSettingsContent(HWND hwnd, HDC dc) {
     RECT client{};
     GetClientRect(hwnd, &client);
@@ -2611,18 +2657,10 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
     drawGdiLine(dc, ui(kSettingsSidebarWidth), ui(kSettingsHeaderHeight - 1),
                 client.right, ui(kSettingsHeaderHeight - 1), line);
 
-    HFONT navFont = CreateFontW(-ui(13), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
-    HFONT titleFont = CreateFontW(-ui(18), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                  CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
-    HFONT cardTitleFont = CreateFontW(-ui(13), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                      CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
-    HFONT bodyFont = CreateFontW(-ui(13), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                 CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
+    HFONT navFont = g_app->settingsNavFont;
+    HFONT titleFont = g_app->settingsTitleFont;
+    HFONT cardTitleFont = g_app->settingsCardTitleFont;
+    HFONT bodyFont = g_app->settingsBodyFont;
     SetBkMode(dc, TRANSPARENT);
     const wchar_t* navLabels[] = {
         settingsLocale().navGeneral, settingsLocale().navShortcuts, settingsLocale().navStorage,
@@ -2888,10 +2926,6 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
         DeleteObject(debugFont);
     }
 #endif
-    DeleteObject(navFont);
-    DeleteObject(titleFont);
-    DeleteObject(cardTitleFont);
-    DeleteObject(bodyFont);
 }
 
 void paintSettings(HWND hwnd, HDC dc) {
@@ -2946,18 +2980,10 @@ void paintPopupContent(HWND hwnd, HDC dc) {
                           background, border, 8);
 
     SetBkMode(dc, TRANSPARENT);
-    HFONT titleFont = CreateFontW(-ui(13), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                  CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
-    HFONT filterFont = CreateFontW(-ui(11), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                  CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
-    HFONT previewFont = CreateFontW(-ui(13), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                    CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
-    HFONT metaFont = CreateFontW(-ui(10), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                 CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
+    HFONT titleFont = g_app->popupTitleFont;
+    HFONT filterFont = g_app->popupFilterFont;
+    HFONT previewFont = g_app->popupPreviewFont;
+    HFONT metaFont = g_app->popupMetaFont;
     RECT paintClip{};
     const int paintClipType = GetClipBox(dc, &paintClip);
     HGDIOBJ old = SelectObject(dc, titleFont);
@@ -3126,10 +3152,6 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     }
     RestoreDC(dc, listClip);
     SelectObject(dc, old);
-    DeleteObject(titleFont);
-    DeleteObject(filterFont);
-    DeleteObject(previewFont);
-    DeleteObject(metaFont);
 }
 
 void paintPopup(HWND hwnd, HDC dc, const RECT* updateRect) {
@@ -5389,6 +5411,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             g_app->settingsMultilineFont = CreateFontW(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                                        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                                        CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+            createSettingsPaintFonts();
             const bool highContrast = highContrastEnabled();
             const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW) :
                 settingsThemeColor(RGB(240, 244, 248), RGB(21, 26, 34));
@@ -5420,6 +5443,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             g_app->popupFont = CreateFontW(-ui(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                            CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+            createPopupPaintFonts();
             g_app->popupInputBrush = CreateSolidBrush(highContrastEnabled()
                 ? GetSysColor(COLOR_WINDOW)
                 : settingsThemeColor(RGB(255, 255, 255), RGB(43, 47, 54)));
@@ -5561,6 +5585,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     if (message == WM_DESTROY && hwnd == g_app->popup) {
         if (g_app->popupFont) DeleteObject(g_app->popupFont);
         if (g_app->popupInputBrush) DeleteObject(g_app->popupInputBrush);
+        releasePaintFonts(g_app->popupTitleFont, g_app->popupFilterFont,
+                          g_app->popupPreviewFont, g_app->popupMetaFont);
         g_app->popupFont = nullptr;
         g_app->popupInputBrush = nullptr;
     }
@@ -5574,6 +5600,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (g_app->settingsBackgroundBrush) DeleteObject(g_app->settingsBackgroundBrush);
         if (g_app->settingsCardBrush) DeleteObject(g_app->settingsCardBrush);
         if (g_app->settingsInputBrush) DeleteObject(g_app->settingsInputBrush);
+        releasePaintFonts(g_app->settingsNavFont, g_app->settingsTitleFont,
+                          g_app->settingsCardTitleFont, g_app->settingsBodyFont);
         g_app->settingsFont = nullptr;
         g_app->settingsMultilineFont = nullptr;
         g_app->settingsBackgroundBrush = nullptr;
