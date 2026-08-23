@@ -47,6 +47,23 @@ The values were sampled by `tools/measure.ps1` about one second after startup wh
 
 </details>
 
+## Why ClipLite
+
+ClipLite is for people who want clipboard history to be easy to find without making the computer feel slower.
+
+| Comparison | ClipLite | Common clipboard tools |
+| --- | --- | --- |
+| Background usage | Lightweight by design; about `2.5 MB` in a local idle observation | Resident usage often grows with feature scope |
+| Program size | Main executable about `446 KB` | Usually larger when bundled with runtimes or extra features |
+| Runtime | Native Win32, without WebView or a large runtime | Some tools depend on an additional runtime or framework |
+| Data control | History stays local by default, with optional DPAPI encryption | Data location and privacy policies vary |
+| Distribution | Installer and portable packages, including USB-friendly use | Usually installer-first |
+| Clipboard formats | Text, HTML, images, and file lists | Format coverage varies by tool |
+| Loading strategy | Full content and images are read on demand | Large histories may cause more reading and memory pressure |
+| Product focus | Public source, noncommercial license, focused clipboard history | Many alternatives are commercial or broader utility suites |
+
+Features and versions vary across tools. This table describes product positioning rather than a benchmark ranking under identical conditions.
+
 ## Download
 
 The Windows x64 release provides:
