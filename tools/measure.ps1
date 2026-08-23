@@ -59,7 +59,12 @@ try {
     $process = Start-Process -FilePath $resolvedExe -PassThru
     $stopwatch.Stop()
     Start-Sleep -Milliseconds $WaitMilliseconds
-    $sample = Get-Process -Id $process.Id
+    $sample = Get-Process -Id $process.Id -ErrorAction SilentlyContinue
+    if (-not $sample) {
+        $process.Refresh()
+        Write-Warning "ClipLite exited before sampling. An existing single instance may have handled the launch."
+        return
+    }
     $file = Get-Item $resolvedExe
     $gdiObjects = [ClipLiteResourceNative]::GetGuiResources($sample.Handle, 0)
     $userObjects = [ClipLiteResourceNative]::GetGuiResources($sample.Handle, 1)

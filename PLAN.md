@@ -221,4 +221,4 @@ f506adfb7bd7045981c97e60882f2bfa8e36a99c
 - GDI+、旧双缓冲主绘制函数和迁移期间的不可编译旧绘制源码已删除，目标仅保留 Direct2D/DirectWrite 主绘制路径。
 - Win+V 低级钩子已移入独立模块，异常超时、重复 Win 键、注入事件、普通 Win 组合和卸载状态均由模块清理。
 - Release 构建、CTest、窗口压力 `100/100` 和剪贴板压力 `10000/10000` 通过。
-- 当前资源测量：Direct2D 1.1 启动设置场景 Working Set `38.25 MB`、Private Bytes `24.95 MB`、Commit `24.95 MB`、CPU `546.88 ms`、句柄 `339`、GDI `20`、USER `58`；GPU Dedicated/Shared 计数器在当前环境未返回数据。尚未达到计划预算，需继续优化并在目标 Windows 版本复测。
+- 当前资源测量：Direct2D 1.1 启动设置场景 Working Set `38.07 MB`、Private Bytes `25.14 MB`、Commit `25.14 MB`、CPU `531.25 ms`、句柄 `339`、GDI `20`、USER `58`；GPU Dedicated/Shared 计数器在当前环境未返回数据。尚未达到计划预算，需继续优化并在目标 Windows 版本复测。
