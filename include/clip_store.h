@@ -1,6 +1,7 @@
 #ifndef CLIPLITE_CLIP_STORE_H
 #define CLIPLITE_CLIP_STORE_H
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -30,6 +31,12 @@ struct ClipItem {
     std::string preview;
 };
 
+struct ClipSearchSnapshot {
+    std::uint64_t revision = 0;
+    std::wstring path;
+    std::vector<ClipItem> items;
+};
+
 class ClipStore {
 public:
     explicit ClipStore(std::size_t maxItems = 1000);
@@ -54,6 +61,11 @@ public:
     bool pruneExpired(std::uint64_t timestamp);
 
     std::vector<std::size_t> search(const std::string& query) const;
+    ClipSearchSnapshot searchSnapshot() const;
+    std::uint64_t revision() const { return revision_; }
+    static std::vector<std::size_t> search(const ClipSearchSnapshot& snapshot,
+                                           const std::string& query,
+                                           const std::atomic<bool>* cancellation = nullptr);
     std::size_t findHash(std::uint64_t hash) const;
     const std::vector<ClipItem>& items() const { return items_; }
     std::size_t activeCount() const { return items_.size(); }
@@ -76,6 +88,7 @@ private:
     bool encryptionEnabled_ = false;
     std::uint32_t maxPayloadBytes_ = 32u * 1024u * 1024u;
     std::uint64_t diskBytes_ = 0;
+    std::uint64_t revision_ = 0;
     std::vector<ClipItem> items_;
 };
 

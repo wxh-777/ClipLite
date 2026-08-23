@@ -9,12 +9,15 @@
 #include "clip_store.h"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
 #include <initializer_list>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 #include <windowsx.h>
 
@@ -108,6 +111,7 @@ constexpr UINT kTrayMessage = WM_APP + 2;
 constexpr UINT kShowSettingsMessage = WM_APP + 3;
 constexpr UINT kExitMessage = WM_APP + 4;
 constexpr UINT kClosePopupMessage = WM_APP + 5;
+constexpr UINT kPopupSearchCompleteMessage = WM_APP + 6;
 constexpr UINT_PTR kExpiryTimer = 3;
 constexpr UINT_PTR kSettingsToggleTimer = 4;
 constexpr UINT_PTR kSettingsDropdownTimer = 5;
@@ -118,6 +122,7 @@ constexpr UINT_PTR kPopupScrollTimer = 9;
 constexpr UINT_PTR kPopupOpenGuardTimer = 10;
 constexpr UINT_PTR kPopupDeactivateTimer = 11;
 constexpr UINT_PTR kWinVReleaseTimer = 12;
+constexpr UINT_PTR kPopupSearchTimer = 13;
 constexpr DWORD kSettingsToggleAnimationMs = 160;
 constexpr DWORD kSettingsDropdownAnimationMs = 150;
 constexpr DWORD kSettingsThemeAnimationMs = 180;
@@ -126,6 +131,7 @@ constexpr UINT kPopupOpenGuardMs = 120;
 constexpr UINT kPopupDeactivateDelayMs = 80;
 constexpr UINT kSettingsSyncDelayMs = 300;
 constexpr UINT kSettingsActionFeedbackMs = 2400;
+constexpr UINT kPopupSearchDelayMs = 90;
 constexpr UINT kTrayId = 1;
 constexpr int kPopupFilterTop = 58;
 constexpr int kPopupFilterBottom = 82;
@@ -281,6 +287,8 @@ struct AppState {
     int filterType = 0;
     bool pinnedOnly = false;
     std::string query;
+    std::shared_ptr<std::atomic<bool>> searchCancellation;
+    std::uint64_t searchGeneration = 0;
     Settings settingsData;
     ClipStore store;
     std::vector<std::size_t> visible;
@@ -290,6 +298,13 @@ struct AppState {
 AppState* g_app = nullptr;
 UINT g_taskbarCreated = 0;
 UINT g_uiDpi = 96;
+
+struct PopupSearchResult {
+    HWND popup = nullptr;
+    std::uint64_t generation = 0;
+    std::uint64_t storeRevision = 0;
+    std::vector<std::size_t> candidates;
+};
 
 std::wstring diagnosticLogPath() {
     return clipLiteDataDirectory() + L"\\cliplite.log";
@@ -1778,11 +1793,20 @@ void drawSettingsAccentDot(HDC dc, int left, int top, int size,
     }
 }
 
-void refreshVisible() {
-    if (!g_app->popup) return;
-    const std::vector<std::size_t> candidates = g_app->store.search(g_app->query);
+void cancelPopupSearch() {
+    if (!g_app) return;
+    if (g_app->searchCancellation) {
+        g_app->searchCancellation->store(true, std::memory_order_relaxed);
+        g_app->searchCancellation.reset();
+    }
+    ++g_app->searchGeneration;
+}
+
+void applyVisibleCandidates(const std::vector<std::size_t>& candidates) {
+    if (!g_app || !g_app->popup) return;
     g_app->visible.clear();
     for (const std::size_t index : candidates) {
+        if (index >= g_app->store.items().size()) continue;
         const ClipItem& item = g_app->store.items()[index];
         const bool typeMatches = isAutomaticTypeMatch(g_app->filterType, item.type);
         if (typeMatches && (!g_app->pinnedOnly || item.pinned)) {
@@ -1803,6 +1827,38 @@ void refreshVisible() {
     KillTimer(g_app->popup, kPopupScrollTimer);
     invalidatePopupList(g_app->popup);
     invalidateFilterBar(g_app->popup);
+}
+
+void refreshVisible() {
+    if (!g_app->popup) return;
+    KillTimer(g_app->popup, kPopupSearchTimer);
+    cancelPopupSearch();
+    applyVisibleCandidates(g_app->store.search(g_app->query));
+}
+
+void startPopupSearch(HWND popup) {
+    if (!g_app || g_app->popup != popup) return;
+    cancelPopupSearch();
+    const auto cancellation = std::make_shared<std::atomic<bool>>(false);
+    g_app->searchCancellation = cancellation;
+    const HWND notifyWindow = g_app->hidden;
+    const std::uint64_t generation = g_app->searchGeneration;
+    ClipSearchSnapshot snapshot = g_app->store.searchSnapshot();
+    const std::uint64_t storeRevision = snapshot.revision;
+    const std::string query = g_app->query;
+    std::thread([notifyWindow, popup, generation, storeRevision,
+                 snapshot = std::move(snapshot), query,
+                 cancellation]() mutable {
+        std::vector<std::size_t> candidates = ClipStore::search(
+            snapshot, query, cancellation.get());
+        if (cancellation->load(std::memory_order_relaxed)) return;
+        auto* result = new PopupSearchResult{popup, generation, storeRevision,
+                                             std::move(candidates)};
+        if (!PostMessageW(notifyWindow, kPopupSearchCompleteMessage,
+                          reinterpret_cast<WPARAM>(result), 0)) {
+            delete result;
+        }
+    }).detach();
 }
 
 void animatePopupScrollTo(int target) {
@@ -3734,6 +3790,11 @@ void applyFontToChildren(HWND parent, HFONT font) {
     }
 }
 
+void invalidateThemeWindow(HWND hwnd) {
+    if (!hwnd) return;
+    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+}
+
 void refreshSettingsBrushes() {
     if (!g_app->settings) return;
     const bool highContrast = highContrastEnabled();
@@ -3838,12 +3899,9 @@ void invalidateSettingsTheme(HWND hwnd) {
     if (!hwnd) return;
     refreshSettingsBrushes();
     refreshPopupBrush();
-    for (HWND child = GetWindow(hwnd, GW_CHILD); child;
-         child = GetWindow(child, GW_HWNDNEXT)) {
-        InvalidateRect(child, nullptr, FALSE);
-    }
-    InvalidateRect(hwnd, nullptr, FALSE);
-    if (g_app->popup) InvalidateRect(g_app->popup, nullptr, FALSE);
+    invalidateThemeWindow(hwnd);
+    invalidateThemeWindow(g_app->popup);
+    invalidateThemeWindow(g_app->languageDropdown);
 }
 
 void setSettingsThemeMode(HWND hwnd, int mode) {
@@ -5507,6 +5565,21 @@ void subclassSettingsControls(HWND hwnd) {
 }
 
 LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message == kPopupSearchCompleteMessage) {
+        std::unique_ptr<PopupSearchResult> result(
+            reinterpret_cast<PopupSearchResult*>(wParam));
+        if (!result || !g_app || g_app->popup != result->popup ||
+            result->generation != g_app->searchGeneration) {
+            return 0;
+        }
+        if (result->storeRevision != g_app->store.revision()) {
+            startPopupSearch(result->popup);
+            return 0;
+        }
+        g_app->searchCancellation.reset();
+        applyVisibleCandidates(result->candidates);
+        return 0;
+    }
     if (hwnd == g_app->settings && message == WM_DRAWITEM) {
         const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
         if (item && item->CtlType == ODT_BUTTON && isSettingsToggle(GetDlgCtrlID(item->hwndItem))) {
@@ -5716,6 +5789,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
     }
     if (message == WM_DESTROY && hwnd == g_app->popup) {
+        cancelPopupSearch();
         if (g_app->popupFont) DeleteObject(g_app->popupFont);
         if (g_app->popupInputBrush) DeleteObject(g_app->popupInputBrush);
         releasePaintFonts(g_app->popupTitleFont, g_app->popupFilterFont,
@@ -5935,12 +6009,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             refreshSettingsBrushes();
             refreshPopupBrush();
-            for (HWND child = GetWindow(hwnd, GW_CHILD); child;
-                 child = GetWindow(child, GW_HWNDNEXT)) {
-                InvalidateRect(child, nullptr, FALSE);
-            }
-            InvalidateRect(hwnd, nullptr, FALSE);
-            if (g_app->popup) InvalidateRect(g_app->popup, nullptr, FALSE);
+            invalidateThemeWindow(hwnd);
+            invalidateThemeWindow(g_app->popup);
+            invalidateThemeWindow(g_app->languageDropdown);
             return 0;
         }
         if (message == WM_MOUSEWHEEL) {
@@ -6242,6 +6313,11 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             invalidatePopupList(hwnd);
             return 0;
         }
+        if (message == WM_TIMER && wParam == kPopupSearchTimer) {
+            KillTimer(hwnd, kPopupSearchTimer);
+            startPopupSearch(hwnd);
+            return 0;
+        }
         if (message == WM_NCACTIVATE && !wParam) {
             if (g_app->popupPinned || g_app->popupOpenedByWinV) {
                 return DefWindowProcW(hwnd, message, wParam, lParam);
@@ -6265,7 +6341,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             wchar_t value[512]{};
             GetWindowTextW(g_app->searchEdit, value, 512);
             g_app->query = wideToUtf8(value, std::wcslen(value));
-            refreshVisible();
+            cancelPopupSearch();
+            KillTimer(hwnd, kPopupSearchTimer);
+            SetTimer(hwnd, kPopupSearchTimer, kPopupSearchDelayMs, nullptr);
             return 0;
         }
         if (message == WM_KEYDOWN) {

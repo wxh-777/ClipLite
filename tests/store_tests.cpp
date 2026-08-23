@@ -103,6 +103,17 @@ int main() {
     if (unicode.search(u8"贴板").size() != 1) return 39;
     unicode.clear();
 
+    ClipStore streamedSearch(10);
+    streamedSearch.open();
+    streamedSearch.clear();
+    std::string streamedPayload(64 * 1024 - 3, 'x');
+    streamedPayload += "Needle";
+    streamedPayload += std::string(32, 'y');
+    if (!streamedSearch.append(ClipType::Text, streamedPayload,
+                              clipLiteHash(streamedPayload)) ||
+        streamedSearch.search("NEEDLE").size() != 1) return 60;
+    streamedSearch.clear();
+
     if (!store.append(ClipType::Text, "older", clipLiteHash("older"))) return 9;
     if (!store.append(ClipType::Text, "newer", clipLiteHash("newer"))) return 10;
     ClipStore reopened(10);
