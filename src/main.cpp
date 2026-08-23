@@ -6017,7 +6017,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (g_app->popupPinned) {
                 const HWND target = GetForegroundWindow();
                 if (IsWindow(target) && target != hwnd) g_app->targetWindow = target;
-                return 0;
+                return DefWindowProcW(hwnd, message, wParam, lParam);
             }
             if (g_app->filterDragging || g_app->scrollDragging) return 0;
             closePopup();
@@ -6042,7 +6042,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == WM_NCACTIVATE && !wParam) {
-            if (g_app->popupPinned) return 0;
+            if (g_app->popupPinned) return DefWindowProcW(hwnd, message, wParam, lParam);
             if (g_app->filterDragging || g_app->scrollDragging) return 0;
             closePopup();
             return 0;
@@ -6348,7 +6348,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (g_app->popupPinned) {
                 const HWND target = reinterpret_cast<HWND>(lParam);
                 if (IsWindow(target) && target != hwnd) g_app->targetWindow = target;
-                return 0;
+                return DefWindowProcW(hwnd, message, wParam, lParam);
             }
             if (g_app->filterDragging) return 0;
             closePopup();
@@ -6360,7 +6360,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 
 void openSettings() {
     if (g_app->settings) {
+        SetWindowPos(g_app->settings, HWND_TOP, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         SetForegroundWindow(g_app->settings);
+        SetActiveWindow(g_app->settings);
         return;
     }
     POINT cursor{};
@@ -6394,7 +6397,10 @@ void openSettings() {
     }
     ShowWindow(g_app->settings, SW_SHOW);
     UpdateWindow(g_app->settings);
+    SetWindowPos(g_app->settings, HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     SetForegroundWindow(g_app->settings);
+    SetActiveWindow(g_app->settings);
 }
 
 } // namespace
