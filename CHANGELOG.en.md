@@ -29,6 +29,7 @@ The first stable Windows x64 release of ClipLite, including installer and portab
 - Added UI screenshots and bilingual documentation.
 - Added a measured Windows x64 Release baseline for memory, startup time, GDI/USER resources, and executable size to both READMEs.
 - Added a user-facing positioning comparison covering lightweight usage, native runtime, local-first data, portability, and clipboard format support.
+- Added the project motivation to both READMEs: conserve storage and memory as AI applications increase resource demand.
 - Unified the CMake, Windows resource, installer, package script, about page, and HTML prototype version to `1.0.0`.
 
 ### Verification

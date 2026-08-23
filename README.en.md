@@ -6,6 +6,12 @@ Current release: **1.0.0** (Windows x64)
 
 中文文档：[README.md](README.md)
 
+## Why ClipLite Exists
+
+As AI applications continue to grow, storage costs keep rising and memory and device resources are becoming more valuable. Many desktop tools consume a large amount of space and memory even when they are only sitting in the background.
+
+ClipLite was designed to be more restrained: keep the program small, use less memory in the background, and read history only when it is needed. Every resource saved can remain available for the applications and work that matter.
+
 ## Features
 
 - Open clipboard history with `Alt+V`, with an optional `Win+V` replacement mode.
