@@ -3,8 +3,33 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <cstring>
 #include <io.h>
 #include <string>
+#include <vector>
+
+#pragma pack(push, 1)
+struct TestDiskHeader {
+    std::uint32_t magic;
+    std::uint16_t version;
+    std::uint8_t type;
+    std::uint8_t flags;
+    std::uint64_t timestamp;
+    std::uint64_t hash;
+    std::uint32_t category;
+    std::uint32_t payloadSize;
+    std::uint32_t payloadCrc;
+    std::uint32_t sourceSize;
+    std::uint32_t sourceCrc;
+    std::uint64_t expiresAt;
+};
+
+struct TestStoredHtmlHeader {
+    std::uint32_t magic;
+    std::uint32_t textSize;
+    std::uint32_t htmlSize;
+};
+#pragma pack(pop)
 
 struct TestDataScope {
     std::wstring path;
@@ -103,6 +128,21 @@ int main() {
     if (unicode.search(u8"贴板").size() != 1) return 39;
     unicode.clear();
 
+    const std::string visibleHtmlText = "personal token";
+    const std::string hiddenHtml = "<p>personal token</p><span data-offset=\"23\"></span>";
+    const TestStoredHtmlHeader htmlHeader{0x314D5448,
+                                          static_cast<std::uint32_t>(visibleHtmlText.size()),
+                                          static_cast<std::uint32_t>(hiddenHtml.size())};
+    std::string searchableHtml(reinterpret_cast<const char*>(&htmlHeader), sizeof(htmlHeader));
+    searchableHtml += visibleHtmlText;
+    searchableHtml += hiddenHtml;
+    ClipStore htmlSearch(10);
+    htmlSearch.open();
+    htmlSearch.clear();
+    if (!htmlSearch.append(ClipType::Html, searchableHtml, clipLiteHash(searchableHtml)) ||
+        htmlSearch.search("personal").size() != 1 || htmlSearch.search("23").size() != 0) return 83;
+    htmlSearch.clear();
+
     ClipStore streamedSearch(10);
     streamedSearch.open();
     streamedSearch.clear();
@@ -193,6 +233,88 @@ int main() {
         !textCategory.append(ClipType::Html, "<b>rich</b>", clipLiteHash("<b>rich</b>"))) return 57;
     if (textCategory.countType(ClipType::Text) != 2) return 58;
     if (!textCategory.clearType(ClipType::Text) || textCategory.activeCount() != 0) return 59;
+
+    ClipStore merged(10);
+    merged.open();
+    merged.clear();
+    const std::uint64_t sameTextHash = clipLiteHash("same text");
+    if (!merged.appendOrUpdate(ClipType::Text, "same text", sameTextHash, "Editor")) return 61;
+    if (!merged.appendOrUpdate(ClipType::Text, "same text", sameTextHash, {})) return 62;
+    if (merged.activeCount() != 1 || merged.items()[0].source != "Editor") return 63;
+    if (!merged.appendOrUpdate(ClipType::Html, "<b>same text</b>", sameTextHash, "Browser") ||
+        merged.activeCount() != 1 || merged.items()[0].type != ClipType::Html) return 64;
+    if (!merged.readPayload(0, restored) || restored != "<b>same text</b>") return 65;
+    if (!merged.appendOrUpdate(ClipType::Text, "different", clipLiteHash("different"), "Other") ||
+        merged.activeCount() != 2) return 66;
+    ClipStore mergedReopened(10);
+    if (!mergedReopened.open() || mergedReopened.activeCount() != 2 ||
+        mergedReopened.items()[0].type != ClipType::Text ||
+        mergedReopened.items()[1].type != ClipType::Html) return 67;
+    mergedReopened.clear();
+    merged.clear();
+
+    ClipStore ordering(10);
+    ordering.open();
+    ordering.clear();
+    if (!ordering.append(ClipType::Text, "first", clipLiteHash("first")) ||
+        !ordering.append(ClipType::Text, "second", clipLiteHash("second")) ||
+        !ordering.append(ClipType::Text, "third", clipLiteHash("third")) ||
+        ordering.items()[0].preview != "third") return 68;
+    if (!ordering.togglePinned(0)) return 69;
+    ClipStore orderingReopened(10);
+    if (!orderingReopened.open() || orderingReopened.items().size() != 3 ||
+        orderingReopened.items()[0].preview != "third" ||
+        orderingReopened.items()[1].preview != "second" ||
+        orderingReopened.items()[2].preview != "first") return 70;
+    if (!orderingReopened.appendOrUpdate(ClipType::Text, "second", clipLiteHash("second")) ||
+        orderingReopened.items()[0].preview != "second" ||
+        orderingReopened.items()[1].preview != "third" ||
+        orderingReopened.items()[2].preview != "first") return 71;
+    ClipStore orderingReopenedAgain(10);
+    if (!orderingReopenedAgain.open() || orderingReopenedAgain.items().size() != 3 ||
+        orderingReopenedAgain.items()[0].preview != "second" ||
+        orderingReopenedAgain.items()[1].preview != "third" ||
+        orderingReopenedAgain.items()[2].preview != "first") return 72;
+    orderingReopenedAgain.clear();
+    orderingReopened.clear();
+    ordering.clear();
+
+    ClipStore legacyOrdering(10);
+    legacyOrdering.open();
+    legacyOrdering.clear();
+    if (!legacyOrdering.append(ClipType::Text, "older", clipLiteHash("older"))) return 73;
+    Sleep(1100);
+    if (!legacyOrdering.append(ClipType::Text, "newer", clipLiteHash("newer"))) return 74;
+    std::FILE* legacyFile = nullptr;
+    _wfopen_s(&legacyFile, legacyOrdering.path().c_str(), L"rb");
+    if (!legacyFile) return 75;
+    if (_fseeki64(legacyFile, 0, SEEK_END) != 0) return 76;
+    const __int64 legacySize = _ftelli64(legacyFile);
+    if (legacySize <= static_cast<__int64>(sizeof(TestDiskHeader)) ||
+        _fseeki64(legacyFile, 0, SEEK_SET) != 0) return 77;
+    std::vector<char> legacyBytes(static_cast<std::size_t>(legacySize));
+    if (std::fread(legacyBytes.data(), 1, legacyBytes.size(), legacyFile) != legacyBytes.size()) return 78;
+    std::fclose(legacyFile);
+    TestDiskHeader firstHeader{};
+    TestDiskHeader secondHeader{};
+    std::memcpy(&firstHeader, legacyBytes.data(), sizeof(firstHeader));
+    const std::size_t firstSize = sizeof(firstHeader) + firstHeader.sourceSize + firstHeader.payloadSize;
+    if (firstSize >= legacyBytes.size()) return 79;
+    std::memcpy(&secondHeader, legacyBytes.data() + firstSize, sizeof(secondHeader));
+    const std::size_t secondSize = sizeof(secondHeader) + secondHeader.sourceSize + secondHeader.payloadSize;
+    if (firstSize + secondSize != legacyBytes.size()) return 80;
+    std::vector<char> reversedBytes;
+    reversedBytes.insert(reversedBytes.end(), legacyBytes.begin() + firstSize, legacyBytes.end());
+    reversedBytes.insert(reversedBytes.end(), legacyBytes.begin(), legacyBytes.begin() + firstSize);
+    _wfopen_s(&legacyFile, legacyOrdering.path().c_str(), L"wb");
+    if (!legacyFile || std::fwrite(reversedBytes.data(), 1, reversedBytes.size(), legacyFile) != reversedBytes.size() ||
+        std::fclose(legacyFile) != 0) return 81;
+    ClipStore repairedOrdering(10);
+    if (!repairedOrdering.open() || repairedOrdering.items().size() != 2 ||
+        repairedOrdering.items()[0].preview != "newer" ||
+        repairedOrdering.items()[1].preview != "older") return 82;
+    repairedOrdering.clear();
+    legacyOrdering.clear();
 
     ClipStore pressure(10000);
     pressure.open();

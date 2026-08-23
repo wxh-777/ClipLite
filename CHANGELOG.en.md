@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.1] - 2026-08-24
+
+Fixes duplicate text records caused by staged clipboard notifications and hardens malformed clipboard input, storage failure paths, and search task lifetime handling.
+
+### Fixes and Verification
+
+- Plain text and HTML now share a stable semantic hash, preserving richer HTML and promoting the record to the front; self-written paste data remains filtered.
+- DIB/DIBV5 validation now checks headers, compression, palettes, stride, pixel length, and integer bounds, with the same validation used by previews.
+- Clipboard restoration checks `GlobalLock`, `SetClipboardData`, and ownership transfer; append, rebuild, rekey, and settings writes preserve the previous data on failure.
+- Search is limited to one cancellable task per popup and is joined during close; settings now use temporary-file writes followed by atomic replacement.
+- Fixed history order reversal after rebuilds, rekeying, and duplicate-record updates followed by restart.
+- Fixed HTML searches matching internal format headers, HTML attributes, or offset numbers instead of visible text.
+- x64 Release and isolated `ClipLiteStore` CTest pass; storage tests cover duplicate text, HTML enrichment, and restart ordering.
+
 ## [1.0.0] - 2026-08-23
 
 The first stable Windows x64 release of ClipLite, including installer and portable packages.

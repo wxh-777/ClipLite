@@ -50,6 +50,8 @@ public:
     bool open();
     bool append(ClipType type, const std::string& payload, std::uint64_t hash,
                 const std::string& source = {}, std::uint64_t expiresAt = 0);
+    bool appendOrUpdate(ClipType type, const std::string& payload, std::uint64_t hash,
+                        const std::string& source = {}, std::uint64_t expiresAt = 0);
     bool readPayload(std::size_t index, std::string& payload) const;
     bool remove(std::size_t index);
     bool togglePinned(std::size_t index);
@@ -75,10 +77,7 @@ public:
     const std::wstring& path() const { return path_; }
 
 private:
-    struct DiskRecord;
-
     bool rebuildFile();
-    bool loadRecord(std::uint64_t offset, ClipItem& item) const;
     bool writeRecord(std::FILE* file, const ClipItem& item, const std::string& payload) const;
     static std::string makePreview(ClipType type, const std::string& payload);
     static bool containsIgnoreCase(const std::string& text, const std::string& query);

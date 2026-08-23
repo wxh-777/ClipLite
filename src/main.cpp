@@ -14,8 +14,11 @@
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <cstdlib>
 #include <initializer_list>
+#include <limits>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -115,6 +118,7 @@ constexpr UINT kExitMessage = WM_APP + 4;
 constexpr UINT kClosePopupMessage = WM_APP + 5;
 constexpr UINT kPopupSearchCompleteMessage = WM_APP + 6;
 constexpr UINT_PTR kExpiryTimer = 3;
+constexpr UINT_PTR kClipboardCaptureTimer = 7;
 constexpr UINT_PTR kSettingsToggleTimer = 4;
 constexpr UINT_PTR kSettingsDropdownTimer = 5;
 constexpr UINT_PTR kSettingsSyncTimer = 6;
@@ -296,11 +300,14 @@ struct AppState {
     bool pinnedOnly = false;
     std::string query;
     std::shared_ptr<std::atomic<bool>> searchCancellation;
+    std::thread searchWorker;
     std::uint64_t searchGeneration = 0;
     Settings settingsData;
     ClipStore store;
     std::vector<std::size_t> visible;
     std::uint64_t ignoredClipboardHash = 0;
+    std::uint64_t ignoredClipboardTextHash = 0;
+    ULONGLONG ignoredClipboardUntil = 0;
 };
 
 struct SupportWindowState {
@@ -582,7 +589,7 @@ const SettingsLocale kEnglishSettingsLocale{
     L"Some shortcuts could not be registered. Choose different combinations.",
     L"Custom shortcuts require at least one modifier key.",
     L"Sensitive markers: password, token, api_key, secret, and private keys; detected by content pattern.",
-     L"Application    ClipLite", L"Version        1.0.0 x64", L"Storage format  v4",
+     L"Application    ClipLite", L"Version        1.0.1 x64", L"Storage format  v4",
     L"Data directory  %LOCALAPPDATA%\\ClipLite", L"Browse", L"Clear history", L"Clear text",
     L"Clear images", L"Clear files", L"Press shortcut", L"Need modifier", L"One application per line", L"Auto",
     L"ClipLite Settings", L"Choose a valid cache directory.", L"Unable to create the cache directory.",
@@ -624,7 +631,7 @@ const SettingsLocale kChineseSettingsLocale{
     L"当前 %zu 条 \xB7 %ls", L"设置为 0 表示不限；置顶记录不会被自动清理。",
     L"部分快捷键注册失败，请更换组合键。", L"自定义快捷键至少需要一个修饰键。",
     L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。",
-     L"应用名称    ClipLite", L"版本        1.0.0 x64", L"存储格式    v4",
+     L"应用名称    ClipLite", L"版本        1.0.1 x64", L"存储格式    v4",
     L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清空历史", L"清理文本", L"清理图片",
     L"清理文件", L"按下组合键", L"需要修饰键", L"每行一个应用名称", L"自动", L"ClipLite 设置",
     L"请选择有效的缓存目录。", L"无法创建缓存目录。", L"目标目录已有历史数据，请选择空目录。",
@@ -864,65 +871,71 @@ void loadSettings(Settings& settings) {
 }
 
 void saveSettings(const Settings& settings) {
+    std::ostringstream output;
+    output << "winV=" << (settings.winV ? 1 : 0) << "\n"
+           << "dark=" << (settings.dark ? 1 : 0) << "\n"
+           << "themeMode=" << settings.themeMode << "\n"
+           << "accent=" << settings.accent << "\n"
+           << "pauseMonitoring=" << (settings.pauseMonitoring ? 1 : 0) << "\n"
+           << "startWithWindows=" << (settings.startWithWindows ? 1 : 0) << "\n"
+           << "showSettingsOnStartup=" << (settings.showSettingsOnStartup ? 1 : 0) << "\n"
+           << "showStartupNotification=" << (settings.showStartupNotification ? 1 : 0) << "\n"
+           << "historyWindowPinned=" << (settings.historyWindowPinned ? 1 : 0) << "\n"
+           << "runAsAdministrator=" << (settings.runAsAdministrator ? 1 : 0) << "\n"
+           << "encryptData=" << (settings.encryptData ? 1 : 0) << "\n"
+           << "maxItems=" << settings.maxItems << "\n"
+           << "retentionDays=" << settings.retentionDays << "\n"
+           << "maxDiskMb=" << settings.maxDiskMb << "\n"
+           << "maxContentMb=" << settings.maxContentMb << "\n"
+           << "dataDirectory=" << settings.dataDirectory << "\n"
+           << "sensitiveExpiryHours=" << settings.sensitiveExpiryHours << "\n"
+           << "language=" << settings.language << "\n"
+           << "shortcutHistoryModifiers=" << settings.historyHotkey.modifiers << "\n"
+           << "shortcutHistoryKey=" << settings.historyHotkey.virtualKey << "\n"
+           << "shortcutSettingsModifiers=" << settings.settingsHotkey.modifiers << "\n"
+           << "shortcutSettingsKey=" << settings.settingsHotkey.virtualKey << "\n"
+           << "shortcutPauseModifiers=" << settings.pauseHotkey.modifiers << "\n"
+           << "shortcutPauseKey=" << settings.pauseHotkey.virtualKey << "\n"
+           << "shortcutPopupPasteModifiers=" << settings.popupPasteHotkey.modifiers << "\n"
+           << "shortcutPopupPasteKey=" << settings.popupPasteHotkey.virtualKey << "\n"
+           << "shortcutPopupPlainPasteModifiers=" << settings.popupPlainPasteHotkey.modifiers << "\n"
+           << "shortcutPopupPlainPasteKey=" << settings.popupPlainPasteHotkey.virtualKey << "\n"
+           << "shortcutPopupRichPasteModifiers=" << settings.popupRichPasteHotkey.modifiers << "\n"
+           << "shortcutPopupRichPasteKey=" << settings.popupRichPasteHotkey.virtualKey << "\n"
+           << "shortcutPopupCloseModifiers=" << settings.popupCloseHotkey.modifiers << "\n"
+           << "shortcutPopupCloseKey=" << settings.popupCloseHotkey.virtualKey << "\n"
+           << "shortcutPopupSettingsModifiers=" << settings.popupSettingsHotkey.modifiers << "\n"
+           << "shortcutPopupSettingsKey=" << settings.popupSettingsHotkey.virtualKey << "\n"
+           << "shortcutPopupClearFilterModifiers=" << settings.popupClearFilterHotkey.modifiers << "\n"
+           << "shortcutPopupClearFilterKey=" << settings.popupClearFilterHotkey.virtualKey << "\n"
+           << "shortcutPopupDeleteModifiers=" << settings.popupDeleteHotkey.modifiers << "\n"
+           << "shortcutPopupDeleteKey=" << settings.popupDeleteHotkey.virtualKey << "\n";
+    for (const std::string& app : settings.ignoredApps) output << "ignoredApp=" << app << "\n";
+    for (int i = 0; i < 4; ++i) {
+        output << "category" << i << "=" << settings.categories[static_cast<std::size_t>(i)] << "\n";
+        if (i < kStorageCategoryCount) {
+            const CategoryLimit& limit = settings.categoryLimits[static_cast<std::size_t>(i)];
+            output << "categoryMaxItems" << i << "=" << limit.maxItems << "\n"
+                   << "categoryMaxDiskMb" << i << "=" << limit.maxDiskMb << "\n";
+        }
+    }
+    const std::string contents = output.str();
+    const std::wstring tempPath = settingsPath() + L".tmp";
     std::FILE* file = nullptr;
-    _wfopen_s(&file, settingsPath().c_str(), L"wb");
+    _wfopen_s(&file, tempPath.c_str(), L"wb");
     if (!file) {
         appendDiagnosticLog("ERROR", "settings: unable to write settings file", GetLastError());
         return;
     }
-    std::fprintf(file, "winV=%d\ndark=%d\nthemeMode=%d\naccent=%d\n"
-                         "pauseMonitoring=%d\nstartWithWindows=%d\n"
-                         "showSettingsOnStartup=%d\nshowStartupNotification=%d\n"
-                         "historyWindowPinned=%d\n"
-                         "runAsAdministrator=%d\n"
-                         "encryptData=%d\n"
-                        "maxItems=%d\nretentionDays=%d\nmaxDiskMb=%d\nmaxContentMb=%d\n"
-                        "dataDirectory=%s\n"
-                        "sensitiveExpiryHours=%d\nlanguage=%d\n"
-                         "shortcutHistoryModifiers=%u\nshortcutHistoryKey=%u\n"
-                         "shortcutSettingsModifiers=%u\nshortcutSettingsKey=%u\n"
-                         "shortcutPauseModifiers=%u\nshortcutPauseKey=%u\n"
-                         "shortcutPopupPasteModifiers=%u\nshortcutPopupPasteKey=%u\n"
-                         "shortcutPopupPlainPasteModifiers=%u\nshortcutPopupPlainPasteKey=%u\n"
-                         "shortcutPopupRichPasteModifiers=%u\nshortcutPopupRichPasteKey=%u\n"
-                         "shortcutPopupCloseModifiers=%u\nshortcutPopupCloseKey=%u\n"
-                         "shortcutPopupSettingsModifiers=%u\nshortcutPopupSettingsKey=%u\n"
-                         "shortcutPopupClearFilterModifiers=%u\nshortcutPopupClearFilterKey=%u\n"
-                         "shortcutPopupDeleteModifiers=%u\nshortcutPopupDeleteKey=%u\n",
-                  settings.winV ? 1 : 0, settings.dark ? 1 : 0,
-                  settings.themeMode, settings.accent,
-                   settings.pauseMonitoring ? 1 : 0, settings.startWithWindows ? 1 : 0,
-                   settings.showSettingsOnStartup ? 1 : 0,
-                   settings.showStartupNotification ? 1 : 0,
-                   settings.historyWindowPinned ? 1 : 0,
-                   settings.runAsAdministrator ? 1 : 0,
-                   settings.encryptData ? 1 : 0,
-                  settings.maxItems,
-                   settings.retentionDays, settings.maxDiskMb, settings.maxContentMb,
-                   settings.dataDirectory.c_str(),
-                    settings.sensitiveExpiryHours, settings.language,
-                    settings.historyHotkey.modifiers, settings.historyHotkey.virtualKey,
-                    settings.settingsHotkey.modifiers, settings.settingsHotkey.virtualKey,
-                    settings.pauseHotkey.modifiers, settings.pauseHotkey.virtualKey,
-                    settings.popupPasteHotkey.modifiers, settings.popupPasteHotkey.virtualKey,
-                    settings.popupPlainPasteHotkey.modifiers, settings.popupPlainPasteHotkey.virtualKey,
-                    settings.popupRichPasteHotkey.modifiers, settings.popupRichPasteHotkey.virtualKey,
-                    settings.popupCloseHotkey.modifiers, settings.popupCloseHotkey.virtualKey,
-                    settings.popupSettingsHotkey.modifiers, settings.popupSettingsHotkey.virtualKey,
-                    settings.popupClearFilterHotkey.modifiers, settings.popupClearFilterHotkey.virtualKey,
-                    settings.popupDeleteHotkey.modifiers, settings.popupDeleteHotkey.virtualKey);
-    for (const std::string& app : settings.ignoredApps) {
-        std::fprintf(file, "ignoredApp=%s\n", app.c_str());
+    const bool written = std::fwrite(contents.data(), 1, contents.size(), file) == contents.size();
+    const bool flushed = written && std::fflush(file) == 0;
+    const bool closed = std::fclose(file) == 0;
+    if (!written || !flushed || !closed ||
+        !MoveFileExW(tempPath.c_str(), settingsPath().c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(tempPath.c_str());
+        appendDiagnosticLog("ERROR", "settings: atomic replace failed", GetLastError());
     }
-    for (int i = 0; i < 4; ++i) {
-        std::fprintf(file, "category%d=%s\n", i, settings.categories[static_cast<std::size_t>(i)].c_str());
-        if (i < kStorageCategoryCount) {
-            const CategoryLimit& limit = settings.categoryLimits[static_cast<std::size_t>(i)];
-            std::fprintf(file, "categoryMaxItems%d=%d\ncategoryMaxDiskMb%d=%d\n",
-                         i, limit.maxItems, i, limit.maxDiskMb);
-        }
-    }
-    std::fclose(file);
 }
 
 bool processIsElevated() {
@@ -1097,14 +1110,24 @@ bool splitStoredHtml(const std::string& payload, std::string& text, std::string&
     StoredHtmlHeader header{};
     std::memcpy(&header, payload.data(), sizeof(header));
     const std::size_t dataOffset = sizeof(header);
-    const std::size_t total = static_cast<std::size_t>(header.textSize) + header.htmlSize;
-    if (header.magic != kStoredHtmlMagic || total != payload.size() - dataOffset) {
+    const std::size_t contentSize = payload.size() - dataOffset;
+    if (header.magic != kStoredHtmlMagic || header.textSize > contentSize ||
+        header.htmlSize > contentSize - header.textSize ||
+        static_cast<std::size_t>(header.textSize) + header.htmlSize != contentSize) {
         html = payload;
         return !html.empty();
     }
     text.assign(payload.data() + dataOffset, header.textSize);
     html.assign(payload.data() + dataOffset + header.textSize, header.htmlSize);
     return !html.empty();
+}
+
+std::uint64_t clipboardDedupHash(ClipType type, const std::string& payload) {
+    if (type != ClipType::Html) return clipLiteHash(payload);
+    std::string text;
+    std::string html;
+    if (splitStoredHtml(payload, text, html) && !text.empty()) return clipLiteHash(text);
+    return clipLiteHash(payload);
 }
 
 bool openClipboardWithRetry() {
@@ -1115,23 +1138,64 @@ bool openClipboardWithRetry() {
     return false;
 }
 
-bool isValidDibPayload(const std::string& payload) {
+struct DibLayout {
+    std::size_t bitsOffset = 0;
+    std::size_t rowBytes = 0;
+    std::size_t pixelBytes = 0;
+};
+
+bool validateDibPayload(const std::string& payload, DibLayout* layout) {
     if (payload.size() < sizeof(BITMAPINFOHEADER)) return false;
     BITMAPINFOHEADER header{};
     std::memcpy(&header, payload.data(), sizeof(header));
-    if (header.biSize < sizeof(BITMAPINFOHEADER) || header.biSize > payload.size() ||
-        header.biWidth <= 0 || header.biHeight == 0 || header.biPlanes != 1 ||
-        header.biBitCount == 0 || header.biBitCount > 32 ||
-        header.biWidth > 10000 || header.biHeight < -10000 || header.biHeight > 10000) {
+    if (header.biSize < sizeof(BITMAPINFOHEADER) || header.biSize > sizeof(BITMAPV5HEADER) ||
+        header.biSize > payload.size() || header.biWidth <= 0 || header.biHeight == 0 ||
+        header.biHeight == std::numeric_limits<LONG>::min() || header.biPlanes != 1 ||
+        header.biWidth > 10000 || std::llabs(static_cast<long long>(header.biHeight)) > 10000) {
         return false;
     }
-    std::size_t colorEntries = header.biBitCount <= 8
-        ? (std::size_t{1} << header.biBitCount) : 0;
-    if (header.biCompression == BI_BITFIELDS && header.biSize == sizeof(BITMAPINFOHEADER)) {
-        colorEntries = 3;
+    if (header.biBitCount != 1 && header.biBitCount != 4 && header.biBitCount != 8 &&
+        header.biBitCount != 16 && header.biBitCount != 24 && header.biBitCount != 32) {
+        return false;
     }
-    const std::size_t bitsOffset = header.biSize + colorEntries * sizeof(RGBQUAD);
-    return bitsOffset < payload.size();
+    const bool bitfields = header.biCompression == BI_BITFIELDS;
+    constexpr DWORD kBiAlphaBitfields = 6;
+    const bool alphaBitfields = header.biCompression == kBiAlphaBitfields;
+    if (header.biCompression != BI_RGB && !bitfields && !alphaBitfields) return false;
+    if ((bitfields || alphaBitfields) && header.biBitCount != 16 && header.biBitCount != 32) {
+        return false;
+    }
+    if (alphaBitfields && header.biSize < sizeof(BITMAPV5HEADER)) return false;
+    const std::size_t paletteCount = header.biBitCount <= 8
+        ? (header.biClrUsed == 0 ? (std::size_t{1} << header.biBitCount) : header.biClrUsed) : 0;
+    if (paletteCount > 256) return false;
+    const std::size_t maskBytes = (bitfields || alphaBitfields) &&
+        header.biSize == sizeof(BITMAPINFOHEADER) ? (alphaBitfields ? 16 : 12) : 0;
+    if (paletteCount > (std::numeric_limits<std::size_t>::max() - header.biSize) / sizeof(RGBQUAD)) {
+        return false;
+    }
+    const std::size_t paletteBytes = paletteCount * sizeof(RGBQUAD);
+    if (maskBytes > std::numeric_limits<std::size_t>::max() - header.biSize - paletteBytes) {
+        return false;
+    }
+    const std::size_t bitsOffset = header.biSize + paletteBytes + maskBytes;
+    const std::uint64_t bitsPerRow = static_cast<std::uint64_t>(header.biWidth) * header.biBitCount;
+    const std::uint64_t rowBytes = ((bitsPerRow + 31u) / 32u) * 4u;
+    const std::uint64_t pixelBytes = rowBytes * static_cast<std::uint64_t>(
+        std::llabs(static_cast<long long>(header.biHeight)));
+    if (rowBytes == 0 || pixelBytes > std::numeric_limits<std::size_t>::max() ||
+        bitsOffset > payload.size() || pixelBytes > payload.size() - bitsOffset ||
+        (header.biSizeImage != 0 && header.biSizeImage < pixelBytes)) return false;
+    if (layout) {
+        layout->bitsOffset = bitsOffset;
+        layout->rowBytes = static_cast<std::size_t>(rowBytes);
+        layout->pixelBytes = static_cast<std::size_t>(pixelBytes);
+    }
+    return true;
+}
+
+bool isValidDibPayload(const std::string& payload) {
+    return validateDibPayload(payload, nullptr);
 }
 
 bool captureClipboard(ClipType& type, std::string& payload, std::string& source) {
@@ -1243,7 +1307,10 @@ bool captureClipboard(ClipType& type, std::string& payload, std::string& source)
 bool setClipboardDataForItem(const ClipItem& item, const std::string& payload,
                              PasteMode mode = PasteMode::Automatic) {
     if (!openClipboardWithRetry()) return false;
-    EmptyClipboard();
+    if (!EmptyClipboard()) {
+        CloseClipboard();
+        return false;
+    }
     HGLOBAL memory = nullptr;
     bool ok = false;
 
@@ -1286,11 +1353,15 @@ bool setClipboardDataForItem(const ClipItem& item, const std::string& payload,
         memory = GlobalAlloc(GMEM_MOVEABLE, payload.size());
         if (memory) {
             void* destination = GlobalLock(memory);
-            std::memcpy(destination, payload.data(), payload.size());
-            GlobalUnlock(memory);
-            const UINT format = item.type == ClipType::ImageV5 ? CF_DIBV5 : CF_DIB;
-            if (SetClipboardData(format, memory)) ok = true;
-            else GlobalFree(memory);
+            if (!destination) {
+                GlobalFree(memory);
+            } else {
+                std::memcpy(destination, payload.data(), payload.size());
+                GlobalUnlock(memory);
+                const UINT format = item.type == ClipType::ImageV5 ? CF_DIBV5 : CF_DIB;
+                if (SetClipboardData(format, memory)) ok = true;
+                else GlobalFree(memory);
+            }
         }
     } else if (item.type == ClipType::Html) {
         std::string plainText;
@@ -1310,13 +1381,17 @@ bool setClipboardDataForItem(const ClipItem& item, const std::string& payload,
         memory = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes);
         if (memory) {
             auto* drop = static_cast<DROPFILES*>(GlobalLock(memory));
-            drop->pFiles = sizeof(DROPFILES);
-            drop->fWide = TRUE;
-            std::memcpy(reinterpret_cast<char*>(drop) + sizeof(DROPFILES), paths.c_str(),
-                        (paths.size() + 1) * sizeof(wchar_t));
-            GlobalUnlock(memory);
-            if (SetClipboardData(CF_HDROP, memory)) ok = true;
-            else GlobalFree(memory);
+            if (!drop) {
+                GlobalFree(memory);
+            } else {
+                drop->pFiles = sizeof(DROPFILES);
+                drop->fWide = TRUE;
+                std::memcpy(reinterpret_cast<char*>(drop) + sizeof(DROPFILES), paths.c_str(),
+                            (paths.size() + 1) * sizeof(wchar_t));
+                GlobalUnlock(memory);
+                if (SetClipboardData(CF_HDROP, memory)) ok = true;
+                else GlobalFree(memory);
+            }
         }
     }
     CloseClipboard();
@@ -1788,7 +1863,7 @@ void drawSettingsThemeIcon(HDC dc, int mode, int centerX, int centerY, COLORREF 
 
 void drawSettingsAccentDot(HDC dc, int left, int top, int size,
                            COLORREF color, bool selected, COLORREF ringColor) {
-    if (g_app && g_app->gdiplusToken != 0) {
+    if (!g_app || g_app->gdiplusToken == 0) return;
         auto makeColor = [](COLORREF value) {
             return Gdiplus::Color(255, GetRValue(value), GetGValue(value), GetBValue(value));
         };
@@ -1809,33 +1884,15 @@ void drawSettingsAccentDot(HDC dc, int left, int top, int size,
                                          static_cast<float>(size) + 3.0f);
             graphics.DrawEllipse(&ring, outline);
         }
-        return;
-    }
-
-    HBRUSH brush = CreateSolidBrush(color);
-    HGDIOBJ oldBrush = SelectObject(dc, brush);
-    HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
-    Ellipse(dc, left, top, left + size, top + size);
-    SelectObject(dc, oldPen);
-    SelectObject(dc, oldBrush);
-    DeleteObject(brush);
-    if (selected) {
-        HPEN ring = CreatePen(PS_SOLID, ui(1), ringColor);
-        oldPen = SelectObject(dc, ring);
-        oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-        Ellipse(dc, left - ui(2), top - ui(2), left + size + ui(2), top + size + ui(2));
-        SelectObject(dc, oldBrush);
-        SelectObject(dc, oldPen);
-        DeleteObject(ring);
-    }
 }
 
 void cancelPopupSearch() {
     if (!g_app) return;
     if (g_app->searchCancellation) {
         g_app->searchCancellation->store(true, std::memory_order_relaxed);
-        g_app->searchCancellation.reset();
     }
+    if (g_app->searchWorker.joinable()) g_app->searchWorker.join();
+    g_app->searchCancellation.reset();
     ++g_app->searchGeneration;
 }
 
@@ -1883,9 +1940,9 @@ void startPopupSearch(HWND popup) {
     ClipSearchSnapshot snapshot = g_app->store.searchSnapshot();
     const std::uint64_t storeRevision = snapshot.revision;
     const std::string query = g_app->query;
-    std::thread([notifyWindow, popup, generation, storeRevision,
-                 snapshot = std::move(snapshot), query,
-                 cancellation]() mutable {
+    g_app->searchWorker = std::thread([notifyWindow, popup, generation, storeRevision,
+                                       snapshot = std::move(snapshot), query,
+                                       cancellation]() mutable {
         std::vector<std::size_t> candidates = ClipStore::search(
             snapshot, query, cancellation.get());
         if (cancellation->load(std::memory_order_relaxed)) return;
@@ -1895,7 +1952,7 @@ void startPopupSearch(HWND popup) {
                           reinterpret_cast<WPARAM>(result), 0)) {
             delete result;
         }
-    }).detach();
+    });
 }
 
 void animatePopupScrollTo(int target) {
@@ -1922,23 +1979,12 @@ void notifyPasteFailure() {
 bool drawImagePreview(HDC dc, const ClipItem& item, const RECT& rowRect) {
     std::string payload;
     if (!g_app->store.readPayload(&item - g_app->store.items().data(), payload)) return false;
-    if (payload.size() < sizeof(BITMAPINFOHEADER)) return false;
+    DibLayout layout{};
+    if (!validateDibPayload(payload, &layout)) return false;
 
     BITMAPINFOHEADER header{};
     std::memcpy(&header, payload.data(), sizeof(header));
-    if (header.biSize < sizeof(BITMAPINFOHEADER) || header.biSize > payload.size() ||
-        header.biWidth <= 0 || header.biHeight == 0 || header.biPlanes != 1 ||
-        header.biBitCount == 0 || header.biBitCount > 32 ||
-        header.biWidth > 10000 || header.biHeight < -10000 || header.biHeight > 10000) {
-        return false;
-    }
-    std::size_t colorEntries = 0;
-    if (header.biBitCount <= 8) colorEntries = std::size_t{1} << header.biBitCount;
-    if (header.biCompression == BI_BITFIELDS && header.biSize == sizeof(BITMAPINFOHEADER)) {
-        colorEntries = 3;
-    }
-    const std::size_t bitsOffset = header.biSize + colorEntries * sizeof(RGBQUAD);
-    if (bitsOffset >= payload.size()) return false;
+    const std::size_t bitsOffset = layout.bitsOffset;
 
     const auto* bitmapInfo = reinterpret_cast<const BITMAPINFO*>(payload.data());
     const int width = rowRect.right - rowRect.left;
@@ -1957,7 +2003,8 @@ bool drawImagePreview(HDC dc, const ClipItem& item, const RECT& rowRect) {
         POINT previousOrigin{};
         SetBrushOrgEx(dc, 0, 0, &previousOrigin);
         const int result = StretchDIBits(dc, targetLeft, targetTop, targetWidth, targetHeight,
-                                         0, 0, header.biWidth, std::abs(header.biHeight),
+                                          0, 0, header.biWidth,
+                                          static_cast<int>(std::llabs(static_cast<long long>(header.biHeight))),
                                          payload.data() + bitsOffset, bitmapInfo,
                                          DIB_RGB_COLORS, SRCCOPY);
         SetBrushOrgEx(dc, previousOrigin.x, previousOrigin.y, nullptr);
@@ -2015,6 +2062,8 @@ void sendPaste(PasteMode mode = PasteMode::Automatic) {
         return;
     }
     g_app->ignoredClipboardHash = hash;
+    g_app->ignoredClipboardTextHash = clipboardDedupHash(g_app->store.items()[index].type, payload);
+    g_app->ignoredClipboardUntil = GetTickCount64() + 750;
     HWND target = g_app->targetWindow;
     const bool keepPopup = g_app->popupPinned;
     if (keepPopup) {
@@ -2065,7 +2114,7 @@ void applyPopupWindowFrame(HWND hwnd, int width, int height) {
     if (!hwnd) return;
     const int ellipse = ui(kPopupCornerRadius * 2);
     HRGN region = CreateRoundRectRgn(0, 0, width, height, ellipse, ellipse);
-    if (region) SetWindowRgn(hwnd, region, TRUE);
+    if (region && SetWindowRgn(hwnd, region, TRUE) == 0) DeleteObject(region);
 
     // Keep the compositor's corner treatment aligned with the custom client frame on Windows 11.
     constexpr DWORD kDwmWindowCornerPreference = 33;
@@ -2141,6 +2190,7 @@ void showPopup(bool openedByWinV = false) {
 }
 
 void closePopup() {
+    cancelPopupSearch();
     if (g_app->popupMouseHook) {
         UnhookWindowsHookEx(g_app->popupMouseHook);
         g_app->popupMouseHook = nullptr;
@@ -2424,7 +2474,12 @@ bool copySupportGroupNumber(HWND owner) {
         return false;
     }
     CloseClipboard();
-    if (g_app) g_app->ignoredClipboardHash = clipLiteHash(wideToUtf8(groupNumber, ARRAYSIZE(groupNumber) - 1));
+    if (g_app) {
+        const std::string value = wideToUtf8(groupNumber, ARRAYSIZE(groupNumber) - 1);
+        g_app->ignoredClipboardHash = clipLiteHash(value);
+        g_app->ignoredClipboardTextHash = g_app->ignoredClipboardHash;
+        g_app->ignoredClipboardUntil = GetTickCount64() + 750;
+    }
     return true;
 }
 
@@ -3104,16 +3159,10 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
             graphics.DrawPath(&pen, &path);
             return;
         }
-        HBRUSH brush = CreateSolidBrush(fill);
-        HPEN pen = CreatePen(PS_SOLID, ui(1), border);
-        HGDIOBJ oldBrush = SelectObject(dc, brush);
-        HGDIOBJ oldPen = SelectObject(dc, pen);
-        RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom,
-                  ui(radiusLogical), ui(radiusLogical));
-        SelectObject(dc, oldPen);
-        SelectObject(dc, oldBrush);
-        DeleteObject(pen);
-        DeleteObject(brush);
+        (void)rect;
+        (void)fill;
+        (void)border;
+        (void)radiusLogical;
     };
 
     drawGdiLine(dc, ui(kSettingsSidebarWidth), 0, ui(kSettingsSidebarWidth), client.bottom, line);
@@ -4819,6 +4868,7 @@ void toggleLanguageDropdown(HWND settings) {
 }
 
 void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
+    if (!g_app || g_app->gdiplusToken == 0) return;
     const bool highContrast = highContrastEnabled();
     const bool hovered = g_app->hoveredSettingsControl == GetDlgCtrlID(item.hwndItem);
     const bool checked = settingsToggleValue(item.hwndItem);
@@ -4913,63 +4963,6 @@ void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
         }
         return;
     }
-    const COLORREF surface = highContrast ? GetSysColor(COLOR_WINDOW) :
-        settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
-    const COLORREF knobSurface = highContrast ? GetSysColor(COLOR_WINDOW) :
-        settingsThemeColor(RGB(255, 255, 255), RGB(47, 53, 60));
-    const COLORREF accent = highContrast ? GetSysColor(COLOR_HIGHLIGHT) : settingsAccentColor();
-    HBRUSH surfaceBrush = CreateSolidBrush(surface);
-    FillRect(item.hDC, &item.rcItem, surfaceBrush);
-    HGDIOBJ oldSurfaceBrush = SelectObject(item.hDC, surfaceBrush);
-    HGDIOBJ oldSurfacePen = SelectObject(item.hDC, GetStockObject(NULL_PEN));
-    RoundRect(item.hDC, item.rcItem.left, item.rcItem.top, item.rcItem.right, item.rcItem.bottom,
-              item.rcItem.bottom - item.rcItem.top, item.rcItem.bottom - item.rcItem.top);
-    SelectObject(item.hDC, oldSurfacePen);
-    SelectObject(item.hDC, oldSurfaceBrush);
-    DeleteObject(surfaceBrush);
-    const COLORREF track = checked
-        ? (hovered ? settingsThemeColor(RGB(51, 145, 115), RGB(82, 180, 177)) : accent)
-        : (hovered ? settingsThemeColor(RGB(174, 191, 187), RGB(95, 105, 116))
-                   : settingsThemeColor(RGB(197, 208, 208), RGB(75, 84, 95)));
-    const COLORREF trackBorder = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        (checked ? track : settingsThemeColor(RGB(155, 171, 167), RGB(112, 123, 135)));
-    RECT bounds = item.rcItem;
-    const int centerY = (bounds.top + bounds.bottom) / 2;
-    const LONG trackWidth = static_cast<LONG>(ui(kSettingsTrackWidth));
-    const int trackHeight = ui(kSettingsTrackHeight);
-    const LONG trackRight = bounds.right;
-    const int trackLeft = std::max(bounds.left, trackRight - trackWidth);
-    const int trackInset = 1;
-    RECT trackRect{trackLeft + trackInset, centerY - trackHeight / 2 + trackInset,
-                   trackRight - trackInset, centerY + (trackHeight + 1) / 2 - trackInset};
-    HBRUSH trackBrush = CreateSolidBrush(track);
-    HPEN trackPen = CreatePen(PS_SOLID, ui(1), trackBorder);
-    HGDIOBJ oldBrush = SelectObject(item.hDC, trackBrush);
-    HGDIOBJ oldPen = SelectObject(item.hDC, trackPen);
-    RoundRect(item.hDC, trackRect.left, trackRect.top, trackRect.right, trackRect.bottom,
-              trackHeight - trackInset * 2, trackHeight - trackInset * 2);
-    SelectObject(item.hDC, oldPen);
-    SelectObject(item.hDC, oldBrush);
-    DeleteObject(trackPen);
-    DeleteObject(trackBrush);
-
-    const int knobSize = ui(16);
-    const int knobMargin = ui(2);
-    const float position = settingsTogglePosition(item.hwndItem);
-    const int knobTravel = trackRect.right - trackRect.left - knobMargin * 2 - knobSize;
-    const int knobLeft = trackRect.left + knobMargin + static_cast<int>(knobTravel * position);
-    RECT knobRect{knobLeft, centerY - knobSize / 2,
-                  knobLeft + knobSize, centerY + (knobSize + 1) / 2};
-    HBRUSH knobBrush = CreateSolidBrush(knobSurface);
-    HPEN knobPen = CreatePen(PS_SOLID, ui(1), highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        settingsThemeColor(RGB(224, 231, 228), RGB(214, 220, 226)));
-    HGDIOBJ previousBrush = SelectObject(item.hDC, knobBrush);
-    HGDIOBJ previousPen = SelectObject(item.hDC, knobPen);
-    Ellipse(item.hDC, knobRect.left, knobRect.top, knobRect.right, knobRect.bottom);
-    SelectObject(item.hDC, previousPen);
-    SelectObject(item.hDC, previousBrush);
-    DeleteObject(knobPen);
-    DeleteObject(knobBrush);
 }
 
 bool isSettingsActionButton(int id) {
@@ -5202,18 +5195,6 @@ void paintLanguageDropdown(HWND hwnd, HDC dc) {
             addRoundedRect(rowPath, rowRect, static_cast<float>(ui(4)));
             graphics.FillPath(&rowBrush, &rowPath);
         }
-    } else {
-        HBRUSH brush = CreateSolidBrush(background);
-        RECT renderRect{0, 0, contentWidth, renderHeight};
-        FillRect(renderDc, &renderRect, brush);
-        DeleteObject(brush);
-        HPEN pen = CreatePen(PS_SOLID, ui(1), border);
-        HGDIOBJ oldPen = SelectObject(renderDc, pen);
-        HGDIOBJ oldBrush = SelectObject(renderDc, GetStockObject(NULL_BRUSH));
-        RoundRect(renderDc, 0, 0, contentWidth, renderHeight, ui(6), ui(6));
-        SelectObject(renderDc, oldBrush);
-        SelectObject(renderDc, oldPen);
-        DeleteObject(pen);
     }
 
     HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(renderDc, g_app->settingsFont));
@@ -5302,17 +5283,6 @@ void paintSettingsLanguageCombo(HWND hwnd, HDC dc) {
         arrowPath.AddLine(arrowX, arrowY + ui(5), arrowX - ui(4), arrowY);
         Gdiplus::SolidBrush arrowBrush(makeColor(arrow));
         graphics.FillPath(&arrowBrush, &arrowPath);
-    } else {
-        HBRUSH brush = CreateSolidBrush(background);
-        FillRect(renderDc, &client, brush);
-        DeleteObject(brush);
-        HPEN pen = CreatePen(PS_SOLID, ui(1), border);
-        HGDIOBJ oldPen = SelectObject(renderDc, pen);
-        HGDIOBJ oldBrush = SelectObject(renderDc, GetStockObject(NULL_BRUSH));
-        RoundRect(renderDc, 0, 0, width, height, ui(4), ui(4));
-        SelectObject(renderDc, oldBrush);
-        SelectObject(renderDc, oldPen);
-        DeleteObject(pen);
     }
 
     wchar_t value[64]{};
@@ -5336,6 +5306,10 @@ void paintSettingsLanguageCombo(HWND hwnd, HDC dc) {
 void paintSettingsEditFrame(HWND hwnd) {
     HDC dc = GetWindowDC(hwnd);
     if (!dc) return;
+    if (!g_app || g_app->gdiplusToken == 0) {
+        ReleaseDC(hwnd, dc);
+        return;
+    }
     RECT windowRect{};
     GetWindowRect(hwnd, &windowRect);
     RECT rect{0, 0, windowRect.right - windowRect.left, windowRect.bottom - windowRect.top};
@@ -5382,37 +5356,8 @@ void paintSettingsEditFrame(HWND hwnd) {
             graphics.DrawPath(&shadowPen, &path);
         }
         graphics.Flush(Gdiplus::FlushIntentionSync);
-        HPEN pen = CreatePen(PS_SOLID, 1, border);
-        HGDIOBJ oldPen = SelectObject(dc, pen);
-        HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-        RoundRect(dc, 0, 0, rect.right, rect.bottom, ui(12), ui(12));
-        SelectObject(dc, oldBrush);
-        SelectObject(dc, oldPen);
-        DeleteObject(pen);
-    } else {
-        HPEN clearPen = CreatePen(PS_SOLID, 5, surface);
-        HGDIOBJ previousPen = SelectObject(dc, clearPen);
-        HGDIOBJ previousBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-        RoundRect(dc, 0, 0, rect.right, rect.bottom, ui(12), ui(12));
-        SelectObject(dc, previousBrush);
-        SelectObject(dc, previousPen);
-        DeleteObject(clearPen);
-        if (focused && !highContrast) {
-            HPEN shadowPen = CreatePen(PS_SOLID, 2, settingsAccentColor());
-            HGDIOBJ oldShadowPen = SelectObject(dc, shadowPen);
-            HGDIOBJ oldShadowBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-            RoundRect(dc, 0, 0, rect.right, rect.bottom, ui(12), ui(12));
-            SelectObject(dc, oldShadowBrush);
-            SelectObject(dc, oldShadowPen);
-            DeleteObject(shadowPen);
-        }
-        HPEN pen = CreatePen(PS_SOLID, 1, border);
-        HGDIOBJ oldPen = SelectObject(dc, pen);
-        HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-        RoundRect(dc, 0, 0, rect.right, rect.bottom, ui(12), ui(12));
-        SelectObject(dc, oldBrush);
-        SelectObject(dc, oldPen);
-        DeleteObject(pen);
+        Gdiplus::Pen borderPen(makeColor(border), 1.0f);
+        graphics.DrawPath(&borderPen, &path);
     }
     ReleaseDC(hwnd, dc);
 }
@@ -5472,7 +5417,7 @@ void paintSettingsEdit(HWND hwnd, HDC dc, WNDPROC oldProc) {
     CallWindowProcW(oldProc, hwnd, WM_PRINTCLIENT,
                     reinterpret_cast<WPARAM>(bufferDc), PRF_CLIENT);
     SelectClipRgn(bufferDc, nullptr);
-    DeleteObject(clip);
+    if (clip) DeleteObject(clip);
 
     if (id == kSettingIgnoredApps && GetWindowTextLengthW(hwnd) == 0 && !focused) {
         RECT placeholder{ui(10), ui(8), width - ui(10), height - ui(8)};
@@ -5508,30 +5453,8 @@ void paintSettingsEdit(HWND hwnd, HDC dc, WNDPROC oldProc) {
             graphics.DrawPath(&shadowPen, &path);
         }
         graphics.Flush(Gdiplus::FlushIntentionSync);
-        HPEN pen = CreatePen(PS_SOLID, 1, border);
-        HGDIOBJ oldPen = SelectObject(bufferDc, pen);
-        HGDIOBJ oldBrush = SelectObject(bufferDc, GetStockObject(NULL_BRUSH));
-        RoundRect(bufferDc, 1, 1, width - 1, height - 1, ui(12), ui(12));
-        SelectObject(bufferDc, oldBrush);
-        SelectObject(bufferDc, oldPen);
-        DeleteObject(pen);
-    } else {
-        if (focused && !highContrast) {
-            HPEN shadowPen = CreatePen(PS_SOLID, 2, settingsAccentColor());
-            HGDIOBJ oldShadowPen = SelectObject(bufferDc, shadowPen);
-            HGDIOBJ oldShadowBrush = SelectObject(bufferDc, GetStockObject(NULL_BRUSH));
-            RoundRect(bufferDc, 1, 1, width - 1, height - 1, ui(12), ui(12));
-            SelectObject(bufferDc, oldShadowBrush);
-            SelectObject(bufferDc, oldShadowPen);
-            DeleteObject(shadowPen);
-        }
-        HPEN pen = CreatePen(PS_SOLID, 1, border);
-        HGDIOBJ oldPen = SelectObject(bufferDc, pen);
-        HGDIOBJ oldBrush = SelectObject(bufferDc, GetStockObject(NULL_BRUSH));
-        RoundRect(bufferDc, 1, 1, width - 1, height - 1, ui(12), ui(12));
-        SelectObject(bufferDc, oldBrush);
-        SelectObject(bufferDc, oldPen);
-        DeleteObject(pen);
+        Gdiplus::Pen borderPen(makeColor(border), 1.0f);
+        graphics.DrawPath(&borderPen, &path);
     }
     BitBlt(dc, 0, 0, width, height, bufferDc, 0, 0, SRCCOPY);
     SelectObject(bufferDc, oldBitmap);
@@ -5672,14 +5595,6 @@ void paintSettingsEditBorders(HWND hwnd, HDC dc) {
             path.CloseFigure();
             Gdiplus::Pen pen(makeColor(border), 1.0f);
             graphics.DrawPath(&pen, &path);
-        } else {
-            HPEN pen = CreatePen(PS_SOLID, 1, border);
-            HGDIOBJ oldPen = SelectObject(dc, pen);
-            HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-            RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, ui(8), ui(8));
-            SelectObject(dc, oldBrush);
-            SelectObject(dc, oldPen);
-            DeleteObject(pen);
         }
     }
 }
@@ -6212,6 +6127,13 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == WM_CLIPBOARDUPDATE) {
+            if (!g_app->settingsData.pauseMonitoring) {
+                SetTimer(hwnd, kClipboardCaptureTimer, 35, nullptr);
+            }
+            return 0;
+        }
+        if (message == WM_TIMER && wParam == kClipboardCaptureTimer) {
+            KillTimer(hwnd, kClipboardCaptureTimer);
             if (g_app->settingsData.pauseMonitoring) return 0;
             ClipType type{};
             std::string payload;
@@ -6219,17 +6141,22 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (captureClipboard(type, payload, source)) {
                 const std::size_t maxPayload = static_cast<std::size_t>(g_app->settingsData.maxContentMb) * 1024u * 1024u;
                 if (payload.size() > maxPayload || isIgnoredClipboardSource(source)) return 0;
-                const auto hash = clipLiteHash(payload);
-                if (hash != g_app->ignoredClipboardHash) {
+                const auto hash = clipboardDedupHash(type, payload);
+                const bool ignoredSelfWrite = GetTickCount64() <= g_app->ignoredClipboardUntil &&
+                    (hash == g_app->ignoredClipboardHash ||
+                     hash == g_app->ignoredClipboardTextHash);
+                if (!ignoredSelfWrite) {
                     const std::uint64_t expiresAt = g_app->settingsData.sensitiveExpiryHours > 0 &&
                         containsSensitiveMarker(type, payload)
                         ? nowUnix() + static_cast<std::uint64_t>(g_app->settingsData.sensitiveExpiryHours) * 3600ULL
                         : 0;
-                    if (!g_app->store.append(type, payload, hash, source, expiresAt)) {
+                    if (!g_app->store.appendOrUpdate(type, payload, hash, source, expiresAt)) {
                         appendDiagnosticLog("ERROR", "clipboard: unable to append history record");
                     }
                 } else {
                     g_app->ignoredClipboardHash = 0;
+                    g_app->ignoredClipboardTextHash = 0;
+                    g_app->ignoredClipboardUntil = 0;
                 }
             }
             if (g_app->popup) refreshVisible();

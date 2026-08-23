@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <io.h>
 #include <limits>
 
 namespace {
@@ -229,8 +230,6 @@ bool streamContainsIgnoreCase(std::FILE* file, const ClipItem& item,
 
 } // namespace
 
-struct ClipStore::DiskRecord {};
-
 std::wstring clipLiteDataDirectory() {
     wchar_t testPath[MAX_PATH]{};
     const DWORD testPathLength = GetEnvironmentVariableW(
@@ -367,6 +366,9 @@ bool ClipStore::open() {
     diskBytes_ = validBytes;
     std::fclose(file);
     std::reverse(items_.begin(), items_.end());
+    std::stable_sort(items_.begin(), items_.end(), [](const ClipItem& first, const ClipItem& second) {
+        return first.timestamp > second.timestamp;
+    });
     return rebuildFile();
 }
 
@@ -384,7 +386,7 @@ bool ClipStore::writeRecord(std::FILE* file, const ClipItem& item, const std::st
     header.sourceSize = static_cast<std::uint32_t>(item.source.size());
     header.sourceCrc = crc32(item.source);
     header.expiresAt = item.expiresAt;
-    return header.sourceSize <= kMaxSource &&
+    return header.payloadSize <= kMaxPayload && header.sourceSize <= kMaxSource &&
            std::fwrite(&header, sizeof(header), 1, file) == 1 &&
            (item.source.empty() || std::fwrite(item.source.data(), 1, item.source.size(), file) == item.source.size()) &&
            (payload.empty() || std::fwrite(payload.data(), 1, payload.size(), file) == payload.size());
@@ -393,6 +395,8 @@ bool ClipStore::writeRecord(std::FILE* file, const ClipItem& item, const std::st
 bool ClipStore::append(ClipType type, const std::string& payload, std::uint64_t hash,
                        const std::string& source, std::uint64_t expiresAt) {
     if (payload.empty() || payload.size() > maxPayloadBytes_ || findHash(hash) != items_.size()) return false;
+    const std::vector<ClipItem> backup = items_;
+    const std::uint64_t oldDiskBytes = diskBytes_;
     std::FILE* file = nullptr;
     _wfopen_s(&file, path_.c_str(), L"ab");
     if (!file) return false;
@@ -414,21 +418,122 @@ bool ClipStore::append(ClipType type, const std::string& payload, std::uint64_t 
         return false;
     }
     if (!item.encrypted) storedPayload = payload;
+    if (storedPayload.empty() || storedPayload.size() > kMaxPayload) {
+        std::fclose(file);
+        return false;
+    }
     item.payloadSize = static_cast<std::uint32_t>(storedPayload.size());
     item.payloadCrc = crc32(storedPayload);
     item.fileOffset = static_cast<std::uint64_t>(_ftelli64(file));
     item.preview = makePreview(type, payload);
     const std::uint64_t recordBytes = sizeof(DiskHeader) + item.source.size() + storedPayload.size();
     const bool ok = writeRecord(file, item, storedPayload);
-    std::fflush(file);
-    std::fclose(file);
-    if (!ok) return false;
+    const bool flushed = ok && std::fflush(file) == 0;
+    const bool closed = std::fclose(file) == 0;
+    if (!flushed || !closed) {
+        _wfopen_s(&file, path_.c_str(), L"r+b");
+        if (file) {
+            _chsize_s(_fileno(file), static_cast<__int64>(item.fileOffset));
+            std::fclose(file);
+        }
+        return false;
+    }
 
     items_.insert(items_.begin(), std::move(item));
     diskBytes_ += recordBytes;
     const bool needsRebuild = maxItems_ > 0 && items_.size() > maxItems_;
     while (maxItems_ > 0 && items_.size() > maxItems_) items_.pop_back();
-    if (needsRebuild) rebuildFile();
+    if (needsRebuild && !rebuildFile()) {
+        items_ = backup;
+        diskBytes_ = oldDiskBytes;
+        std::FILE* rollback = nullptr;
+        _wfopen_s(&rollback, path_.c_str(), L"r+b");
+        if (rollback) {
+            _chsize_s(_fileno(rollback), static_cast<__int64>(item.fileOffset));
+            std::fclose(rollback);
+        }
+        return false;
+    }
+    ++revision_;
+    return true;
+}
+
+bool ClipStore::appendOrUpdate(ClipType type, const std::string& payload, std::uint64_t hash,
+                               const std::string& source, std::uint64_t expiresAt) {
+    if (payload.empty() || payload.size() > maxPayloadBytes_) return false;
+    const std::size_t existing = findHash(hash);
+    if (existing == items_.size()) return append(type, payload, hash, source, expiresAt);
+
+    const std::vector<ClipItem> backup = items_;
+    std::vector<std::size_t> order;
+    order.reserve(items_.size());
+    for (std::size_t reverseIndex = items_.size(); reverseIndex > 0; --reverseIndex) {
+        const std::size_t index = reverseIndex - 1;
+        if (index != existing) order.push_back(index);
+    }
+    order.push_back(existing);
+
+    const bool keepExistingRichText = backup[existing].type == ClipType::Html &&
+                                      type == ClipType::Text;
+    const std::wstring tempPath = path_ + L".tmp";
+    std::FILE* out = nullptr;
+    _wfopen_s(&out, tempPath.c_str(), L"wb");
+    if (!out) return false;
+
+    std::vector<ClipItem> rebuilt;
+    rebuilt.reserve(order.size());
+    std::uint64_t offset = 0;
+    bool success = true;
+    for (std::size_t position = 0; position < order.size(); ++position) {
+        const std::size_t oldIndex = order[position];
+        const bool promoted = position + 1 == order.size();
+        ClipItem item = backup[oldIndex];
+        std::string currentPayload;
+        if (promoted && !keepExistingRichText) {
+            item.type = type;
+            item.hash = hash;
+            item.preview = makePreview(type, payload);
+            currentPayload = payload;
+        } else if (!readPayload(oldIndex, currentPayload)) {
+            success = false;
+            break;
+        }
+        item.timestamp = promoted ? nowUnix() : item.timestamp;
+        if (promoted) {
+            item.hash = hash;
+            if (!source.empty()) item.source = source.substr(0, kMaxSource);
+            item.expiresAt = expiresAt;
+            if (keepExistingRichText) item.preview = makePreview(item.type, currentPayload);
+        }
+        std::string storedPayload = currentPayload;
+        if (item.encrypted && !protectPayload(currentPayload, storedPayload)) {
+            success = false;
+            break;
+        }
+        if (storedPayload.empty() || storedPayload.size() > kMaxPayload) {
+            success = false;
+            break;
+        }
+        item.fileOffset = offset;
+        item.payloadSize = static_cast<std::uint32_t>(storedPayload.size());
+        item.payloadCrc = crc32(storedPayload);
+        if (!writeRecord(out, item, storedPayload)) {
+            success = false;
+            break;
+        }
+        offset += sizeof(DiskHeader) + item.source.size() + storedPayload.size();
+        rebuilt.push_back(std::move(item));
+    }
+    success = success && rebuilt.size() == order.size() && std::fflush(out) == 0;
+    success = std::fclose(out) == 0 && success;
+    if (!success || !MoveFileExW(tempPath.c_str(), path_.c_str(),
+                                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(tempPath.c_str());
+        return false;
+    }
+    std::reverse(rebuilt.begin(), rebuilt.end());
+    items_ = std::move(rebuilt);
+    diskBytes_ = offset;
     ++revision_;
     return true;
 }
@@ -455,7 +560,8 @@ bool ClipStore::rebuildFile() {
     std::vector<ClipItem> rebuilt;
     rebuilt.reserve(items_.size());
     std::uint64_t offset = 0;
-    for (const ClipItem& old : items_) {
+    for (auto iterator = items_.rbegin(); iterator != items_.rend(); ++iterator) {
+        const ClipItem& old = *iterator;
         std::string payload;
         if (!readPayload(&old - items_.data(), payload)) {
             std::fclose(out);
@@ -481,12 +587,17 @@ bool ClipStore::rebuildFile() {
         offset += sizeof(DiskHeader) + item.source.size() + storedPayload.size();
         rebuilt.push_back(std::move(item));
     }
-    std::fflush(out);
-    std::fclose(out);
+    const bool flushed = std::fflush(out) == 0;
+    const bool closed = std::fclose(out) == 0;
+    if (!flushed || !closed) {
+        DeleteFileW(tempPath.c_str());
+        return false;
+    }
     if (!MoveFileExW(tempPath.c_str(), path_.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         DeleteFileW(tempPath.c_str());
         return false;
     }
+    std::reverse(rebuilt.begin(), rebuilt.end());
     items_ = std::move(rebuilt);
     diskBytes_ = offset;
     return true;
@@ -538,7 +649,8 @@ bool ClipStore::rekey(bool enabled) {
     std::vector<ClipItem> rebuilt;
     rebuilt.reserve(items_.size());
     std::uint64_t offset = 0;
-    for (std::size_t index = 0; index < items_.size(); ++index) {
+    for (std::size_t reverseIndex = items_.size(); reverseIndex > 0; --reverseIndex) {
+        const std::size_t index = reverseIndex - 1;
         std::string plain;
         if (!readPayload(index, plain)) {
             std::fclose(out);
@@ -565,12 +677,17 @@ bool ClipStore::rekey(bool enabled) {
         offset += sizeof(DiskHeader) + item.source.size() + stored.size();
         rebuilt.push_back(std::move(item));
     }
-    std::fflush(out);
-    std::fclose(out);
+    const bool flushed = std::fflush(out) == 0;
+    const bool closed = std::fclose(out) == 0;
+    if (!flushed || !closed) {
+        DeleteFileW(tempPath.c_str());
+        return false;
+    }
     if (!MoveFileExW(tempPath.c_str(), path_.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         DeleteFileW(tempPath.c_str());
         return false;
     }
+    std::reverse(rebuilt.begin(), rebuilt.end());
     items_ = std::move(rebuilt);
     diskBytes_ = offset;
     encryptionEnabled_ = enabled;
@@ -727,9 +844,13 @@ std::vector<std::size_t> ClipStore::search(const ClipSearchSnapshot& snapshot,
         if (!file) _wfopen_s(&file, snapshot.path.c_str(), L"rb");
         if (!file) continue;
         bool matches = false;
-        if (item.encrypted) {
+        if (item.encrypted || item.type == ClipType::Html) {
             std::string payload;
-            matches = readPayloadFromFile(file, item, payload) && containsIgnoreCase(payload, needle);
+            if (readPayloadFromFile(file, item, payload)) {
+                const std::string searchable = item.type == ClipType::Html
+                    ? htmlTextPreview(payload) : payload;
+                matches = containsIgnoreCase(searchable, needle);
+            }
         } else {
             matches = streamContainsIgnoreCase(file, item, needle, cancellation);
         }
