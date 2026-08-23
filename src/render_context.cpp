@@ -118,17 +118,27 @@ bool RenderContext::createTarget(UINT width, UINT height) {
     const D3D_FEATURE_LEVEL featureLevels[] = {
         D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1
     };
+    const D3D_FEATURE_LEVEL legacyFeatureLevels[] = {
+        D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1
+    };
     D3D_FEATURE_LEVEL selectedLevel{};
-    HRESULT result = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
-                                        D3D11_CREATE_DEVICE_BGRA_SUPPORT, featureLevels,
-                                        ARRAYSIZE(featureLevels), D3D11_SDK_VERSION,
-                                        d3dDevice_.GetAddressOf(), &selectedLevel, nullptr);
+    const auto createD3dDevice = [&](D3D_DRIVER_TYPE driverType) {
+        HRESULT createResult = D3D11CreateDevice(
+            nullptr, driverType, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            featureLevels, ARRAYSIZE(featureLevels), D3D11_SDK_VERSION,
+            d3dDevice_.GetAddressOf(), &selectedLevel, nullptr);
+        if (createResult == E_INVALIDARG) {
+            createResult = D3D11CreateDevice(
+                nullptr, driverType, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                legacyFeatureLevels, ARRAYSIZE(legacyFeatureLevels), D3D11_SDK_VERSION,
+                d3dDevice_.GetAddressOf(), &selectedLevel, nullptr);
+        }
+        return createResult;
+    };
+    HRESULT result = createD3dDevice(D3D_DRIVER_TYPE_HARDWARE);
     softwareFallback_ = false;
     if (FAILED(result)) {
-        result = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr,
-                                    D3D11_CREATE_DEVICE_BGRA_SUPPORT, featureLevels,
-                                    ARRAYSIZE(featureLevels), D3D11_SDK_VERSION,
-                                    d3dDevice_.GetAddressOf(), &selectedLevel, nullptr);
+        result = createD3dDevice(D3D_DRIVER_TYPE_WARP);
         softwareFallback_ = SUCCEEDED(result);
     }
     if (FAILED(result) || FAILED(d3dDevice_.As(&dxgiDevice_))) return false;
