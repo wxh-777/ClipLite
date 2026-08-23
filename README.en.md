@@ -32,18 +32,22 @@ Settings window:
 
 ## Performance and Size
 
-ClipLite uses native Win32/GDI without WebView, Electron, or a large runtime. It keeps metadata and short previews in memory while reading full text, HTML, file, and image payloads from disk on demand.
+ClipLite is designed to stay quietly in the tray. It does not keep using browser-sized memory in the background and does not require a separate runtime.
 
-Reference measurements from the current Windows x64 Release build on this machine:
+- The Windows Task Manager showed about `2.5 MB` of memory in a local idle observation.
+- The main executable is about `446 KB`, smaller than an ordinary phone photo.
+- Startup took about `0.06 seconds`, while full history and images are read only when needed.
 
-- Working Set: `13.16 MB`
-- Private Bytes: `2.59 MB`
-- Main executable: `446.5 KB`
-- Startup time: `59.14 ms`
-- GDI objects: `13`
-- USER objects: `9`
+This makes ClipLite suitable for long-running background use and portable folders such as a USB drive.
+
+<details>
+<summary>Show detailed measurements</summary>
+
+Reference measurements from the current Windows x64 Release build on this machine: Working Set `13.16 MB`, Private Bytes `2.59 MB`, main executable `446.5 KB`, startup time `59.14 ms`, GDI `13`, and USER `9`. Task Manager and measurement tools use different memory definitions, so their displayed values can differ.
 
 The values were sampled by `tools/measure.ps1` about one second after startup while idle, with the history window closed. Actual values vary with Windows version, DPI, system state, history data, and runtime scenario. These figures describe the local Release baseline and are not a fixed guarantee for every device.
+
+</details>
 
 ## Download
 
