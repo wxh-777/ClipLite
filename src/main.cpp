@@ -6359,6 +6359,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 }
 
 void openSettings() {
+    if (g_app->popup) closePopup();
     if (g_app->settings) {
         SetForegroundWindow(g_app->settings);
         return;
