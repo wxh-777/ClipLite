@@ -206,7 +206,7 @@ f506adfb7bd7045981c97e60882f2bfa8e36a99c
 ## 七、当前下一步
 
 1. 继续拆分设置和历史消息处理，减少 `main.cpp` 的消息分发职责。
-2. 将原生控件的自定义绘制和语言下拉改为 DirectWrite/Direct2D 或恢复为系统控件。
+2. 完成语言下拉展开列表的 DirectWrite/Direct2D 视觉验证，确认原生输入控件与父画布绘制不互相覆盖。
 3. 增加 WIC 图片格式、设备丢失、125%/150%/200% DPI 和高对比度实机验证。
 4. 在管理员窗口、任务管理器、远程桌面和安全桌面记录 Win+V 边界结果。
 
@@ -214,7 +214,7 @@ f506adfb7bd7045981c97e60882f2bfa8e36a99c
 
 - 已新增 `app_lifecycle`、`clipboard_monitor`、`hotkey_manager`、`render_context`、`history_window` 和 `settings_window` 模块。
 - 设置窗口和历史窗口主背景、卡片、筛选条、历史文字和统计文字改由 Direct2D/DirectWrite 绘制；DPI、尺寸变化和设备目标重建进入窗口级上下文。
-- 设置开关、快捷键、清理按钮、目录按钮和语言选择恢复为标准 Win32 控件，删除对应 owner-draw、GDI 双缓冲和自绘下拉代码。
+- 设置开关、快捷键、清理按钮和目录按钮使用原生交互、父画布绘制的轻量控件壳；语言选择关闭状态由父画布绘制，原生控件继续承担下拉交互，编辑框保留原生输入能力。
 - WIC 工厂共享，24/32 位 DIB 和常见 DIBV5 图片仅在可见历史行按需复制、缩放和绘制，不建立常驻图片缓存。
 - 渲染上下文已从 HwndRenderTarget 迁移到 Direct2D 1.1 DeviceContext；硬件 D3D11 不可用时回退到 WARP，窗口关闭时释放 swap chain 和设备资源。
 - D3D11 设备创建兼容 Windows 10 1903：11.1 级别参数被系统拒绝时重试 11.0/10.1 级别，再按同样顺序尝试 WARP。
@@ -222,3 +222,4 @@ f506adfb7bd7045981c97e60882f2bfa8e36a99c
 - Win+V 低级钩子已移入独立模块，异常超时、重复 Win 键、注入事件、普通 Win 组合和卸载状态均由模块清理。
 - Release 构建、CTest、窗口压力 `100/100` 和剪贴板压力 `10000/10000` 通过。
 - 当前资源测量：Direct2D 1.1 启动设置场景 Working Set `38.07 MB`、Private Bytes `25.14 MB`、Commit `25.14 MB`、CPU `531.25 ms`、句柄 `339`、GDI `20`、USER `58`；GPU Dedicated/Shared 计数器在当前环境未返回数据。尚未达到计划预算，需继续优化并在目标 Windows 版本复测。
+- 本轮恢复设置页 Direct2D 控件绘制，采用单后备缓冲、单线程图形工厂、延迟初始化和 DXGI Trim；独立采样为 Working Set `35.29 MB`、Private Bytes `27.56 MB`、Commit `27.56 MB`、CPU `531.25 ms`、句柄 `308`、GDI `20`、USER `58`。虚拟内存调试显示已提交 `MEM_PRIVATE` 约 `12.26 MB`，仍未达到计划预算，需继续优化并在目标 Windows 版本复测。

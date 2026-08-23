@@ -2009,6 +2009,13 @@ void directRounded(RenderContext& renderer, const RECT& rect, COLORREF fill,
     if (borderWidth > 0.0f) renderer.strokeRoundedRect(rounded, directColor(border), borderWidth);
 }
 
+bool isSettingsActionButton(int id);
+bool isSettingsToggle(int id);
+bool isSettingsShortcut(int id);
+bool settingsToggleValue(HWND hwnd);
+int settingsLanguageSelection(HWND hwnd);
+float settingsTogglePosition(HWND hwnd);
+
 bool paintSettingsDirect(HWND hwnd) {
     if (!g_app->settingsWindow.renderer().attached() && !g_app->settingsWindow.attach(hwnd, g_uiDpi)) return false;
     RenderContext& renderer = g_app->settingsWindow.renderer();
@@ -2142,12 +2149,110 @@ bool paintSettingsDirect(HWND hwnd) {
                               13.0f, directColor(text));
         }
     }
+    const auto childRect = [hwnd](HWND child) {
+        RECT rect{};
+        if (!child) return rect;
+        GetWindowRect(child, &rect);
+        MapWindowPoints(nullptr, hwnd, reinterpret_cast<POINT*>(&rect), 2);
+        return rect;
+    };
+    const auto drawControl = [&](int id) {
+        HWND control = GetDlgItem(hwnd, id);
+        if (!control || !IsWindowVisible(control)) return;
+        const RECT rect = childRect(control);
+        wchar_t className[32]{};
+        GetClassNameW(control, className, ARRAYSIZE(className));
+        if (std::wcscmp(className, L"Edit") == 0) {
+            const bool focused = GetFocus() == control;
+            directRounded(renderer, rect, cardBackground,
+                          focused || g_app->hoveredSettingsControl == id ? accent : line, 6);
+            return;
+        }
+        if (isSettingsToggle(id)) {
+            const bool checked = settingsToggleValue(control);
+            const bool hovered = g_app->hoveredSettingsControl == id;
+            const COLORREF track = checked
+                ? (hovered ? settingsThemeColor(RGB(51, 145, 115), RGB(82, 180, 177)) : accent)
+                : (hovered ? settingsThemeColor(RGB(174, 191, 187), RGB(95, 105, 116))
+                           : settingsThemeColor(RGB(197, 208, 208), RGB(75, 84, 95)));
+            directRounded(renderer, rect, track, highContrastEnabled() ? text : track, 10);
+            const float position = settingsTogglePosition(control);
+            const float centerX = static_cast<float>(rect.left + ui(10) +
+                (rect.right - rect.left - ui(20)) * position);
+            renderer.fillEllipse(D2D1::Ellipse(
+                D2D1::Point2F(centerX, static_cast<float>((rect.top + rect.bottom) / 2)),
+                static_cast<float>(ui(8)), static_cast<float>(ui(8))),
+                directColor(highContrastEnabled() ? GetSysColor(COLOR_WINDOW) :
+                    settingsThemeColor(RGB(255, 255, 255), RGB(226, 232, 240))));
+            return;
+        }
+        if (isSettingsShortcut(id)) {
+            const bool active = g_app->shortcutCaptureControl == control;
+            const bool focused = GetFocus() == control;
+            const COLORREF controlBorder = active || focused || g_app->hoveredSettingsControl == id
+                ? accent : line;
+            directRounded(renderer, rect, cardBackground, controlBorder, 6);
+            wchar_t label[128]{};
+            GetWindowTextW(control, label, ARRAYSIZE(label));
+            renderer.drawText(label, rect, 12.0f,
+                              directColor(active ? accent : text), DWRITE_FONT_WEIGHT_NORMAL,
+                              DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            return;
+        }
+        if (isSettingsActionButton(id)) {
+            const bool danger = id == kSettingClear || id == kSettingClearText ||
+                id == kSettingClearImage || id == kSettingClearFiles;
+            const bool hovered = g_app->hoveredSettingsControl == id;
+            const COLORREF fill = danger
+                ? settingsThemeColor(hovered ? RGB(254, 242, 242) : RGB(255, 247, 247),
+                                     hovered ? RGB(67, 35, 42) : RGB(52, 42, 48))
+                : settingsThemeColor(hovered ? RGB(239, 246, 255) : RGB(248, 250, 252),
+                                     hovered ? RGB(55, 65, 81) : RGB(30, 41, 59));
+            const COLORREF controlText = danger
+                ? settingsThemeColor(RGB(185, 28, 28), RGB(248, 160, 160)) : accent;
+            directRounded(renderer, rect, fill, danger ? RGB(239, 68, 68) : accent, 7);
+            wchar_t label[256]{};
+            GetWindowTextW(control, label, ARRAYSIZE(label));
+            renderer.drawText(label, rect, 12.0f, directColor(controlText),
+                              DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER,
+                              DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            return;
+        }
+        if (id == kSettingLanguage) {
+            directRounded(renderer, rect, cardBackground,
+                          g_app->hoveredSettingsControl == id ? accent : line, 6);
+            const int selection = settingsLanguageSelection(control);
+            const wchar_t* labels[] = {settingsLocale().autoLanguage, L"English", L"简体中文"};
+            renderer.drawText(labels[selection], RECT{rect.left + ui(8), rect.top,
+                                                      rect.right - ui(26), rect.bottom}, 12.0f,
+                              directColor(text), DWRITE_FONT_WEIGHT_NORMAL,
+                              DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            renderer.drawLine(D2D1::Point2F(static_cast<float>(rect.right - ui(16)),
+                                            static_cast<float>(rect.top + ui(12))),
+                              D2D1::Point2F(static_cast<float>(rect.right - ui(10)),
+                                            static_cast<float>(rect.top + ui(12))), directColor(secondary));
+            renderer.drawLine(D2D1::Point2F(static_cast<float>(rect.right - ui(10)),
+                                            static_cast<float>(rect.top + ui(12))),
+                              D2D1::Point2F(static_cast<float>(rect.right - ui(13)),
+                                            static_cast<float>(rect.top + ui(17))), directColor(secondary));
+        }
+    };
+    const int customControlIds[] = {
+        kSettingDark, kSettingWinV, kSettingPause, kSettingStartup,
+        kSettingStartupSettings, kSettingStartupNotification, kSettingEncrypt,
+        kSettingLanguage, kSettingShortcutHistory, kSettingShortcutSettings,
+        kSettingShortcutPause, kSettingShortcutPaste, kSettingShortcutPastePlain,
+        kSettingShortcutPasteRich, kSettingShortcutClosePopup, kSettingShortcutPopupSettings,
+        kSettingShortcutClearFilter, kSettingShortcutDelete, kSettingBrowseDataDirectory,
+        kSettingClear, kSettingClearText, kSettingClearImage, kSettingClearFiles, kSettingOpenLog
+    };
+    for (const int id : customControlIds) drawControl(id);
     if (g_app->settingsTab == 2 && layout.cards.size() >= 3) {
-        const std::size_t counts[] = {
+        std::size_t counts[] = {
             g_app->store.countType(ClipType::Text), g_app->store.countType(ClipType::Image),
             g_app->store.countType(ClipType::Files), 0
         };
-        for (const ClipItem& item : g_app->store.items()) if (item.pinned) ++const_cast<std::size_t&>(counts[3]);
+        for (const ClipItem& item : g_app->store.items()) if (item.pinned) ++counts[3];
         const wchar_t* labels[] = {settingsLocale().text, settingsLocale().images,
                                    settingsLocale().files, settingsLocale().pinned};
         for (int i = 0; i < 4; ++i) {
@@ -2417,7 +2522,7 @@ void createSettingsControlsModern(HWND hwnd) {
     auto createToggle = [hwnd](int id, int x, int y, bool checked) {
         HWND control = CreateWindowW(L"BUTTON", L"",
                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP |
-                                          BS_AUTOCHECKBOX,
+                                           BS_AUTOCHECKBOX,
                                       ui(x), ui(y), ui(kSettingsToggleWidth), ui(kSettingsToggleHeight), hwnd,
                                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
                                      GetModuleHandleW(nullptr), nullptr);
@@ -2427,7 +2532,7 @@ void createSettingsControlsModern(HWND hwnd) {
     };
     auto createShortcut = [hwnd](int id, int y, const ShortcutBinding& binding) {
         HWND control = CreateWindowW(L"BUTTON", formatShortcut(binding).c_str(),
-                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                                       WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                                      ui(520), ui(y), ui(150), ui(30), hwnd,
                                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
                                      GetModuleHandleW(nullptr), nullptr);
@@ -2498,7 +2603,7 @@ void createSettingsControlsModern(HWND hwnd) {
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingDataDirectory)),
                     GetModuleHandleW(nullptr), nullptr);
     CreateWindowW(L"BUTTON", settingsLocale().browse,
-                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                   ui(888), ui(252), ui(64), ui(30), hwnd,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingBrowseDataDirectory)),
                   GetModuleHandleW(nullptr), nullptr);
@@ -2536,7 +2641,8 @@ void createSettingsControlsModern(HWND hwnd) {
     }
 
     CreateWindowW(L"BUTTON", settingsLocale().clearHistory,
-                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, ui(232), ui(360), ui(120), ui(30), hwnd,
+                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                   ui(232), ui(360), ui(120), ui(30), hwnd,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingClear)),
                   GetModuleHandleW(nullptr), nullptr);
     const int clearIds[] = {kSettingClearText, kSettingClearImage, kSettingClearFiles};
@@ -2545,13 +2651,15 @@ void createSettingsControlsModern(HWND hwnd) {
     };
     for (int i = 0; i < kStorageCategoryCount; ++i) {
         CreateWindowW(L"BUTTON", clearLabels[i],
-                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, ui(232 + i * 82), ui(324),
+                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                      ui(232 + i * 82), ui(324),
                       ui(84), ui(26), hwnd,
                       reinterpret_cast<HMENU>(static_cast<INT_PTR>(clearIds[i])),
                       GetModuleHandleW(nullptr), nullptr);
     }
     CreateWindowW(L"BUTTON", settingsLocale().openLog,
-                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, ui(520), ui(298), ui(150), ui(30), hwnd,
+                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                   ui(520), ui(298), ui(150), ui(30), hwnd,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingOpenLog)),
                   GetModuleHandleW(nullptr), nullptr);
 }
@@ -2756,6 +2864,12 @@ bool isSettingsToggle(int id) {
     return id == kSettingWinV || id == kSettingDark || id == kSettingPause ||
            id == kSettingStartup || id == kSettingStartupSettings ||
            id == kSettingStartupNotification || id == kSettingEncrypt;
+}
+
+bool isSettingsActionButton(int id) {
+    return id == kSettingBrowseDataDirectory || id == kSettingClear ||
+           id == kSettingClearText || id == kSettingClearImage ||
+           id == kSettingClearFiles || id == kSettingOpenLog;
 }
 
 int settingsToggleAtPoint(int tab, int x, int y) {
@@ -3334,6 +3448,7 @@ void animateSettingsToggle(HWND hwnd) {
     setSettingsToggleValue(hwnd, target);
     if (HWND parent = GetParent(hwnd)) {
         SetTimer(parent, kSettingsToggleTimer, 8, nullptr);
+        InvalidateRect(parent, nullptr, FALSE);
     }
     InvalidateRect(hwnd, nullptr, FALSE);
 }
@@ -3542,6 +3657,16 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
     if (std::wcscmp(className, L"Edit") == 0 && message == WM_ERASEBKGND) {
         return 1;
     }
+    if (std::wcscmp(className, L"ComboBox") == 0 && message == WM_PAINT) {
+        ValidateRect(hwnd, nullptr);
+        return 0;
+    }
+    if (std::wcscmp(className, L"Button") == 0 &&
+        (isSettingsToggle(id) || isSettingsShortcut(id) || isSettingsActionButton(id)) &&
+        message == WM_PAINT) {
+        ValidateRect(hwnd, nullptr);
+        return 0;
+    }
     if (isSettingsToggle(id) && message == WM_ERASEBKGND) return 1;
     if (isSettingsShortcut(id)) {
         if (message == WM_LBUTTONDOWN) {
@@ -3577,6 +3702,7 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
         if (g_app->hoveredSettingsControl != id) {
             g_app->hoveredSettingsControl = id;
             InvalidateRect(hwnd, nullptr, FALSE);
+            InvalidateRect(GetParent(hwnd), nullptr, FALSE);
         }
         TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};
         TrackMouseEvent(&tracking);
@@ -3585,6 +3711,7 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
         if (g_app->hoveredSettingsControl == id) {
             g_app->hoveredSettingsControl = 0;
             InvalidateRect(hwnd, nullptr, FALSE);
+            InvalidateRect(GetParent(hwnd), nullptr, FALSE);
         }
     } else if (message == WM_SETCURSOR) {
         SetCursor(std::wcscmp(className, L"Edit") == 0
@@ -3604,6 +3731,7 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
             configureSettingsEdit(hwnd);
         }
         InvalidateRect(hwnd, nullptr, FALSE);
+        InvalidateRect(GetParent(hwnd), nullptr, FALSE);
         return result;
     } else if (message == WM_NCDESTROY) {
         const LRESULT result = CallWindowProcW(oldProc, hwnd, message, wParam, lParam);
@@ -3754,6 +3882,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         g_app->historyWindow.detach();
         if (g_app->popupFont) DeleteObject(g_app->popupFont);
         g_app->popupFont = nullptr;
+        if (!g_app->settings) RenderContext::shutdownShared();
     }
     if (message == WM_DESTROY && hwnd == g_app->settings) {
         g_app->settingsWindow.detach();
@@ -3765,6 +3894,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         g_app->toggleAnimationControl = nullptr;
         g_app->settingsThemeAnimating = false;
         g_app->shortcutCaptureControl = nullptr;
+        if (!g_app->popup) RenderContext::shutdownShared();
     }
     if (hwnd == g_app->hidden) {
         if (g_taskbarCreated != 0 && message == g_taskbarCreated) {
@@ -3957,6 +4087,14 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 updateSettingsTabControls(hwnd);
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
+            }
+        }
+        if (message == WM_DRAWITEM) {
+            const auto* draw = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
+            if (draw && (isSettingsToggle(static_cast<int>(draw->CtlID)) ||
+                         isSettingsShortcut(static_cast<int>(draw->CtlID)) ||
+                         isSettingsActionButton(static_cast<int>(draw->CtlID)))) {
+                return TRUE;
             }
         }
         if (message == WM_COMMAND) {
@@ -4473,7 +4611,7 @@ void openSettings() {
         (monitorInfo.rcWork.bottom - monitorInfo.rcWork.top - height) / 2;
     g_app->settings = CreateWindowExW(WS_EX_APPWINDOW, L"ClipLiteSettings",
                                       settingsLocale().windowTitle,
-                                       WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
+                                       WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
                                       x, y, width, height,
                                        nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (g_app->settings) {
@@ -4493,8 +4631,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     const bool comInitialized = SUCCEEDED(comResult);
     AppState app;
     g_app = &app;
-    const bool renderInitialized = RenderContext::initializeShared();
-    if (!renderInitialized) appendDiagnosticLog("WARN", "startup: Direct2D shared factories unavailable");
     appendDiagnosticLog("INFO", "startup: process initialization started");
     g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
     loadSettings(app.settingsData);

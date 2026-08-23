@@ -30,7 +30,7 @@ RenderContext::~RenderContext() {
 bool RenderContext::initializeShared() {
     if (d2dFactory_ && writeFactory_) return true;
 
-    if (!d2dFactory_ && FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED,
+    if (!d2dFactory_ && FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,
                                                  d2dFactory_.GetAddressOf()))) {
         return false;
     }
@@ -78,6 +78,8 @@ bool RenderContext::attach(HWND hwnd, UINT dpi) {
 void RenderContext::detach() {
     drawing_ = false;
     brush_.Reset();
+    ComPtr<IDXGIDevice3> trimDevice;
+    if (dxgiDevice_ && SUCCEEDED(dxgiDevice_.As(&trimDevice))) trimDevice->Trim();
     if (target_) target_->SetTarget(nullptr);
     targetBitmap_.Reset();
     target_.Reset();
@@ -123,13 +125,15 @@ bool RenderContext::createTarget(UINT width, UINT height) {
     };
     D3D_FEATURE_LEVEL selectedLevel{};
     const auto createD3dDevice = [&](D3D_DRIVER_TYPE driverType) {
+        const UINT creationFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT |
+            D3D11_CREATE_DEVICE_SINGLETHREADED;
         HRESULT createResult = D3D11CreateDevice(
-            nullptr, driverType, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            nullptr, driverType, nullptr, creationFlags,
             featureLevels, ARRAYSIZE(featureLevels), D3D11_SDK_VERSION,
             d3dDevice_.GetAddressOf(), &selectedLevel, nullptr);
         if (createResult == E_INVALIDARG) {
             createResult = D3D11CreateDevice(
-                nullptr, driverType, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                nullptr, driverType, nullptr, creationFlags,
                 legacyFeatureLevels, ARRAYSIZE(legacyFeatureLevels), D3D11_SDK_VERSION,
                 d3dDevice_.GetAddressOf(), &selectedLevel, nullptr);
         }
@@ -156,9 +160,10 @@ bool RenderContext::createTarget(UINT width, UINT height) {
     description.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     description.SampleDesc.Count = 1;
     description.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    description.BufferCount = 2;
+    // These are small tool windows; one back buffer avoids an unnecessary queued frame.
+    description.BufferCount = 1;
     description.Scaling = DXGI_SCALING_STRETCH;
-    description.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    description.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
     result = factory->CreateSwapChainForHwnd(d3dDevice_.Get(), hwnd_, &description, nullptr,
                                              nullptr, swapChain_.GetAddressOf());
     if (FAILED(result)) return false;

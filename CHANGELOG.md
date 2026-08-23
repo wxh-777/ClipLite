@@ -12,8 +12,8 @@
 - WIC 图片路径覆盖常见 24/32 位 DIB、反向扫描行和 DIBV5 位域输入，暂不解码未知压缩位图。
 - 新增应用生命周期、剪贴板监听、快捷键、历史窗口和设置窗口模块，Win+V 状态机不再依赖设置窗口焦点。
 - 移除 GDI+ 运行时、链接依赖和迁移期间禁用的旧绘制源码。
-- 设置页控件改为标准 Win32 绘制，删除开关、按钮、语言下拉和编辑框的自绘 GDI 代码，降低 GDI 对象占用。
-- Release、CTest、窗口生命周期压力 `100/100` 和剪贴板压力 `10000/10000` 已通过；当前设置场景资源测量为 Working Set `37.9 MB`、Private Bytes `25.8 MB`。
+- 设置页开关、快捷键和操作按钮改为原生交互、父画布绘制的轻量控件壳，由设置窗口的 Direct2D/DirectWrite 画布统一绘制；语言选择关闭状态也由父画布绘制，保留原生下拉交互和编辑控件输入能力。
+- 小型窗口 swap chain 改为单后备缓冲，Direct2D/DirectWrite 工厂延迟到首个窗口绘制，并在窗口资源释放时请求 DXGI Trim；Release、CTest 和窗口生命周期压力 `100/100` 已通过，当前独立采样为 Working Set `35.29 MB`、Private Bytes `27.56 MB`、Commit `27.56 MB`。
 - 平台目标调整为 Windows 10 1903 及以上，主要验证 Windows 10 22H2 和 Windows 11。
 - 后续自绘界面统一迁移到 Direct2D 1.1、DirectWrite 和 WIC。
 - 使用 WARP 作为 Direct2D 软件渲染回退，不再维护重复的旧绘制路径。

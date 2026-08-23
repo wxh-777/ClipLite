@@ -39,7 +39,7 @@ ClipLite 是面向 Windows 10 和 Windows 11 的原生剪贴板历史工具，�
 - 窗口使用 Direct2D 1.1 DeviceContext 和 D3D11/DXGI swap chain；硬件设备不可用时使用 WARP 回退。
 - 不创建常驻整窗截图、大型 GPU 纹理或无界缩略图缓存。
 
-当前主窗口已经使用 Direct2D/DirectWrite 绘制，图片可见行使用 WIC 按需缩放，Win+V 使用独立低级钩子模块。设置页输入、开关、快捷键、按钮和语言选择使用标准 Win32 控件；多版本实机验收仍在进行，`PLAN.md` 是实施计划和验收依据。
+当前主窗口已经使用 Direct2D/DirectWrite 绘制，图片可见行使用 WIC 按需缩放，Win+V 使用独立低级钩子模块。设置页开关、快捷键、按钮和语言选择的关闭状态由 Direct2D/DirectWrite 画布绘制，原生 Win32 控件继续承担输入、焦点、下拉和消息交互；多版本实机验收仍在进行，`PLAN.md` 是实施计划和验收依据。
 
 ## 发布方式
 
