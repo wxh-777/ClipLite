@@ -22,6 +22,9 @@ New-Item -ItemType File -Path (Join-Path $portableOut "portable.flag") | Out-Nul
 Copy-Item $exe (Join-Path $portableOut "ClipLite.exe")
 Copy-Item (Join-Path $root "README.md") $portableOut
 Copy-Item (Join-Path $root "CHANGELOG.md") $portableOut
+Copy-Item (Join-Path $root "resources\support-wechat.png") $portableOut
+Copy-Item (Join-Path $root "resources\support-alipay.png") $portableOut
+Copy-Item (Join-Path $root "resources\support-qq.jpg") $portableOut
 
 $hash = (Get-FileHash (Join-Path $portableOut "ClipLite.exe") -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -Path (Join-Path $portableOut "SHA256SUM.txt") -Value "$hash  ClipLite.exe" -Encoding ASCII

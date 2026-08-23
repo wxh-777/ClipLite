@@ -22,6 +22,19 @@ target_include_directories(ClipLite PRIVATE include)
 target_compile_definitions(ClipLite PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(ClipLite PRIVATE user32 gdi32 shell32 shcore ole32 comctl32 crypt32 gdiplus dwmapi advapi32)
 
+set(CLIPLITE_SUPPORT_ASSETS
+    support-wechat.png
+    support-alipay.png
+    support-qq.jpg
+)
+foreach(asset IN LISTS CLIPLITE_SUPPORT_ASSETS)
+    add_custom_command(TARGET ClipLite POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/resources/${asset}"
+            "$<TARGET_FILE_DIR:ClipLite>/${asset}"
+    )
+endforeach()
+
 if(MSVC)
     set_target_properties(ClipLite PROPERTIES LINK_FLAGS "/SUBSYSTEM:WINDOWS")
 endif()

@@ -301,6 +301,9 @@
     .about-list { padding: 16px 18px 20px; }
     .about-list p { padding: 9px 0; border-bottom: 1px solid var(--line); }
     .about-list p:last-child { border-bottom: 0; }
+    .about-actions { display: flex; gap: 8px; padding: 0 18px 18px; }
+    .about-actions button { padding: 7px 12px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--field); cursor: pointer; }
+    .about-actions button:hover { border-color: var(--accent); color: var(--accent); }
 
     @media (max-width: 860px) {
       body { min-width: 0; }
@@ -427,7 +430,7 @@
 
       <section class="page" data-view="about">
         <div class="page-intro"><p>ClipLite 的版本、存储格式和本地数据位置。</p></div>
-        <section class="card"><header class="card-header"><h2>关于 ClipLite</h2><span>产品信息</span></header><div class="about-list"><p>应用名称　ClipLite</p><p>版本　　　0.1.0 x64</p><p>存储格式　v4（兼容 v1/v2/v3）</p><p>数据目录　%LOCALAPPDATA%\\ClipLite</p></div></section>
+        <section class="card"><header class="card-header"><h2>关于 ClipLite</h2><span>产品信息</span></header><div class="about-list"><p>应用名称　ClipLite</p><p>版本　　　0.1.0 x64</p><p>存储格式　v4（兼容 v1/v2/v3）</p><p>数据目录　%LOCALAPPDATA%\\ClipLite</p></div><div class="about-actions"><button>支持作者</button><button>加入 QQ 群</button></div></section>
       </section>
     </section>
   </main>

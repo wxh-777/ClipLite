@@ -35,6 +35,9 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Source: "{#SourceRoot}\build-x64\Release\ClipLite.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\CHANGELOG.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\resources\support-wechat.png"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\resources\support-alipay.png"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\resources\support-qq.jpg"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\ClipLite.exe"
