@@ -30,6 +30,21 @@ Settings window:
 
 ![ClipLite settings window](docs/screenshots/settings.png)
 
+## Performance and Size
+
+ClipLite uses native Win32/GDI without WebView, Electron, or a large runtime. It keeps metadata and short previews in memory while reading full text, HTML, file, and image payloads from disk on demand.
+
+Reference measurements from the current Windows x64 Release build on this machine:
+
+- Working Set: `13.16 MB`
+- Private Bytes: `2.59 MB`
+- Main executable: `446.5 KB`
+- Startup time: `59.14 ms`
+- GDI objects: `13`
+- USER objects: `9`
+
+The values were sampled by `tools/measure.ps1` about one second after startup while idle, with the history window closed. Actual values vary with Windows version, DPI, system state, history data, and runtime scenario. These figures describe the local Release baseline and are not a fixed guarantee for every device.
+
 ## Download
 
 The Windows x64 release provides:

@@ -30,6 +30,21 @@ ClipLite 是一款仅支持 Windows 的原生剪贴板历史工具。它使用 C
 
 ![ClipLite 设置窗口](docs/screenshots/settings.png)
 
+## 性能与体积
+
+ClipLite 使用原生 Win32/GDI，不依赖 WebView、Electron 或大型运行时。它只在内存中保留历史元数据和短预览，完整文本、HTML、文件和图片内容按需从磁盘读取。
+
+当前 Windows x64 Release 本机实测参考：
+
+- Working Set：`13.16 MB`
+- Private Bytes：`2.59 MB`
+- 主程序体积：`446.5 KB`
+- 启动耗时：`59.14 ms`
+- GDI 对象：`13`
+- USER 对象：`9`
+
+数据由 `tools/measure.ps1` 在程序启动约 1 秒后、未打开历史窗口的空闲状态采样。实际数值会受到 Windows 版本、DPI、系统状态、历史数据和运行场景影响；这些数据用于展示本机 Release 基线，不构成所有设备上的固定承诺。
+
 ## 下载和运行
 
 正式发布包含两种 Windows x64 形式：
