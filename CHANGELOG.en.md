@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.2] - 2026-08-24
+
+Fixed the history popup taking input focus, bringing paste interaction closer to the Windows clipboard experience.
+
+### Fixes and Verification
+
+- The history popup is now non-activating, so the original application's input focus and caret remain intact.
+- A temporary keyboard hook routes list controls such as navigation, paging, Enter, and Esc to the history popup.
+- Typing ordinary content closes the history popup while allowing the characters to continue into the original application.
+- Removed UI Automation text rewriting and the unused `uiautomationcore` link; paste continues through standard Ctrl+V input.
+- x64 Release and isolated `ClipLiteStore` CTest pass.
+
 ## [1.0.1] - 2026-08-24
 
 Fixes duplicate text records caused by staged clipboard notifications and hardens malformed clipboard input, storage failure paths, and search task lifetime handling.

@@ -5,8 +5,6 @@
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <gdiplus.h>
-#include <uiautomation.h>
-#include <wrl/client.h>
 
 #include "clip_store.h"
 
@@ -120,6 +118,7 @@ constexpr UINT kExitMessage = WM_APP + 4;
 constexpr UINT kClosePopupMessage = WM_APP + 5;
 constexpr UINT kPopupSearchCompleteMessage = WM_APP + 6;
 constexpr UINT kRunPopupImageBenchmarkMessage = WM_APP + 7;
+constexpr UINT kPopupKeyboardMessage = WM_APP + 8;
 constexpr UINT_PTR kExpiryTimer = 3;
 constexpr UINT_PTR kClipboardCaptureTimer = 7;
 constexpr UINT_PTR kSettingsToggleTimer = 4;
@@ -230,8 +229,6 @@ struct AppState {
     HWND support = nullptr;
     HWND targetWindow = nullptr;
     HWND targetFocusWindow = nullptr;
-    Microsoft::WRL::ComPtr<IUIAutomation> automation;
-    Microsoft::WRL::ComPtr<IUIAutomationElement> targetAutomationFocus;
     HFONT popupFont = nullptr;
     HFONT popupTitleFont = nullptr;
     HFONT popupFilterFont = nullptr;
@@ -249,6 +246,7 @@ struct AppState {
     HBRUSH settingsInputBrush = nullptr;
     ULONG_PTR gdiplusToken = 0;
     HHOOK keyboardHook = nullptr;
+    HHOOK popupKeyboardHook = nullptr;
     bool winVHotkeyRegistered = false;
     HHOOK popupMouseHook = nullptr;
     bool winKeyDown = false;
@@ -699,7 +697,7 @@ const SettingsLocale kEnglishSettingsLocale{
     L"Some shortcuts could not be registered. Choose different combinations.",
     L"Custom shortcuts require at least one modifier key.",
     L"Sensitive markers: password, token, api_key, secret, and private keys; detected by content pattern.",
-     L"Application    ClipLite", L"Version        1.0.1 x64", L"Storage format  v4",
+     L"Application    ClipLite", L"Version        1.0.2 x64", L"Storage format  v4",
     L"Data directory  %LOCALAPPDATA%\\ClipLite", L"Browse", L"Clear history", L"Clear text",
     L"Clear images", L"Clear files", L"Press shortcut", L"Need modifier", L"One application per line", L"Auto",
     L"ClipLite Settings", L"Choose a valid cache directory.", L"Unable to create the cache directory.",
@@ -741,7 +739,7 @@ const SettingsLocale kChineseSettingsLocale{
     L"当前 %zu 条 \xB7 %ls", L"设置为 0 表示不限；置顶记录不会被自动清理。",
     L"部分快捷键注册失败，请更换组合键。", L"自定义快捷键至少需要一个修饰键。",
     L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。",
-     L"应用名称    ClipLite", L"版本        1.0.1 x64", L"存储格式    v4",
+     L"应用名称    ClipLite", L"版本        1.0.2 x64", L"存储格式    v4",
     L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清空历史", L"清理文本", L"清理图片",
     L"清理文件", L"按下组合键", L"需要修饰键", L"每行一个应用名称", L"自动", L"ClipLite 设置",
     L"请选择有效的缓存目录。", L"无法创建缓存目录。", L"目标目录已有历史数据，请选择空目录。",
@@ -2203,43 +2201,47 @@ void rememberPasteTarget(HWND candidate = nullptr, bool refreshFocus = true) {
 
     const HWND previousTarget = g_app->targetWindow;
     g_app->targetWindow = target;
-    if (!refreshFocus && previousTarget == target) return;
-    DWORD targetProcess = 0;
-    const DWORD targetThread = GetWindowThreadProcessId(target, &targetProcess);
-    GUITHREADINFO information{sizeof(information)};
-    if (targetThread != 0 && GetGUIThreadInfo(targetThread, &information) &&
-        IsWindow(information.hwndFocus) &&
-        GetAncestor(information.hwndFocus, GA_ROOT) == target) {
-        g_app->targetFocusWindow = information.hwndFocus;
-    } else if (previousTarget != target) {
-        g_app->targetFocusWindow = nullptr;
-    }
-
-    Microsoft::WRL::ComPtr<IUIAutomationElement> automationFocus;
-    int automationProcess = 0;
-    if (g_app->automation &&
-        SUCCEEDED(g_app->automation->GetFocusedElement(automationFocus.GetAddressOf())) &&
-        automationFocus && SUCCEEDED(automationFocus->get_CurrentProcessId(&automationProcess)) &&
-        static_cast<DWORD>(automationProcess) == targetProcess) {
-        g_app->targetAutomationFocus = automationFocus;
-    } else if (previousTarget != target) {
-        g_app->targetAutomationFocus.Reset();
+    const DWORD targetThread = GetWindowThreadProcessId(target, nullptr);
+    GUITHREADINFO threadInfo{sizeof(threadInfo)};
+    if (targetThread != 0 && GetGUIThreadInfo(targetThread, &threadInfo) &&
+        IsWindow(threadInfo.hwndFocus) && GetAncestor(threadInfo.hwndFocus, GA_ROOT) == target) {
+        g_app->targetFocusWindow = threadInfo.hwndFocus;
+    } else if (refreshFocus || previousTarget != target) {
+        g_app->targetFocusWindow = candidate;
     }
 }
 
 void restorePasteTargetFocus(HWND target) {
+    if (!IsWindow(target)) return;
     const DWORD currentThread = GetCurrentThreadId();
     const DWORD targetThread = GetWindowThreadProcessId(target, nullptr);
     const bool attached = targetThread != 0 && targetThread != currentThread &&
         AttachThreadInput(currentThread, targetThread, TRUE) != FALSE;
     SetForegroundWindow(target);
-    for (int attempt = 0; attempt < 10 && GetForegroundWindow() != target; ++attempt) Sleep(5);
-    if (attached) SetActiveWindow(target);
+    SetWindowPos(target, HWND_TOP, 0, 0, 0, 0,
+                 SWP_DRAWFRAME | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
     if (IsWindow(g_app->targetFocusWindow) &&
         GetAncestor(g_app->targetFocusWindow, GA_ROOT) == target) {
         SetFocus(g_app->targetFocusWindow);
     }
     if (attached) AttachThreadInput(currentThread, targetThread, FALSE);
+}
+
+bool waitForPasteModifiersReleased() {
+    constexpr int kMaxWaitMs = 500;
+    for (int elapsed = 0; elapsed < kMaxWaitMs; elapsed += 10) {
+        const bool pressed = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 ||
+            (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0 ||
+            (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0 ||
+            (GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0 ||
+            (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0 ||
+            (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0 ||
+            (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0 ||
+            (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0;
+        if (!pressed) return true;
+        Sleep(10);
+    }
+    return false;
 }
 
 void sendPaste(PasteMode mode = PasteMode::Automatic) {
@@ -2277,29 +2279,27 @@ void sendPaste(PasteMode mode = PasteMode::Automatic) {
         return;
     }
     restorePasteTargetFocus(target);
-    BOOL automationFocused = FALSE;
-    if (g_app->targetAutomationFocus) {
-        for (int attempt = 0; attempt < 20 && !automationFocused; ++attempt) {
-            g_app->targetAutomationFocus->SetFocus();
-            Sleep(25);
-            g_app->targetAutomationFocus->get_CurrentHasKeyboardFocus(&automationFocused);
-        }
-    } else {
-        Sleep(50);
+    if (!waitForPasteModifiersReleased()) {
+        appendDiagnosticLog("WARN", "paste: user modifier key is still pressed");
+        notifyPasteFailure();
+        if (keepPopup && IsWindow(g_app->popup)) ShowWindow(g_app->popup, SW_SHOWNOACTIVATE);
+        return;
     }
-    appendDiagnosticLog("INFO", automationFocused
-        ? "paste: target automation element focused"
-        : "paste: target automation element not focused");
-    INPUT inputs[4]{};
-    inputs[0].type = INPUT_KEYBOARD;
-    inputs[0].ki.wVk = VK_CONTROL;
-    inputs[1].type = INPUT_KEYBOARD;
-    inputs[1].ki.wVk = 'V';
-    inputs[2] = inputs[1];
-    inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
-    inputs[3] = inputs[0];
-    inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
-    if (SendInput(4, inputs, sizeof(INPUT)) != 4) {
+    INPUT keyDown[2]{};
+    keyDown[0].type = INPUT_KEYBOARD;
+    keyDown[0].ki.wVk = VK_LCONTROL;
+    keyDown[1].type = INPUT_KEYBOARD;
+    keyDown[1].ki.wVk = 'V';
+    const UINT sentDown = SendInput(2, keyDown, sizeof(INPUT));
+    Sleep(8);
+    INPUT keyUp[2]{};
+    keyUp[0] = keyDown[1];
+    keyUp[0].ki.dwFlags = KEYEVENTF_KEYUP;
+    keyUp[1] = keyDown[0];
+    keyUp[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    const UINT sentUp = SendInput(2, keyUp, sizeof(INPUT));
+    if (sentDown != 2 || sentUp != 2) {
+        SendInput(2, keyUp, sizeof(INPUT));
         appendDiagnosticLog("ERROR", "paste: SendInput failed", GetLastError());
         notifyPasteFailure();
         if (keepPopup && IsWindow(g_app->popup)) ShowWindow(g_app->popup, SW_SHOWNOACTIVATE);
@@ -2319,6 +2319,7 @@ DWORD lastInputTick() {
 
 HICON clipLiteIcon();
 void updatePopupMouseHook();
+void updatePopupKeyboardHook();
 
 void applyPopupWindowFrame(HWND hwnd, int width, int height) {
     if (!hwnd) return;
@@ -2335,6 +2336,7 @@ void applyPopupWindowFrame(HWND hwnd, int width, int height) {
 
 void showPopup(bool openedByWinV = false) {
     if (g_app->popup) {
+        if (GetForegroundWindow() != g_app->popup) rememberPasteTarget();
         g_app->popupOpenedByWinV = openedByWinV;
         g_app->popupOpenInputTick = lastInputTick();
         updatePopupMouseHook();
@@ -2343,7 +2345,8 @@ void showPopup(bool openedByWinV = false) {
         ShowWindow(g_app->popup, SW_SHOWNOACTIVATE);
         SetWindowPos(g_app->popup, HWND_TOPMOST, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        SetForegroundWindow(g_app->popup);
+        updatePopupKeyboardHook();
+        restorePasteTargetFocus(g_app->targetWindow);
         SetTimer(g_app->popup, kPopupOpenGuardTimer, kPopupOpenGuardMs, nullptr);
         return;
     }
@@ -2383,7 +2386,8 @@ void showPopup(bool openedByWinV = false) {
     if (y + height > info.rcWork.bottom) y = info.rcWork.bottom - height;
     x = std::max(x, static_cast<int>(info.rcWork.left));
     y = std::max(y, static_cast<int>(info.rcWork.top));
-    g_app->popup = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"ClipLitePopup",
+    g_app->popup = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+                                   L"ClipLitePopup",
                                    L"ClipLite", WS_POPUP | WS_CLIPCHILDREN, x, y, width, height,
                                    nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!g_app->popup) {
@@ -2397,7 +2401,8 @@ void showPopup(bool openedByWinV = false) {
     ShowWindow(g_app->popup, SW_SHOWNOACTIVATE);
     SetWindowPos(g_app->popup, HWND_TOPMOST, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    SetForegroundWindow(g_app->popup);
+    updatePopupKeyboardHook();
+    restorePasteTargetFocus(g_app->targetWindow);
     SetTimer(g_app->popup, kPopupOpenGuardTimer, kPopupOpenGuardMs, nullptr);
 }
 
@@ -2406,6 +2411,10 @@ void closePopup() {
     if (g_app->popupMouseHook) {
         UnhookWindowsHookEx(g_app->popupMouseHook);
         g_app->popupMouseHook = nullptr;
+    }
+    if (g_app->popupKeyboardHook) {
+        UnhookWindowsHookEx(g_app->popupKeyboardHook);
+        g_app->popupKeyboardHook = nullptr;
     }
     if (g_app->popup) {
         KillTimer(g_app->popup, kPopupScrollTimer);
@@ -2479,8 +2488,8 @@ void setPopupPinned(bool pinned) {
     if (!g_app->popup) return;
     SetWindowPos(g_app->popup, pinned ? HWND_TOPMOST : HWND_NOTOPMOST,
                  0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    if (pinned) SetForegroundWindow(g_app->popup);
     updatePopupMouseHook();
+    updatePopupKeyboardHook();
     InvalidateRect(g_app->popup, nullptr, FALSE);
 }
 
@@ -2552,7 +2561,7 @@ void showTrayMenu() {
 
 LRESULT CALLBACK popupMouseProc(int code, WPARAM wParam, LPARAM lParam) {
     if (code == HC_ACTION && g_app && g_app->popupMouseHook && g_app->popup &&
-        g_app->popupOpenedByWinV && !g_app->popupPinned &&
+        !g_app->popupPinned &&
         !g_app->popupOpening &&
         (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN ||
          wParam == WM_MBUTTONDOWN || wParam == WM_XBUTTONDOWN)) {
@@ -2566,13 +2575,99 @@ LRESULT CALLBACK popupMouseProc(int code, WPARAM wParam, LPARAM lParam) {
     return CallNextHookEx(nullptr, code, wParam, lParam);
 }
 
+bool isPopupKeyboardCommand(UINT virtualKey) {
+    switch (virtualKey) {
+    case VK_UP:
+    case VK_DOWN:
+    case VK_LEFT:
+    case VK_RIGHT:
+    case VK_PRIOR:
+    case VK_NEXT:
+    case VK_HOME:
+    case VK_END:
+    case VK_RETURN:
+    case VK_ESCAPE:
+    case VK_TAB:
+    case VK_DELETE:
+    case VK_F10:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool isPopupTextInputKey(UINT virtualKey) {
+    if ((virtualKey >= 'A' && virtualKey <= 'Z') ||
+        (virtualKey >= '0' && virtualKey <= '9') ||
+        (virtualKey >= VK_NUMPAD0 && virtualKey <= VK_NUMPAD9)) {
+        return true;
+    }
+    switch (virtualKey) {
+    case VK_SPACE:
+    case VK_BACK:
+    case VK_DECIMAL:
+    case VK_OEM_1:
+    case VK_OEM_PLUS:
+    case VK_OEM_COMMA:
+    case VK_OEM_MINUS:
+    case VK_OEM_PERIOD:
+    case VK_OEM_2:
+    case VK_OEM_3:
+    case VK_OEM_4:
+    case VK_OEM_5:
+    case VK_OEM_6:
+    case VK_OEM_7:
+    case VK_PACKET:
+    case VK_PROCESSKEY:
+        return true;
+    default:
+        return false;
+    }
+}
+
+LRESULT CALLBACK popupKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
+    if (code == HC_ACTION && g_app && g_app->popupKeyboardHook && g_app->popup) {
+        const auto* key = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
+        const bool keyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
+        const bool keyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
+        const bool injected = (key->flags & LLKHF_INJECTED) != 0;
+        const bool popupHasNoSystemFocus = GetForegroundWindow() != g_app->popup;
+        if (!injected && (keyDown || keyUp) && isPopupKeyboardCommand(key->vkCode) &&
+            popupHasNoSystemFocus) {
+            if (keyDown) PostMessageW(g_app->hidden, kPopupKeyboardMessage, key->vkCode, 0);
+            return 1;
+        }
+        if (!injected && keyDown && isPopupTextInputKey(key->vkCode) && popupHasNoSystemFocus) {
+            PostMessageW(g_app->hidden, kClosePopupMessage, 0, 0);
+        }
+    }
+    return CallNextHookEx(nullptr, code, wParam, lParam);
+}
+
+void updatePopupKeyboardHook() {
+    if (!g_app) return;
+    if (g_app->popupKeyboardHook) {
+        UnhookWindowsHookEx(g_app->popupKeyboardHook);
+        g_app->popupKeyboardHook = nullptr;
+    }
+    if (g_app->popup && g_app->targetWindow) {
+        g_app->popupKeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, popupKeyboardProc,
+                                                     GetModuleHandleW(nullptr), 0);
+        if (!g_app->popupKeyboardHook) {
+            appendDiagnosticLog("WARN", "popup: keyboard hook installation failed", GetLastError());
+        } else {
+            appendDiagnosticLog("INFO", "popup: dual-focus keyboard hook installed");
+        }
+    }
+}
+
 void updatePopupMouseHook() {
     if (!g_app) return;
     if (g_app->popupMouseHook) {
         UnhookWindowsHookEx(g_app->popupMouseHook);
         g_app->popupMouseHook = nullptr;
     }
-    if (g_app->popup && g_app->popupOpenedByWinV) {
+    if (g_app->popup && !g_app->popupPinned) {
         g_app->popupMouseHook = SetWindowsHookExW(WH_MOUSE_LL, popupMouseProc,
                                                   GetModuleHandleW(nullptr), 0);
     }
@@ -3028,7 +3123,7 @@ LRESULT CALLBACK editProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
             return 0;
         }
         if (wParam == VK_DOWN || wParam == VK_UP || wParam == VK_TAB) {
-            SetFocus(g_app->popup);
+            PostMessageW(g_app->hidden, kPopupKeyboardMessage, wParam, 0);
             return 0;
         }
         if (shortcutMatches(g_app->settingsData.popupSettingsHotkey, static_cast<UINT>(wParam))) {
@@ -6176,7 +6271,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             reinterpret_cast<LPARAM>(settingsLocale().popupSearchPlaceholder));
             g_app->oldEditProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
                 g_app->searchEdit, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(editProc)));
-            SetFocus(hwnd);
             return 0;
         }
     }
@@ -6360,6 +6454,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         if (message == kShowPopupMessage) {
             showPopup(wParam != 0);
+            return 0;
+        }
+        if (message == kPopupKeyboardMessage && g_app->popup) {
+            PostMessageW(g_app->popup, WM_KEYDOWN, wParam, 0);
             return 0;
         }
         if (message == kRunPopupImageBenchmarkMessage) {
@@ -6700,6 +6798,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
 
     if (hwnd == g_app->popup) {
+        if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
         if (message == WM_SETCURSOR) {
             POINT point{};
             GetCursorPos(&point);
@@ -6882,6 +6981,18 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             else if (wParam == VK_UP) { --g_app->selected; refreshVisible(); }
             else if (wParam == VK_DOWN) { ++g_app->selected; refreshVisible(); }
+            else if (wParam == VK_PRIOR) scrollPopup(-ui(96));
+            else if (wParam == VK_NEXT) scrollPopup(ui(96));
+            else if (wParam == VK_HOME) {
+                g_app->selected = 0;
+                refreshVisible();
+            } else if (wParam == VK_END) {
+                g_app->selected = static_cast<int>(g_app->visible.size()) - 1;
+                refreshVisible();
+            } else if (wParam == VK_TAB) {
+                ++g_app->selected;
+                refreshVisible();
+            }
             else if (shortcutMatches(g_app->settingsData.popupPasteHotkey,
                                      static_cast<UINT>(wParam))) sendPaste();
             else if (shortcutMatches(g_app->settingsData.popupDeleteHotkey,
@@ -7243,10 +7354,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     ScopedComInitialization comInitialization;
     AppState app;
     g_app = &app;
-    if (comInitialization.available()) {
-        CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
-                         IID_PPV_ARGS(app.automation.GetAddressOf()));
-    }
     const bool commandExit = wcsstr(commandLine, L"--exit") || wcsstr(commandLine, L"/exit");
     const bool commandHistory = wcsstr(commandLine, L"--history") || wcsstr(commandLine, L"/history");
     const bool commandSettings = wcsstr(commandLine, L"--settings") || wcsstr(commandLine, L"/settings");

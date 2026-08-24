@@ -2,7 +2,7 @@
 
 ClipLite 是一款仅支持 Windows 的原生剪贴板历史工具。它使用 C++17、Win32 API 和 GDI/GDI+ 构建，不依赖 WebView、Electron、WinUI、Qt 或其他大型运行时，重点是低常驻内存、可靠保存剪贴板格式和便携发布。
 
-当前正式版本：**1.0.1**（x64）
+当前正式版本：**1.0.2**（x64）
 
 英文文档：[README.en.md](README.en.md)
 
@@ -75,8 +75,8 @@ ClipLite 更适合希望“复制过的内容方便找回，但程序不要拖�
 
 正式发布包含两种 Windows x64 形式：
 
-- 安装包：`ClipLite-Setup-1.0.1-x64.exe`。支持自定义安装目录、开始菜单/桌面快捷方式和标准卸载。
-- 便携包：`ClipLite-1.0.1-portable-win-x64`。复制整个目录即可使用，数据保存在其中的 `data\\` 目录。
+- 安装包：`ClipLite-Setup-1.0.2-x64.exe`。支持自定义安装目录、开始菜单/桌面快捷方式和标准卸载。
+- 便携包：`ClipLite-1.0.2-portable-win-x64`。复制整个目录即可使用，数据保存在其中的 `data\\` 目录。
 
 便携包中的 `SHA256SUM.txt` 用于校验 `ClipLite.exe`。首次运行前请确认下载来源和文件校验值。
 

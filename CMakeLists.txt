@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(ClipLite VERSION 1.0.1 LANGUAGES CXX)
+project(ClipLite VERSION 1.0.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,7 +20,7 @@ add_executable(ClipLite WIN32
 
 target_include_directories(ClipLite PRIVATE include)
 target_compile_definitions(ClipLite PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(ClipLite PRIVATE user32 gdi32 shell32 shcore ole32 comctl32 crypt32 gdiplus dwmapi advapi32 uiautomationcore)
+target_link_libraries(ClipLite PRIVATE user32 gdi32 shell32 shcore ole32 comctl32 crypt32 gdiplus dwmapi advapi32)
 
 set(CLIPLITE_SUPPORT_ASSETS
     support-wechat.png

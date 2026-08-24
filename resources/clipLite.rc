@@ -1,7 +1,7 @@
 #include <winver.h>
 
-#define CLIPLITE_VERSION 1,0,1,0
-#define CLIPLITE_VERSION_STRING "1.0.1"
+#define CLIPLITE_VERSION 1,0,2,0
+#define CLIPLITE_VERSION_STRING "1.0.2"
 #define IDI_CLIPLITE 101
 
 IDI_CLIPLITE ICON "clipLite.ico"
