@@ -324,8 +324,12 @@ int main() {
         if (!pressure.append(ClipType::Text, value, clipLiteHash(value))) return 32;
     }
     if (pressure.activeCount() != 10000) return 33;
+    constexpr std::size_t pinnedPressureIndex = 5000;
+    if (!pressure.togglePinned(pinnedPressureIndex) ||
+        !pressure.items()[pinnedPressureIndex].pinned) return 84;
     ClipStore pressureReopened(10000);
-    if (!pressureReopened.open() || pressureReopened.activeCount() != 10000) return 34;
+    if (!pressureReopened.open() || pressureReopened.activeCount() != 10000 ||
+        !pressureReopened.items()[pinnedPressureIndex].pinned) return 34;
     pressureReopened.clear();
     pressure.clear();
     return 0;

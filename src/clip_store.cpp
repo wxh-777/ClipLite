@@ -5,6 +5,7 @@
 #include <wincrypt.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
@@ -37,12 +38,25 @@ struct DiskHeader {
 };
 #pragma pack(pop)
 
-std::uint32_t crc32Update(std::uint32_t crc, const char* data, std::size_t size) {
-    for (std::size_t i = 0; i < size; ++i) {
-        crc ^= static_cast<unsigned char>(data[i]);
-        for (int bit = 0; bit < 8; ++bit) {
-            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+const std::array<std::uint32_t, 256>& crc32Table() {
+    static const std::array<std::uint32_t, 256> table = [] {
+        std::array<std::uint32_t, 256> values{};
+        for (std::size_t index = 0; index < values.size(); ++index) {
+            std::uint32_t value = static_cast<std::uint32_t>(index);
+            for (int bit = 0; bit < 8; ++bit) {
+                value = (value >> 1) ^ (0xEDB88320u & (0u - (value & 1u)));
+            }
+            values[index] = value;
         }
+        return values;
+    }();
+    return table;
+}
+
+std::uint32_t crc32Update(std::uint32_t crc, const char* data, std::size_t size) {
+    const auto& table = crc32Table();
+    for (std::size_t i = 0; i < size; ++i) {
+        crc = table[(crc ^ static_cast<unsigned char>(data[i])) & 0xFFu] ^ (crc >> 8);
     }
     return crc;
 }
@@ -617,14 +631,33 @@ bool ClipStore::remove(std::size_t index) {
 
 bool ClipStore::togglePinned(std::size_t index) {
     if (index >= items_.size()) return false;
-    const std::vector<ClipItem> backup = items_;
-    items_[index].pinned = !items_[index].pinned;
-    if (rebuildFile()) {
-        ++revision_;
-        return true;
+    const ClipItem& item = items_[index];
+    const std::uint64_t flagsOffset = item.fileOffset + offsetof(DiskHeader, flags);
+    if (flagsOffset < item.fileOffset ||
+        flagsOffset > static_cast<std::uint64_t>(std::numeric_limits<__int64>::max())) {
+        return false;
     }
-    items_ = backup;
-    return false;
+
+    std::FILE* file = nullptr;
+    _wfopen_s(&file, path_.c_str(), L"r+b");
+    if (!file) return false;
+
+    const bool pinned = !item.pinned;
+    const std::uint8_t flags = static_cast<std::uint8_t>((pinned ? 1u : 0u) |
+                                                          (item.encrypted ? 2u : 0u));
+    const bool written = _fseeki64(file, static_cast<__int64>(flagsOffset), SEEK_SET) == 0 &&
+        std::fwrite(&flags, sizeof(flags), 1, file) == 1;
+    const bool flushed = written && std::fflush(file) == 0;
+    const bool committed = flushed && _commit(_fileno(file)) == 0;
+    const bool closed = std::fclose(file) == 0;
+    if (!written || !flushed || !committed || !closed) {
+        if (written) rebuildFile(); // Restore the original flag if the direct write was only partial.
+        return false;
+    }
+
+    items_[index].pinned = pinned;
+    ++revision_;
+    return true;
 }
 
 bool ClipStore::setCategory(std::size_t index, std::uint32_t category) {

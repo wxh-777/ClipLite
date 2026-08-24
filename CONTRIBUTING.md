@@ -23,6 +23,14 @@ cmake --build build-x64 --config Release
 ctest --test-dir build-x64 -C Release --output-on-failure
 ```
 
+图片滚动基准使用自包含临时数据，不会读取真实历史：
+
+```pwsh
+build-x64\Release\ClipLite.exe --benchmark-image-scroll
+```
+
+该命令在 `%TEMP%` 下创建进程专属目录，生成 100 张 `1024 x 1024` 图片，并在日志中输出 P50、P95、最慢帧和 GDI 对象数。
+
 代码使用 C++17、Win32 API 和 GDI/GDI+。不要引入 Electron、WebView、WinUI、XAML、Qt、SQLite 或常驻 GPU 资源。不要把用户历史、日志、崩溃转储或构建产物提交到仓库。
 
 ## 修改要求

@@ -41,6 +41,7 @@ ClipLite is designed to stay quietly in the tray. It uses less memory than many 
 - The Windows Task Manager showed about `2.5 MB` of memory in a local idle observation.
 - The main executable is about `446 KB`, smaller than an ordinary phone photo.
 - Startup took about `0.06 seconds`, while full history and images are read only when needed.
+- The history popup caches recently displayed image thumbnails, so continuous scrolling does not reread and decode the same source image.
 
 This makes ClipLite suitable for long-running background use and portable folders such as a USB drive.
 

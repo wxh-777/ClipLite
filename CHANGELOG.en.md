@@ -6,6 +6,9 @@ Fixes duplicate text records caused by staged clipboard notifications and harden
 
 ### Fixes and Verification
 
+- The history popup caches recently displayed image thumbnails to avoid rereading and decoding source images while scrolling; large-image CRC checks now use a lookup table.
+- Added a self-contained image-scroll benchmark that creates 100 images in a process-specific temporary directory and records frame times and GDI object counts.
+- History-item clicks now trigger paste after mouse release and include target-input focus diagnostics.
 - Plain text and HTML now share a stable semantic hash, preserving richer HTML and promoting the record to the front; self-written paste data remains filtered.
 - DIB/DIBV5 validation now checks headers, compression, palettes, stride, pixel length, and integer bounds, with the same validation used by previews.
 - Clipboard restoration checks `GlobalLock`, `SetClipboardData`, and ownership transfer; append, rebuild, rekey, and settings writes preserve the previous data on failure.

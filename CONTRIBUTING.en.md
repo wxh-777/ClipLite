@@ -23,6 +23,14 @@ cmake --build build-x64 --config Release
 ctest --test-dir build-x64 -C Release --output-on-failure
 ```
 
+The image-scroll benchmark uses self-contained temporary data and never reads real history:
+
+```pwsh
+build-x64\Release\ClipLite.exe --benchmark-image-scroll
+```
+
+The command creates a process-specific directory under `%TEMP%`, generates 100 `1024 x 1024` images, and records P50, P95, worst-frame, and GDI object metrics in its log.
+
 The code uses C++17, Win32, and GDI/GDI+. Do not add Electron, WebView, WinUI, XAML, Qt, SQLite, or resident GPU resources. Do not commit user history, logs, dumps, or build outputs.
 
 ## Change Requirements

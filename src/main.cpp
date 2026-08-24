@@ -5,6 +5,8 @@
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <gdiplus.h>
+#include <uiautomation.h>
+#include <wrl/client.h>
 
 #include "clip_store.h"
 
@@ -117,6 +119,7 @@ constexpr UINT kShowSettingsMessage = WM_APP + 3;
 constexpr UINT kExitMessage = WM_APP + 4;
 constexpr UINT kClosePopupMessage = WM_APP + 5;
 constexpr UINT kPopupSearchCompleteMessage = WM_APP + 6;
+constexpr UINT kRunPopupImageBenchmarkMessage = WM_APP + 7;
 constexpr UINT_PTR kExpiryTimer = 3;
 constexpr UINT_PTR kClipboardCaptureTimer = 7;
 constexpr UINT_PTR kSettingsToggleTimer = 4;
@@ -176,6 +179,7 @@ constexpr int kSupportPaymentWidth = 720;
 constexpr int kSupportPaymentHeight = 630;
 constexpr int kSupportQqWidth = 560;
 constexpr int kSupportQqHeight = 700;
+constexpr std::size_t kPopupImagePreviewCacheLimit = 12;
 
 struct Settings {
     bool winV = false;
@@ -211,6 +215,13 @@ struct Settings {
     std::array<CategoryLimit, kStorageCategoryCount> categoryLimits{};
 };
 
+struct PopupImagePreview {
+    std::size_t itemIndex = 0;
+    HBITMAP bitmap = nullptr;
+    int width = 0;
+    int height = 0;
+};
+
 struct AppState {
     HWND hidden = nullptr;
     HWND popup = nullptr;
@@ -218,6 +229,9 @@ struct AppState {
     HWND settings = nullptr;
     HWND support = nullptr;
     HWND targetWindow = nullptr;
+    HWND targetFocusWindow = nullptr;
+    Microsoft::WRL::ComPtr<IUIAutomation> automation;
+    Microsoft::WRL::ComPtr<IUIAutomationElement> targetAutomationFocus;
     HFONT popupFont = nullptr;
     HFONT popupTitleFont = nullptr;
     HFONT popupFilterFont = nullptr;
@@ -263,12 +277,14 @@ struct AppState {
     bool popupOpenedByWinV = false;
     DWORD popupOpenInputTick = 0;
     bool scrollDragging = false;
+    bool fastImagePreview = false;
     int scrollDragStartY = 0;
     int scrollDragStartOffset = 0;
     int hoveredRow = -1;
     int hoveredFilter = -1;
     int hoveredDeleteRow = -1;
     int hoveredPinRow = -1;
+    int pressedRow = -1;
     bool hoveredHeader = false;
     int hoveredSettingsTab = -1;
     int hoveredSettingsThemeMode = -1;
@@ -305,6 +321,9 @@ struct AppState {
     Settings settingsData;
     ClipStore store;
     std::vector<std::size_t> visible;
+    std::vector<PopupImagePreview> imagePreviews;
+    std::uint64_t imagePreviewRevision = 0;
+    int benchmarkExitCode = 0;
     std::uint64_t ignoredClipboardHash = 0;
     std::uint64_t ignoredClipboardTextHash = 0;
     ULONGLONG ignoredClipboardUntil = 0;
@@ -322,6 +341,7 @@ struct SupportWindowState {
 AppState* g_app = nullptr;
 UINT g_taskbarCreated = 0;
 UINT g_uiDpi = 96;
+std::wstring g_diagnosticLogPath;
 
 struct PopupSearchResult {
     HWND popup = nullptr;
@@ -331,7 +351,8 @@ struct PopupSearchResult {
 };
 
 std::wstring diagnosticLogPath() {
-    return clipLiteDataDirectory() + L"\\cliplite.log";
+    return g_diagnosticLogPath.empty() ? clipLiteDataDirectory() + L"\\cliplite.log"
+                                       : g_diagnosticLogPath;
 }
 
 void appendDiagnosticLog(const char* level, const char* message, DWORD errorCode = 0) {
@@ -368,9 +389,98 @@ void scheduleSettingsSync(HWND hwnd);
 void openSupportWindow(bool qqGroup);
 LRESULT CALLBACK supportWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 HICON clipLiteIcon();
+void clearPopupImagePreviews();
 
 int ui(int value) {
     return MulDiv(value, static_cast<int>(g_uiDpi), 96);
+}
+
+struct BenchmarkDirectoryGuard {
+    std::wstring path;
+    HANDLE handle = INVALID_HANDLE_VALUE;
+
+    ~BenchmarkDirectoryGuard() {
+        if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
+        if (!path.empty()) {
+            DeleteFileW((path + L"\\history.bin").c_str());
+            DeleteFileW((path + L"\\history.bin.tmp").c_str());
+            RemoveDirectoryW(path.c_str());
+        }
+    }
+};
+
+struct ScopedComInitialization {
+    HRESULT result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+    ~ScopedComInitialization() {
+        if (SUCCEEDED(result)) CoUninitialize();
+    }
+
+    bool available() const {
+        return SUCCEEDED(result) || result == RPC_E_CHANGED_MODE;
+    }
+};
+
+bool createImageBenchmarkDirectory(BenchmarkDirectoryGuard& directory) {
+    wchar_t temporaryPath[MAX_PATH]{};
+    const DWORD temporaryLength = GetTempPathW(ARRAYSIZE(temporaryPath), temporaryPath);
+    if (temporaryLength == 0 || temporaryLength >= ARRAYSIZE(temporaryPath)) return false;
+    std::wstring root(temporaryPath, temporaryLength);
+    while (root.size() > 3 && (root.back() == L'\\' || root.back() == L'/')) root.pop_back();
+
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        const std::wstring candidate = root + L"\\ClipLiteImageBenchmark-" +
+            std::to_wstring(GetCurrentProcessId()) + L"-" +
+            std::to_wstring(GetTickCount64()) + L"-" + std::to_wstring(attempt);
+        if (!CreateDirectoryW(candidate.c_str(), nullptr)) {
+            if (GetLastError() == ERROR_ALREADY_EXISTS) continue;
+            return false;
+        }
+        directory.path = candidate;
+        directory.handle = CreateFileW(candidate.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                       nullptr, OPEN_EXISTING,
+                                       FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (directory.handle == INVALID_HANDLE_VALUE) return false;
+        BY_HANDLE_FILE_INFORMATION information{};
+        if (!GetFileInformationByHandle(directory.handle, &information) ||
+            (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            CloseHandle(directory.handle);
+            directory.handle = INVALID_HANDLE_VALUE;
+            return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+std::string makeBenchmarkImagePayload(unsigned char value) {
+    constexpr int kBenchmarkImageWidth = 1024;
+    constexpr int kBenchmarkImageHeight = 1024;
+    constexpr std::size_t kBenchmarkImageBytes =
+        static_cast<std::size_t>(kBenchmarkImageWidth) * kBenchmarkImageHeight * 4;
+    BITMAPINFOHEADER header{};
+    header.biSize = sizeof(header);
+    header.biWidth = kBenchmarkImageWidth;
+    header.biHeight = -kBenchmarkImageHeight;
+    header.biPlanes = 1;
+    header.biBitCount = 32;
+    header.biCompression = BI_RGB;
+    header.biSizeImage = static_cast<DWORD>(kBenchmarkImageBytes);
+    std::string payload(sizeof(header) + kBenchmarkImageBytes, static_cast<char>(value));
+    std::memcpy(payload.data(), &header, sizeof(header));
+    return payload;
+}
+
+bool populateBenchmarkImages() {
+    if (!g_app->store.open() || !g_app->store.clear()) return false;
+    for (int index = 0; index < 100; ++index) {
+        const std::string payload = makeBenchmarkImagePayload(
+            static_cast<unsigned char>(index % 251 + 1));
+        if (!g_app->store.append(ClipType::Image, payload, clipLiteHash(payload), "Image stress")) {
+            return false;
+        }
+    }
+    return true;
 }
 
 UINT monitorDpi(HMONITOR monitor) {
@@ -1968,81 +2078,168 @@ void animatePopupScrollTo(int target) {
 
 void scrollPopup(int delta) {
     if (!g_app->popup || g_app->visible.empty()) return;
-    const int base = g_app->scrollAnimating ? g_app->scrollAnimationTo : g_app->scrollPosition;
-    animatePopupScrollTo(base + delta);
+    g_app->scrollAnimating = false;
+    g_app->fastImagePreview = true;
+    KillTimer(g_app->popup, kPopupScrollTimer);
+    setPopupScrollPosition(g_app->scrollPosition + delta);
+    invalidatePopupList(g_app->popup);
 }
 
 void notifyPasteFailure() {
     MessageBeep(MB_ICONWARNING);
 }
 
+void clearPopupImagePreviews() {
+    if (!g_app) return;
+    for (const PopupImagePreview& preview : g_app->imagePreviews) {
+        if (preview.bitmap) DeleteObject(preview.bitmap);
+    }
+    g_app->imagePreviews.clear();
+    g_app->imagePreviewRevision = g_app->store.revision();
+}
+
+bool drawCachedImagePreview(HDC dc, const PopupImagePreview& preview, const RECT& rowRect) {
+    HDC source = CreateCompatibleDC(dc);
+    if (!source) return false;
+    HGDIOBJ previous = SelectObject(source, preview.bitmap);
+    const int left = rowRect.left + (rowRect.right - rowRect.left - preview.width) / 2;
+    const int top = rowRect.top + (rowRect.bottom - rowRect.top - preview.height) / 2;
+    const bool drawn = BitBlt(dc, left, top, preview.width, preview.height,
+                              source, 0, 0, SRCCOPY) != FALSE;
+    SelectObject(source, previous);
+    DeleteDC(source);
+    return drawn;
+}
+
 bool drawImagePreview(HDC dc, const ClipItem& item, const RECT& rowRect) {
+    if (!g_app) return false;
+    if (g_app->imagePreviewRevision != g_app->store.revision()) clearPopupImagePreviews();
+
+    const std::size_t itemIndex = static_cast<std::size_t>(&item - g_app->store.items().data());
+    auto cached = std::find_if(g_app->imagePreviews.begin(), g_app->imagePreviews.end(),
+                               [itemIndex](const PopupImagePreview& preview) {
+        return preview.itemIndex == itemIndex;
+    });
+    if (cached != g_app->imagePreviews.end()) {
+        if (drawCachedImagePreview(dc, *cached, rowRect)) return true;
+        if (cached->bitmap) DeleteObject(cached->bitmap);
+        g_app->imagePreviews.erase(cached);
+    }
+
     std::string payload;
-    if (!g_app->store.readPayload(&item - g_app->store.items().data(), payload)) return false;
+    if (!g_app->store.readPayload(itemIndex, payload)) return false;
     DibLayout layout{};
     if (!validateDibPayload(payload, &layout)) return false;
 
     BITMAPINFOHEADER header{};
     std::memcpy(&header, payload.data(), sizeof(header));
-    const std::size_t bitsOffset = layout.bitsOffset;
-
-    const auto* bitmapInfo = reinterpret_cast<const BITMAPINFO*>(payload.data());
     const int width = rowRect.right - rowRect.left;
     const int height = rowRect.bottom - rowRect.top;
-    const auto drawWithStretch = [&]() {
-        const float imageWidth = static_cast<float>(header.biWidth);
-        const float imageHeight = static_cast<float>(std::abs(header.biHeight));
-        const float scale = std::min(static_cast<float>(width) / imageWidth,
-                                     static_cast<float>(height) / imageHeight);
-        const int targetWidth = std::max(1, static_cast<int>(imageWidth * scale + 0.5f));
-        const int targetHeight = std::max(1, static_cast<int>(imageHeight * scale + 0.5f));
-        const int targetLeft = rowRect.left + (width - targetWidth) / 2;
-        const int targetTop = rowRect.top + (height - targetHeight) / 2;
-        const bool scrolling = g_app && (g_app->scrollAnimating || g_app->scrollDragging);
-        const int previousMode = SetStretchBltMode(dc, scrolling ? COLORONCOLOR : HALFTONE);
+    const float imageWidth = static_cast<float>(header.biWidth);
+    const float imageHeight = static_cast<float>(std::llabs(static_cast<long long>(header.biHeight)));
+    const float scale = std::min(static_cast<float>(width) / imageWidth,
+                                 static_cast<float>(height) / imageHeight);
+    const int previewWidth = std::max(1, static_cast<int>(imageWidth * scale + 0.5f));
+    const int previewHeight = std::max(1, static_cast<int>(imageHeight * scale + 0.5f));
+    const auto drawDirect = [&]() {
+        const int left = rowRect.left + (width - previewWidth) / 2;
+        const int top = rowRect.top + (height - previewHeight) / 2;
+        const int previousMode = SetStretchBltMode(dc,
+            g_app->scrollDragging ? COLORONCOLOR : HALFTONE);
         POINT previousOrigin{};
         SetBrushOrgEx(dc, 0, 0, &previousOrigin);
-        const int result = StretchDIBits(dc, targetLeft, targetTop, targetWidth, targetHeight,
-                                          0, 0, header.biWidth,
-                                          static_cast<int>(std::llabs(static_cast<long long>(header.biHeight))),
-                                         payload.data() + bitsOffset, bitmapInfo,
+        const int result = StretchDIBits(dc, left, top, previewWidth, previewHeight,
+                                         0, 0, header.biWidth,
+                                         static_cast<int>(std::llabs(static_cast<long long>(header.biHeight))),
+                                         payload.data() + layout.bitsOffset,
+                                         reinterpret_cast<const BITMAPINFO*>(payload.data()),
                                          DIB_RGB_COLORS, SRCCOPY);
         SetBrushOrgEx(dc, previousOrigin.x, previousOrigin.y, nullptr);
         SetStretchBltMode(dc, previousMode);
         return result != GDI_ERROR;
     };
 
-    if (!g_app || g_app->gdiplusToken == 0 || g_app->scrollAnimating || g_app->scrollDragging) {
-        return drawWithStretch();
+    HDC previewDc = CreateCompatibleDC(dc);
+    HBITMAP previewBitmap = previewDc ? CreateCompatibleBitmap(dc, previewWidth, previewHeight) : nullptr;
+    if (!previewDc || !previewBitmap) {
+        if (previewBitmap) DeleteObject(previewBitmap);
+        if (previewDc) DeleteDC(previewDc);
+        return drawDirect();
     }
-    HBITMAP bitmap = CreateDIBitmap(dc, &header, CBM_INIT,
-                                    payload.data() + bitsOffset, bitmapInfo, DIB_RGB_COLORS);
-    if (!bitmap) return drawWithStretch();
-    bool drawn = false;
-    {
-        Gdiplus::Bitmap source(bitmap, nullptr);
-        if (source.GetLastStatus() == Gdiplus::Ok) {
-            Gdiplus::Graphics graphics(dc);
-            configureGdiGraphics(graphics);
-            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-            graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
-            const float imageWidth = static_cast<float>(source.GetWidth());
-            const float imageHeight = static_cast<float>(source.GetHeight());
-            const float scale = std::min(static_cast<float>(width) / imageWidth,
-                                         static_cast<float>(height) / imageHeight);
-            const float targetWidth = imageWidth * scale;
-            const float targetHeight = imageHeight * scale;
-            const Gdiplus::RectF destination(
-                static_cast<float>(rowRect.left) + (static_cast<float>(width) - targetWidth) / 2.0f,
-                static_cast<float>(rowRect.top) + (static_cast<float>(height) - targetHeight) / 2.0f,
-                targetWidth, targetHeight);
-            drawn = graphics.DrawImage(&source, destination, 0.0f, 0.0f,
-                                       imageWidth, imageHeight, Gdiplus::UnitPixel) == Gdiplus::Ok;
-            graphics.Flush(Gdiplus::FlushIntentionSync);
-        }
+    HGDIOBJ previous = SelectObject(previewDc, previewBitmap);
+    const int previousMode = SetStretchBltMode(previewDc,
+        g_app->fastImagePreview || g_app->scrollDragging ? COLORONCOLOR : HALFTONE);
+    POINT previousOrigin{};
+    SetBrushOrgEx(previewDc, 0, 0, &previousOrigin);
+    const int result = StretchDIBits(previewDc, 0, 0, previewWidth, previewHeight,
+                                     0, 0, header.biWidth,
+                                     static_cast<int>(std::llabs(static_cast<long long>(header.biHeight))),
+                                     payload.data() + layout.bitsOffset,
+                                     reinterpret_cast<const BITMAPINFO*>(payload.data()),
+                                     DIB_RGB_COLORS, SRCCOPY);
+    SetBrushOrgEx(previewDc, previousOrigin.x, previousOrigin.y, nullptr);
+    SetStretchBltMode(previewDc, previousMode);
+    SelectObject(previewDc, previous);
+    DeleteDC(previewDc);
+    if (result == GDI_ERROR) {
+        DeleteObject(previewBitmap);
+        return drawDirect();
     }
-    DeleteObject(bitmap);
-    return drawn || drawWithStretch();
+
+    if (g_app->imagePreviews.size() >= kPopupImagePreviewCacheLimit) {
+        if (g_app->imagePreviews.front().bitmap) DeleteObject(g_app->imagePreviews.front().bitmap);
+        g_app->imagePreviews.erase(g_app->imagePreviews.begin());
+    }
+    g_app->imagePreviews.push_back(PopupImagePreview{itemIndex, previewBitmap,
+                                                       previewWidth, previewHeight});
+    return drawCachedImagePreview(dc, g_app->imagePreviews.back(), rowRect) || drawDirect();
+}
+
+void rememberPasteTarget(HWND candidate = nullptr, bool refreshFocus = true) {
+    if (!g_app) return;
+    if (!candidate) candidate = GetForegroundWindow();
+    HWND target = candidate ? GetAncestor(candidate, GA_ROOT) : nullptr;
+    if (!IsWindow(target) || target == g_app->popup) return;
+
+    const HWND previousTarget = g_app->targetWindow;
+    g_app->targetWindow = target;
+    if (!refreshFocus && previousTarget == target) return;
+    DWORD targetProcess = 0;
+    const DWORD targetThread = GetWindowThreadProcessId(target, &targetProcess);
+    GUITHREADINFO information{sizeof(information)};
+    if (targetThread != 0 && GetGUIThreadInfo(targetThread, &information) &&
+        IsWindow(information.hwndFocus) &&
+        GetAncestor(information.hwndFocus, GA_ROOT) == target) {
+        g_app->targetFocusWindow = information.hwndFocus;
+    } else if (previousTarget != target) {
+        g_app->targetFocusWindow = nullptr;
+    }
+
+    Microsoft::WRL::ComPtr<IUIAutomationElement> automationFocus;
+    int automationProcess = 0;
+    if (g_app->automation &&
+        SUCCEEDED(g_app->automation->GetFocusedElement(automationFocus.GetAddressOf())) &&
+        automationFocus && SUCCEEDED(automationFocus->get_CurrentProcessId(&automationProcess)) &&
+        static_cast<DWORD>(automationProcess) == targetProcess) {
+        g_app->targetAutomationFocus = automationFocus;
+    } else if (previousTarget != target) {
+        g_app->targetAutomationFocus.Reset();
+    }
+}
+
+void restorePasteTargetFocus(HWND target) {
+    const DWORD currentThread = GetCurrentThreadId();
+    const DWORD targetThread = GetWindowThreadProcessId(target, nullptr);
+    const bool attached = targetThread != 0 && targetThread != currentThread &&
+        AttachThreadInput(currentThread, targetThread, TRUE) != FALSE;
+    SetForegroundWindow(target);
+    for (int attempt = 0; attempt < 10 && GetForegroundWindow() != target; ++attempt) Sleep(5);
+    if (attached) SetActiveWindow(target);
+    if (IsWindow(g_app->targetFocusWindow) &&
+        GetAncestor(g_app->targetFocusWindow, GA_ROOT) == target) {
+        SetFocus(g_app->targetFocusWindow);
+    }
+    if (attached) AttachThreadInput(currentThread, targetThread, FALSE);
 }
 
 void sendPaste(PasteMode mode = PasteMode::Automatic) {
@@ -2079,8 +2276,20 @@ void sendPaste(PasteMode mode = PasteMode::Automatic) {
         if (keepPopup && IsWindow(g_app->popup)) ShowWindow(g_app->popup, SW_SHOWNOACTIVATE);
         return;
     }
-    SetForegroundWindow(target);
-    Sleep(25);
+    restorePasteTargetFocus(target);
+    BOOL automationFocused = FALSE;
+    if (g_app->targetAutomationFocus) {
+        for (int attempt = 0; attempt < 20 && !automationFocused; ++attempt) {
+            g_app->targetAutomationFocus->SetFocus();
+            Sleep(25);
+            g_app->targetAutomationFocus->get_CurrentHasKeyboardFocus(&automationFocused);
+        }
+    } else {
+        Sleep(50);
+    }
+    appendDiagnosticLog("INFO", automationFocused
+        ? "paste: target automation element focused"
+        : "paste: target automation element not focused");
     INPUT inputs[4]{};
     inputs[0].type = INPUT_KEYBOARD;
     inputs[0].ki.wVk = VK_CONTROL;
@@ -2096,6 +2305,7 @@ void sendPaste(PasteMode mode = PasteMode::Automatic) {
         if (keepPopup && IsWindow(g_app->popup)) ShowWindow(g_app->popup, SW_SHOWNOACTIVATE);
         return;
     }
+    appendDiagnosticLog("INFO", "paste: keyboard input sent");
     if (keepPopup && IsWindow(g_app->popup)) {
         SetWindowPos(g_app->popup, HWND_TOPMOST, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -2137,7 +2347,7 @@ void showPopup(bool openedByWinV = false) {
         SetTimer(g_app->popup, kPopupOpenGuardTimer, kPopupOpenGuardMs, nullptr);
         return;
     }
-    g_app->targetWindow = GetForegroundWindow();
+    rememberPasteTarget();
     GetCursorPos(&g_app->popupPoint);
     const HMONITOR monitor = MonitorFromPoint(g_app->popupPoint, MONITOR_DEFAULTTONEAREST);
     g_uiDpi = monitorDpi(monitor);
@@ -2146,6 +2356,7 @@ void showPopup(bool openedByWinV = false) {
     g_app->scrollOffset = 0;
     g_app->scrollPosition = 0;
     g_app->scrollAnimating = false;
+    g_app->fastImagePreview = false;
     g_app->filterScrollOffset = 0;
     g_app->filterType = 0;
     g_app->pinnedOnly = false;
@@ -2158,6 +2369,7 @@ void showPopup(bool openedByWinV = false) {
     g_app->popupActivated = false;
     g_app->popupOpenedByWinV = openedByWinV;
     g_app->popupOpenInputTick = lastInputTick();
+    clearPopupImagePreviews();
     g_app->visible = g_app->store.search({});
 
     const int width = ui(kPopupWidth);
@@ -2207,6 +2419,56 @@ void closePopup() {
     g_app->popupActivated = false;
     g_app->popupOpenedByWinV = false;
     g_app->popupOpenInputTick = 0;
+}
+
+void runPopupImageScrollBenchmark() {
+    const std::size_t imageCount = g_app->store.countType(ClipType::Image);
+    if (imageCount == 0) {
+        appendDiagnosticLog("ERROR", "benchmark: no image records available");
+        g_app->benchmarkExitCode = 1;
+        PostQuitMessage(0);
+        return;
+    }
+    showPopup();
+    if (!g_app->popup) {
+        appendDiagnosticLog("ERROR", "benchmark: unable to create history popup");
+        g_app->benchmarkExitCode = 1;
+        PostQuitMessage(0);
+        return;
+    }
+    UpdateWindow(g_app->popup);
+
+    POINT point{ui(120), ui(kPopupListTop + 40)};
+    ClientToScreen(g_app->popup, &point);
+    const WPARAM wheel = static_cast<WPARAM>(static_cast<WORD>(-WHEEL_DELTA)) << 16;
+    const LPARAM position = MAKELPARAM(static_cast<WORD>(point.x), static_cast<WORD>(point.y));
+    const int iterations = std::min(40, std::max(1,
+        static_cast<int>(g_app->visible.size()) - popupVisibleRows()));
+    std::vector<LONGLONG> samples;
+    samples.reserve(iterations);
+    const LONGLONG frequency = settingsToggleClockFrequency();
+    for (int iteration = 0; iteration < iterations; ++iteration) {
+        const LONGLONG start = settingsToggleClock();
+        SendMessageW(g_app->popup, WM_MOUSEWHEEL, wheel, position);
+        UpdateWindow(g_app->popup);
+        samples.push_back(settingsToggleClock() - start);
+    }
+    std::sort(samples.begin(), samples.end());
+    const auto milliseconds = [frequency](LONGLONG ticks) {
+        return static_cast<double>(ticks) * 1000.0 /
+            static_cast<double>(std::max<LONGLONG>(1, frequency));
+    };
+    const std::size_t p50Index = (samples.size() - 1) / 2;
+    const std::size_t p95Index = std::min(samples.size() - 1,
+        (samples.size() * 95 + 99) / 100 - 1);
+    char message[256]{};
+    std::snprintf(message, sizeof(message),
+                  "benchmark: image-scroll images=%zu frames=%d p50=%.2fms p95=%.2fms max=%.2fms gdi=%lu",
+                  imageCount, iterations, milliseconds(samples[p50Index]), milliseconds(samples[p95Index]),
+                  milliseconds(samples.back()), GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS));
+    appendDiagnosticLog("INFO", message);
+    closePopup();
+    PostQuitMessage(0);
 }
 
 void setPopupPinned(bool pinned) {
@@ -6020,6 +6282,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
     if (message == WM_DESTROY && hwnd == g_app->popup) {
         cancelPopupSearch();
+        clearPopupImagePreviews();
         if (g_app->popupFont) DeleteObject(g_app->popupFont);
         if (g_app->popupInputBrush) DeleteObject(g_app->popupInputBrush);
         releasePaintFonts(g_app->popupTitleFont, g_app->popupFilterFont,
@@ -6097,6 +6360,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         if (message == kShowPopupMessage) {
             showPopup(wParam != 0);
+            return 0;
+        }
+        if (message == kRunPopupImageBenchmarkMessage) {
+            runPopupImageScrollBenchmark();
             return 0;
         }
         if (message == kShowSettingsMessage) {
@@ -6498,7 +6765,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == WM_ACTIVATEAPP && !wParam) {
             if (g_app->popupPinned || g_app->popupOpenedByWinV) {
                 const HWND target = GetForegroundWindow();
-                if (IsWindow(target) && target != hwnd) g_app->targetWindow = target;
+                if (IsWindow(target) && target != hwnd) rememberPasteTarget(target, false);
                 return DefWindowProcW(hwnd, message, wParam, lParam);
             }
             if (g_app->popupOpening || !g_app->popupActivated) {
@@ -6753,7 +7020,18 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             return 0;
         }
+        if (message == WM_LBUTTONUP && g_app->pressedRow >= 0) {
+            const int pressedRow = g_app->pressedRow;
+            g_app->pressedRow = -1;
+            const int row = popupRowAt(GET_Y_LPARAM(lParam));
+            if (row == pressedRow && row < static_cast<int>(g_app->visible.size())) {
+                g_app->selected = row;
+                sendPaste();
+            }
+            return 0;
+        }
         if (message == WM_LBUTTONDOWN) {
+            g_app->pressedRow = -1;
             RECT client{};
             GetClientRect(hwnd, &client);
             const int clickX = GET_X_LPARAM(lParam);
@@ -6825,12 +7103,15 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                     return 0;
                 }
                 if (pinClick) {
-                    g_app->store.togglePinned(g_app->visible[static_cast<std::size_t>(row)]);
-                    refreshVisible();
+                    if (g_app->store.togglePinned(g_app->visible[static_cast<std::size_t>(row)])) {
+                        if (g_app->pinnedOnly) refreshVisible();
+                        else invalidatePopupHover(hwnd, row, -1, false);
+                    }
                     return 0;
                 }
                 g_app->selected = row;
-                sendPaste();
+                g_app->pressedRow = row;
+                invalidatePopupList(hwnd);
             }
             return 0;
         }
@@ -6883,6 +7164,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             HDC dc = BeginPaint(hwnd, &ps);
             paintPopup(hwnd, dc, &ps.rcPaint);
             EndPaint(hwnd, &ps);
+            g_app->fastImagePreview = false;
             return 0;
         }
         if (message == WM_ACTIVATE &&
@@ -6895,7 +7177,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE) {
             if (g_app->popupPinned || g_app->popupOpenedByWinV) {
                 const HWND target = reinterpret_cast<HWND>(lParam);
-                if (IsWindow(target) && target != hwnd) g_app->targetWindow = target;
+                if (IsWindow(target) && target != hwnd) rememberPasteTarget(target, false);
                 return DefWindowProcW(hwnd, message, wParam, lParam);
             }
             if (g_app->popupOpening || !g_app->popupActivated) {
@@ -6958,17 +7240,43 @@ void openSettings() {
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    ScopedComInitialization comInitialization;
     AppState app;
     g_app = &app;
+    if (comInitialization.available()) {
+        CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+                         IID_PPV_ARGS(app.automation.GetAddressOf()));
+    }
+    const bool commandExit = wcsstr(commandLine, L"--exit") || wcsstr(commandLine, L"/exit");
+    const bool commandHistory = wcsstr(commandLine, L"--history") || wcsstr(commandLine, L"/history");
+    const bool commandSettings = wcsstr(commandLine, L"--settings") || wcsstr(commandLine, L"/settings");
+    const bool commandImageBenchmark = wcsstr(commandLine, L"--benchmark-image-scroll") != nullptr;
+    const bool commandElevatedRestart = wcsstr(commandLine, L"--elevated-restart") != nullptr;
+    BenchmarkDirectoryGuard benchmarkDirectory;
+    if (commandImageBenchmark) {
+        if (!createImageBenchmarkDirectory(benchmarkDirectory)) return 1;
+        g_diagnosticLogPath = benchmarkDirectory.path + L".log";
+    }
     appendDiagnosticLog("INFO", "startup: process initialization started");
     g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
-    loadSettings(app.settingsData);
+    if (commandImageBenchmark) {
+        app.settingsData.maxItems = 0;
+        app.settingsData.maxDiskMb = 0;
+        app.settingsData.maxContentMb = 32;
+        app.settingsData.pauseMonitoring = true;
+        app.settingsData.showSettingsOnStartup = false;
+        app.settingsData.showStartupNotification = false;
+    } else {
+        loadSettings(app.settingsData);
+    }
     app.popupPinned = app.settingsData.historyWindowPinned;
     appendDiagnosticLog("INFO", "startup: settings loaded");
     app.store.setMaxItems(static_cast<std::size_t>(app.settingsData.maxItems));
     app.store.setEncryption(app.settingsData.encryptData);
     app.store.setMaxPayloadBytes(static_cast<std::uint32_t>(app.settingsData.maxContentMb) * 1024u * 1024u);
-    if (!app.settingsData.dataDirectory.empty() &&
+    if (commandImageBenchmark) {
+        if (!app.store.setDataDirectory(benchmarkDirectory.path)) return 1;
+    } else if (!app.settingsData.dataDirectory.empty() &&
         !app.store.setDataDirectory(utf8ToWide(app.settingsData.dataDirectory))) {
         app.settingsData.dataDirectory.clear();
     }
@@ -6979,10 +7287,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         showStartupFailure(settingsLocale().unableCreateMutex);
         return 1;
     }
-    const bool commandExit = wcsstr(commandLine, L"--exit") || wcsstr(commandLine, L"/exit");
-    const bool commandHistory = wcsstr(commandLine, L"--history") || wcsstr(commandLine, L"/history");
-    const bool commandSettings = wcsstr(commandLine, L"--settings") || wcsstr(commandLine, L"/settings");
-    const bool commandElevatedRestart = wcsstr(commandLine, L"--elevated-restart") != nullptr;
     if (mutexError == ERROR_ALREADY_EXISTS && commandElevatedRestart) {
         CloseHandle(mutex);
         mutex = nullptr;
@@ -7002,6 +7306,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         }
     }
     if (mutexError == ERROR_ALREADY_EXISTS) {
+        if (commandImageBenchmark) {
+            CloseHandle(mutex);
+            return 2;
+        }
         appendDiagnosticLog("INFO", "startup: existing instance received launch request");
         HWND existing = FindWindowExW(HWND_MESSAGE, nullptr, L"ClipLiteHidden", nullptr);
         if (existing) {
@@ -7028,7 +7336,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         app.settingsData.runAsAdministrator = false;
         saveSettings(app.settingsData);
     }
-    if (!app.store.open()) {
+    const bool storeOpened = commandImageBenchmark ? populateBenchmarkImages() : app.store.open();
+    if (!storeOpened) {
         appendDiagnosticLog("ERROR", "startup: history storage open failed");
         showStartupFailure(settingsLocale().unableOpenStore);
         ReleaseMutex(mutex);
@@ -7109,7 +7418,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         appendDiagnosticLog("WARN", "startup: tray icon registration failed", GetLastError());
     }
     if (app.settingsData.showStartupNotification) showStartupNotification();
-    if (commandHistory) {
+    if (commandImageBenchmark) {
+        PostMessageW(app.hidden, kRunPopupImageBenchmarkMessage, 0, 0);
+    } else if (commandHistory) {
         PostMessageW(app.hidden, kShowPopupMessage, 0, 0);
     } else if (commandSettings || app.settingsData.showSettingsOnStartup) {
         PostMessageW(app.hidden, kShowSettingsMessage, 0, 0);
@@ -7132,5 +7443,5 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     if (app.gdiplusToken != 0) Gdiplus::GdiplusShutdown(app.gdiplusToken);
     ReleaseMutex(mutex);
     CloseHandle(mutex);
-    return 0;
+    return app.benchmarkExitCode;
 }
