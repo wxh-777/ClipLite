@@ -4,12 +4,15 @@
 
 Fixed the history popup taking input focus, bringing paste interaction closer to the Windows clipboard experience.
 
+Fixed text previews being shown as invalid when a UTF-8 character was split at the preview boundary; the full text and paste content were unaffected.
+
 ### Fixes and Verification
 
 - The history popup is now non-activating, so the original application's input focus and caret remain intact.
 - A temporary keyboard hook routes list controls such as navigation, paging, Enter, and Esc to the history popup.
 - Typing ordinary content closes the history popup while allowing the characters to continue into the original application.
 - Removed UI Automation text rewriting and the unused `uiautomationcore` link; paste continues through standard Ctrl+V input.
+- UTF-8 preview-boundary coverage was added to the storage tests, including restart recovery.
 - x64 Release and isolated `ClipLiteStore` CTest pass.
 
 ## [1.0.1] - 2026-08-24

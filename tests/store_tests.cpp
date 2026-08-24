@@ -128,6 +128,19 @@ int main() {
     if (unicode.search(u8"贴板").size() != 1) return 39;
     unicode.clear();
 
+    ClipStore previewBoundary(10);
+    previewBoundary.open();
+    previewBoundary.clear();
+    const std::string boundaryText = std::string(159, 'a') + u8"中";
+    if (!previewBoundary.append(ClipType::Text, boundaryText, clipLiteHash(boundaryText)) ||
+        previewBoundary.items()[0].preview != std::string(159, 'a')) return 84;
+    ClipStore previewBoundaryReopened(10);
+    if (!previewBoundaryReopened.open()) return 851;
+    if (previewBoundaryReopened.items().size() != 1) return 852;
+    if (previewBoundaryReopened.items()[0].preview != std::string(159, 'a')) return 85;
+    previewBoundaryReopened.clear();
+    previewBoundary.clear();
+
     const std::string visibleHtmlText = "personal token";
     const std::string hiddenHtml = "<p>personal token</p><span data-offset=\"23\"></span>";
     const TestStoredHtmlHeader htmlHeader{0x314D5448,

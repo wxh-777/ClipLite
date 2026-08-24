@@ -138,6 +138,28 @@ char lowerAsciiChar(char value) {
         ? static_cast<char>(value + ('a' - 'A')) : value;
 }
 
+std::string truncateUtf8(const std::string& value, std::size_t maxBytes) {
+    const std::size_t limit = std::min(value.size(), maxBytes);
+    std::size_t offset = 0;
+    while (offset < limit) {
+        const unsigned char lead = static_cast<unsigned char>(value[offset]);
+        std::size_t sequenceSize = 0;
+        if (lead <= 0x7F) sequenceSize = 1;
+        else if (lead >= 0xC2 && lead <= 0xDF) sequenceSize = 2;
+        else if (lead >= 0xE0 && lead <= 0xEF) sequenceSize = 3;
+        else if (lead >= 0xF0 && lead <= 0xF4) sequenceSize = 4;
+        else return value.substr(0, limit);
+
+        if (sequenceSize > limit - offset) break;
+        for (std::size_t index = 1; index < sequenceSize; ++index) {
+            const unsigned char continuation = static_cast<unsigned char>(value[offset + index]);
+            if ((continuation & 0xC0) != 0x80) return value.substr(0, limit);
+        }
+        offset += sequenceSize;
+    }
+    return value.substr(0, offset);
+}
+
 bool matchesType(ClipType requested, ClipType actual) {
     if (requested == ClipType::Text) {
         return actual == ClipType::Text || actual == ClipType::Html;
@@ -367,7 +389,9 @@ bool ClipStore::open() {
         else if (isImage) preview = "[Image]";
         if (header.type == static_cast<std::uint8_t>(ClipType::Html)) {
             const std::string htmlPreview = htmlTextPreview(preview);
-            preview = htmlPreview.empty() ? "[HTML]" : htmlPreview.substr(0, 160);
+            preview = htmlPreview.empty() ? "[HTML]" : truncateUtf8(htmlPreview, 160);
+        } else {
+            preview = truncateUtf8(preview, 160);
         }
         if (header.type == static_cast<std::uint8_t>(ClipType::Files)) preview = "[Files] " + preview;
         item.preview = std::move(preview);
@@ -898,8 +922,9 @@ std::vector<std::size_t> ClipStore::search(const ClipSearchSnapshot& snapshot,
 
 std::string ClipStore::makePreview(ClipType type, const std::string& payload) {
     if (type == ClipType::Image || type == ClipType::ImageV5) return "[Image]";
-    std::string value = type == ClipType::Html ? htmlTextPreview(payload) : payload.substr(0, 160);
+    std::string value = type == ClipType::Html ? htmlTextPreview(payload) : payload;
     if (value.empty() && type == ClipType::Html) return "[HTML]";
+    value = truncateUtf8(value, 160);
     if (type == ClipType::Files) value = "[Files] " + value;
     for (char& c : value) if (c == '\r' || c == '\n' || c == '\t') c = ' ';
     return value;
