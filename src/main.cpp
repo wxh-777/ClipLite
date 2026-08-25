@@ -88,6 +88,7 @@ constexpr int kSettingClearImage = 41;
 constexpr int kSettingClearFiles = 42;
 constexpr int kSettingSupportAuthor = 43;
 constexpr int kSettingJoinQqGroup = 44;
+constexpr int kSettingSearchImeCompatibility = 45;
 constexpr int kSettingShortcutHistory = 50;
 constexpr int kSettingShortcutSettings = 51;
 constexpr int kSettingShortcutPause = 52;
@@ -122,6 +123,7 @@ constexpr UINT kPopupSearchCompleteMessage = WM_APP + 6;
 constexpr UINT kRunPopupImageBenchmarkMessage = WM_APP + 7;
 constexpr UINT kPopupKeyboardMessage = WM_APP + 8;
 constexpr UINT kSupportImageLoadedMessage = WM_APP + 9;
+constexpr UINT kPopupEnterImeMessage = WM_APP + 10;
 constexpr UINT_PTR kExpiryTimer = 3;
 constexpr UINT_PTR kClipboardCaptureTimer = 7;
 constexpr UINT_PTR kSettingsToggleTimer = 4;
@@ -193,6 +195,7 @@ struct Settings {
     bool startWithWindows = false;
     bool showSettingsOnStartup = true;
     bool showStartupNotification = true;
+    bool searchImeCompatibility = false;
     bool historyWindowPinned = false;
     bool runAsAdministrator = false;
     bool encryptData = false;
@@ -276,6 +279,7 @@ struct AppState {
     bool popupActivated = false;
     bool popupOpenedByWinV = false;
     DWORD popupOpenInputTick = 0;
+    bool popupImeMode = false;
     bool scrollDragging = false;
     bool fastImagePreview = false;
     int scrollDragStartY = 0;
@@ -315,6 +319,9 @@ struct AppState {
     int filterType = 0;
     bool pinnedOnly = false;
     std::string query;
+    bool popupSearchInputActive = false;
+    bool popupSearchControlDown = false;
+    bool popupSuppressImeTriggerSpace = false;
     std::shared_ptr<std::atomic<bool>> searchCancellation;
     std::thread searchWorker;
     std::uint64_t searchGeneration = 0;
@@ -379,6 +386,11 @@ struct PopupSearchResult {
     std::uint64_t generation = 0;
     std::uint64_t storeRevision = 0;
     std::vector<std::size_t> candidates;
+};
+
+struct PopupImeKeyEvent {
+    KBDLLHOOKSTRUCT key{};
+    WPARAM hookMessage = 0;
 };
 
 std::wstring diagnosticLogPath() {
@@ -560,6 +572,7 @@ struct SettingsLocale {
     const wchar_t* darkTheme;
     const wchar_t* language;
     const wchar_t* systemCard;
+    const wchar_t* searchInputCompatibility;
     const wchar_t* pauseMonitoring;
     const wchar_t* startWithWindows;
     const wchar_t* showSettingsOnStartup;
@@ -712,6 +725,7 @@ struct SettingsLocale {
 
 const SettingsLocale kEnglishSettingsLocale{
     L"Appearance and interaction", L"Dark theme", L"Language", L"System and integration",
+    L"Search input compatibility\nKeep the original app in the foreground; use Ctrl + Space for Chinese IME.",
     L"Pause clipboard monitoring", L"Start with Windows", L"Open settings after startup",
     L"Show startup notification", L"Run ClipLite as administrator (restart required to disable)",
     L"Important system shortcut", L"Force replace Win + V", L"Global shortcuts", L"Open clipboard history", L"Open settings",
@@ -733,7 +747,7 @@ const SettingsLocale kEnglishSettingsLocale{
     L"Some shortcuts could not be registered. Choose different combinations.",
     L"Custom shortcuts require at least one modifier key.",
     L"Sensitive markers: password, token, api_key, secret, and private keys; detected by content pattern.",
-     L"Application    ClipLite", L"Version        1.0.4 x64", L"Storage format  v4",
+      L"Application    ClipLite", L"Version        1.0.5 x64", L"Storage format  v4",
     L"Data directory  %LOCALAPPDATA%\\ClipLite", L"Browse", L"Clear history", L"Clear text",
     L"Clear images", L"Clear files", L"Press shortcut", L"Need modifier", L"One application per line", L"Auto",
     L"ClipLite Settings", L"Choose a valid cache directory.", L"Unable to create the cache directory.",
@@ -760,7 +774,8 @@ const SettingsLocale kEnglishSettingsLocale{
 };
 
 const SettingsLocale kChineseSettingsLocale{
-    L"界面与交互", L"深色主题", L"语言", L"系统与集成", L"暂停剪贴板监听", L"随 Windows 启动",
+    L"界面与交互", L"深色主题", L"语言", L"系统与集成",
+    L"搜索输入兼容模式\n保持原应用前台；按 Ctrl + Space 使用中文输入法。", L"暂停剪贴板监听", L"随 Windows 启动",
     L"启动后打开设置", L"启动后显示系统提示", L"以管理员权限运行（关闭后下次启动生效）",
     L"重要系统快捷键", L"强制替换 Win + V", L"全局快捷键", L"打开剪贴板历史", L"打开设置",
     L"暂停/恢复剪贴板监听", L"历史窗口快捷键", L"粘贴选中项目", L"粘贴为纯文本", L"粘贴为富文本",
@@ -776,7 +791,7 @@ const SettingsLocale kChineseSettingsLocale{
     L"当前 %zu 条 \xB7 %ls", L"设置为 0 表示不限；置顶记录不会被自动清理。",
     L"部分快捷键注册失败，请更换组合键。", L"自定义快捷键至少需要一个修饰键。",
     L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。",
-     L"应用名称    ClipLite", L"版本        1.0.4 x64", L"存储格式    v4",
+     L"应用名称    ClipLite", L"版本        1.0.5 x64", L"存储格式    v4",
     L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清空历史", L"清理文本", L"清理图片",
     L"清理文件", L"按下组合键", L"需要修饰键", L"每行一个应用名称", L"自动", L"ClipLite 设置",
     L"请选择有效的缓存目录。", L"无法创建缓存目录。", L"目标目录已有历史数据，请选择空目录。",
@@ -905,6 +920,7 @@ void loadSettings(Settings& settings) {
         if (std::strncmp(line, "showSettingsOnStartup=1", 23) == 0) settings.showSettingsOnStartup = true;
         if (std::strncmp(line, "showStartupNotification=0", 25) == 0) settings.showStartupNotification = false;
         if (std::strncmp(line, "showStartupNotification=1", 25) == 0) settings.showStartupNotification = true;
+        if (std::strncmp(line, "searchImeCompatibility=1", 24) == 0) settings.searchImeCompatibility = true;
         if (std::strncmp(line, "historyWindowPinned=1", 21) == 0) settings.historyWindowPinned = true;
         if (std::strncmp(line, "runAsAdministrator=1", 20) == 0) settings.runAsAdministrator = true;
         if (std::strncmp(line, "encryptData=1", 13) == 0) settings.encryptData = true;
@@ -1025,6 +1041,7 @@ void saveSettings(const Settings& settings) {
            << "startWithWindows=" << (settings.startWithWindows ? 1 : 0) << "\n"
            << "showSettingsOnStartup=" << (settings.showSettingsOnStartup ? 1 : 0) << "\n"
            << "showStartupNotification=" << (settings.showStartupNotification ? 1 : 0) << "\n"
+           << "searchImeCompatibility=" << (settings.searchImeCompatibility ? 1 : 0) << "\n"
            << "historyWindowPinned=" << (settings.historyWindowPinned ? 1 : 0) << "\n"
            << "runAsAdministrator=" << (settings.runAsAdministrator ? 1 : 0) << "\n"
            << "encryptData=" << (settings.encryptData ? 1 : 0) << "\n"
@@ -2287,6 +2304,10 @@ void sendPaste(PasteMode mode = PasteMode::Automatic) {
     g_app->ignoredClipboardUntil = GetTickCount64() + 750;
     HWND target = g_app->targetWindow;
     const bool keepPopup = g_app->popupPinned;
+    g_app->popupImeMode = false;
+    g_app->popupSearchInputActive = false;
+    g_app->popupSearchControlDown = false;
+    g_app->popupSuppressImeTriggerSpace = false;
     if (keepPopup) {
         ShowWindow(g_app->popup, SW_HIDE);
     } else {
@@ -2359,6 +2380,10 @@ void applyPopupWindowFrame(HWND hwnd, int width, int height) {
 void showPopup(bool openedByWinV = false) {
     if (g_app->popup) {
         if (GetForegroundWindow() != g_app->popup) rememberPasteTarget();
+        g_app->popupImeMode = false;
+        g_app->popupSearchInputActive = false;
+        g_app->popupSearchControlDown = false;
+        g_app->popupSuppressImeTriggerSpace = false;
         g_app->popupOpenedByWinV = openedByWinV;
         g_app->popupOpenInputTick = lastInputTick();
         updatePopupMouseHook();
@@ -2429,6 +2454,7 @@ void showPopup(bool openedByWinV = false) {
 
 void closePopup() {
     cancelPopupSearch();
+    const HWND target = g_app->targetWindow;
     if (g_app->popupMouseHook) {
         UnhookWindowsHookEx(g_app->popupMouseHook);
         g_app->popupMouseHook = nullptr;
@@ -2444,10 +2470,15 @@ void closePopup() {
     }
     g_app->popup = nullptr;
     g_app->searchEdit = nullptr;
+    g_app->popupSearchInputActive = false;
+    g_app->popupSearchControlDown = false;
+    g_app->popupSuppressImeTriggerSpace = false;
+    g_app->popupImeMode = false;
     g_app->popupOpening = false;
     g_app->popupActivated = false;
     g_app->popupOpenedByWinV = false;
     g_app->popupOpenInputTick = 0;
+    if (IsWindow(target)) restorePasteTargetFocus(target);
 }
 
 void runPopupImageScrollBenchmark() {
@@ -2645,6 +2676,102 @@ bool isPopupTextInputKey(UINT virtualKey) {
     }
 }
 
+bool popupSearchHasFocus() {
+    return g_app && g_app->popup && g_app->searchEdit &&
+           IsWindow(g_app->searchEdit) && g_app->popupSearchInputActive;
+}
+
+bool popupShouldEnterImeMode(const KBDLLHOOKSTRUCT& key) {
+    if (!g_app || g_app->popupImeMode) return false;
+    if (key.vkCode == VK_PROCESSKEY) return true;
+    if (key.vkCode == VK_SPACE && g_app->popupSearchControlDown) return true;
+    return false;
+}
+
+bool activatePopupSearchFocus(bool imeMode) {
+    if (!g_app || !g_app->popup || !g_app->searchEdit ||
+        (imeMode && g_app->popupImeMode)) return false;
+    g_app->popupImeMode = imeMode;
+    g_app->popupSearchInputActive = false;
+    g_app->popupSearchControlDown = false;
+    g_app->popupSuppressImeTriggerSpace = false;
+    KillTimer(g_app->popup, kPopupDeactivateTimer);
+    SetForegroundWindow(g_app->popup);
+    SetActiveWindow(g_app->popup);
+    SetFocus(g_app->searchEdit);
+    g_app->popupActivated = GetForegroundWindow() == g_app->popup;
+    if (!g_app->popupActivated) {
+        g_app->popupImeMode = false;
+        g_app->popupSearchInputActive = false;
+        g_app->popupSuppressImeTriggerSpace = false;
+        return false;
+    }
+    InvalidateRect(g_app->popup, nullptr, FALSE);
+    return true;
+}
+
+void enterPopupImeMode() {
+    activatePopupSearchFocus(true);
+}
+
+void syncPopupSearchKeyboardLayout() {
+    if (!g_app || !IsWindow(g_app->targetWindow)) return;
+    const DWORD targetThread = GetWindowThreadProcessId(g_app->targetWindow, nullptr);
+    if (targetThread == 0) return;
+    const HKL layout = GetKeyboardLayout(targetThread);
+    if (layout) ActivateKeyboardLayout(layout, 0);
+}
+
+void updatePopupSearchKeyboardState(const KBDLLHOOKSTRUCT& key, bool keyDown) {
+    BYTE state[256]{};
+    if (!GetKeyboardState(state)) return;
+    const BYTE value = keyDown ? 0x80 : 0;
+    state[key.vkCode] = static_cast<BYTE>((state[key.vkCode] & 0x01) | value);
+    switch (key.vkCode) {
+    case VK_LSHIFT:
+    case VK_RSHIFT:
+        state[VK_SHIFT] = value;
+        break;
+    case VK_LCONTROL:
+    case VK_RCONTROL:
+        state[VK_CONTROL] = value;
+        break;
+    case VK_LMENU:
+    case VK_RMENU:
+        state[VK_MENU] = value;
+        break;
+    case VK_CAPITAL:
+    case VK_NUMLOCK:
+    case VK_SCROLL:
+        if (keyDown) state[key.vkCode] ^= 0x01;
+        break;
+    default:
+        break;
+    }
+    SetKeyboardState(state);
+}
+
+LPARAM popupKeyMessageLParam(const KBDLLHOOKSTRUCT& key, bool keyUp) {
+    LPARAM value = 1L | (static_cast<LPARAM>(key.scanCode & 0xff) << 16);
+    if ((key.flags & LLKHF_EXTENDED) != 0) value |= 1L << 24;
+    if (keyUp) value |= (1L << 30) | (1L << 31);
+    return value;
+}
+
+void forwardPopupSearchKey(const KBDLLHOOKSTRUCT& key, WPARAM hookMessage) {
+    if (!g_app || !g_app->searchEdit || !IsWindow(g_app->searchEdit)) return;
+    const bool keyDown = hookMessage == WM_KEYDOWN || hookMessage == WM_SYSKEYDOWN;
+    const bool keyUp = hookMessage == WM_KEYUP || hookMessage == WM_SYSKEYUP;
+    if (!keyDown && !keyUp) return;
+    const bool systemKey = (key.flags & LLKHF_ALTDOWN) != 0;
+    const UINT message = keyDown
+        ? (systemKey ? WM_SYSKEYDOWN : WM_KEYDOWN)
+        : (systemKey ? WM_SYSKEYUP : WM_KEYUP);
+    const LPARAM lParam = popupKeyMessageLParam(key, keyUp);
+    updatePopupSearchKeyboardState(key, keyDown);
+    PostMessageW(g_app->searchEdit, message, key.vkCode, lParam);
+}
+
 LRESULT CALLBACK popupKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
     if (code == HC_ACTION && g_app && g_app->popupKeyboardHook && g_app->popup) {
         const auto* key = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
@@ -2652,12 +2779,32 @@ LRESULT CALLBACK popupKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
         const bool keyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
         const bool injected = (key->flags & LLKHF_INJECTED) != 0;
         const bool popupHasNoSystemFocus = GetForegroundWindow() != g_app->popup;
+        const bool searchHasFocus = popupSearchHasFocus();
+        if (!injected && searchHasFocus && (keyDown || keyUp)) {
+            if (key->vkCode == VK_LCONTROL || key->vkCode == VK_RCONTROL) {
+                g_app->popupSearchControlDown = keyDown;
+            }
+        }
+        if (!injected && popupHasNoSystemFocus && searchHasFocus && (keyDown || keyUp) &&
+            key->vkCode != VK_LWIN && key->vkCode != VK_RWIN) {
+            if (keyDown && popupShouldEnterImeMode(*key)) {
+                auto* event = new PopupImeKeyEvent{*key, wParam};
+                if (!PostMessageW(g_app->hidden, kPopupEnterImeMessage,
+                                  reinterpret_cast<WPARAM>(event), 0)) {
+                    delete event;
+                }
+                return 1;
+            }
+            forwardPopupSearchKey(*key, wParam);
+            return 1;
+        }
         if (!injected && (keyDown || keyUp) && isPopupKeyboardCommand(key->vkCode) &&
-            popupHasNoSystemFocus) {
+            popupHasNoSystemFocus && !searchHasFocus) {
             if (keyDown) PostMessageW(g_app->hidden, kPopupKeyboardMessage, key->vkCode, 0);
             return 1;
         }
-        if (!injected && keyDown && isPopupTextInputKey(key->vkCode) && popupHasNoSystemFocus) {
+        if (!injected && keyDown && isPopupTextInputKey(key->vkCode) &&
+            popupHasNoSystemFocus && !searchHasFocus) {
             PostMessageW(g_app->hidden, kClosePopupMessage, 0, 0);
         }
     }
@@ -3344,8 +3491,26 @@ LRESULT CALLBACK editProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
         return TRUE;
     }
+    if (message == WM_CHAR && wParam == L' ' && g_app->popupSuppressImeTriggerSpace) {
+        g_app->popupSuppressImeTriggerSpace = false;
+        return 0;
+    }
+    if (message == WM_KEYUP && wParam == VK_SPACE) {
+        g_app->popupSuppressImeTriggerSpace = false;
+    }
+    if (message == WM_LBUTTONDOWN && !g_app->settingsData.searchImeCompatibility) {
+        activatePopupSearchFocus(false);
+    }
+    if (message == WM_LBUTTONDOWN || message == WM_SETFOCUS) {
+        g_app->popupSearchInputActive = true;
+        syncPopupSearchKeyboardLayout();
+    }
     if (message == WM_SETFOCUS || message == WM_KILLFOCUS) {
         const LRESULT result = CallWindowProcW(g_app->oldEditProc, hwnd, message, wParam, lParam);
+        if (message == WM_KILLFOCUS) {
+            g_app->popupSearchInputActive = false;
+            g_app->popupSearchControlDown = false;
+        }
         InvalidateRect(hwnd, nullptr, FALSE);
         if (g_app->popup) InvalidateRect(g_app->popup, nullptr, FALSE);
         return result;
@@ -3547,7 +3712,9 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
             makeSettingsRow(hwnd, settingsLocale().showStartupNotification,
                             {kSettingStartupNotification}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().runAsAdministrator,
-                            {kSettingRunAsAdministrator}, {36}, {20}, contentWidth)
+                            {kSettingRunAsAdministrator}, {36}, {20}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().searchInputCompatibility,
+                            {kSettingSearchImeCompatibility}, {36}, {20}, contentWidth)
         });
     } else if (g_app->settingsTab == kSettingsShortcutPage) {
         makeCard(settingsLocale().importantSystemShortcut, {
@@ -4118,14 +4285,14 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     }
     DrawTextW(dc, settingsLocale().popupTitle, -1, &titleRect,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    const COLORREF searchBorder = g_app->searchEdit && GetFocus() == g_app->searchEdit
+    const COLORREF searchBorder = g_app->searchEdit && g_app->popupSearchInputActive
         ? accent : border;
     const RECT searchRect{ui(kPopupSearchLeft), ui(12), ui(kPopupSearchRight), ui(48)};
     drawGdiRoundedSurface(dc, searchRect,
                           settingsThemeColor(RGB(255, 255, 255), RGB(48, 53, 60)),
                           searchBorder, 6);
     drawSearchIcon(dc, ui(kPopupSearchLeft + 14), ui(30),
-                   g_app->searchEdit && GetFocus() == g_app->searchEdit ? accent : secondary);
+                   g_app->searchEdit && g_app->popupSearchInputActive ? accent : secondary);
     const wchar_t* clearLabel = settingsLocale().popupClearSearch;
     SelectObject(dc, filterFont);
     RECT clearRect{ui(kPopupClearLeft), ui(14), ui(kPopupClearRight), ui(46)};
@@ -4462,6 +4629,8 @@ void createSettingsControlsModern(HWND hwnd) {
     createToggle(kSettingStartupSettings, 640, 334, g_app->settingsData.showSettingsOnStartup);
     createToggle(kSettingStartupNotification, 640, 369, g_app->settingsData.showStartupNotification);
     createToggle(kSettingRunAsAdministrator, 640, 404, g_app->settingsData.runAsAdministrator);
+    createToggle(kSettingSearchImeCompatibility, 640, 439,
+                 g_app->settingsData.searchImeCompatibility);
     createToggle(kSettingEncrypt, 640, 116, g_app->settingsData.encryptData);
     createShortcut(kSettingShortcutHistory, 110, g_app->settingsData.historyHotkey);
     createShortcut(kSettingShortcutSettings, 154, g_app->settingsData.settingsHotkey);
@@ -4622,7 +4791,7 @@ void updateSettingsTabControls(HWND hwnd) {
     }
     const int ids[] = {kSettingDark, kSettingWinV, kSettingLanguage, kSettingPause,
                          kSettingStartup, kSettingStartupSettings, kSettingStartupNotification,
-                         kSettingRunAsAdministrator,
+                         kSettingRunAsAdministrator, kSettingSearchImeCompatibility,
                         kSettingEncrypt, kSettingMaxItems,
                         kSettingRetentionDays, kSettingMaxDiskMb, kSettingMaxContentMb,
                         kSettingDataDirectory, kSettingBrowseDataDirectory,
@@ -4819,7 +4988,7 @@ bool isSettingsToggle(int id) {
     return id == kSettingWinV || id == kSettingDark || id == kSettingPause ||
            id == kSettingStartup || id == kSettingStartupSettings ||
            id == kSettingStartupNotification || id == kSettingRunAsAdministrator ||
-           id == kSettingEncrypt;
+           id == kSettingSearchImeCompatibility || id == kSettingEncrypt;
 }
 
 int settingsToggleAtPoint(int tab, int x, int y) {
@@ -5090,6 +5259,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     HWND startupSettings = GetDlgItem(hwnd, kSettingStartupSettings);
     HWND startupNotification = GetDlgItem(hwnd, kSettingStartupNotification);
     HWND runAsAdministrator = GetDlgItem(hwnd, kSettingRunAsAdministrator);
+    HWND searchImeCompatibility = GetDlgItem(hwnd, kSettingSearchImeCompatibility);
     HWND encrypt = GetDlgItem(hwnd, kSettingEncrypt);
     HWND categoryMax[kStorageCategoryCount]{};
     HWND categoryDisk[kStorageCategoryCount]{};
@@ -5099,7 +5269,8 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     }
     if (!win || !dark || !language || !pause || !maxItems || !retentionDays || !maxDiskMb ||
         !maxContentMb || !dataDirectory || !ignoredApps || !sensitiveExpiry || !startup ||
-        !startupSettings || !startupNotification || !runAsAdministrator || !encrypt) {
+        !startupSettings || !startupNotification || !runAsAdministrator ||
+        !searchImeCompatibility || !encrypt) {
         return false;
     }
     for (int i = 0; i < kStorageCategoryCount; ++i) {
@@ -5114,6 +5285,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     next.showSettingsOnStartup = settingsToggleValue(startupSettings);
     next.showStartupNotification = settingsToggleValue(startupNotification);
     next.runAsAdministrator = settingsToggleValue(runAsAdministrator);
+    next.searchImeCompatibility = settingsToggleValue(searchImeCompatibility);
     next.language = settingsLanguageSelection(language);
     next.language = next.language <= 0 ? -1 : next.language - 1;
 
@@ -5221,6 +5393,8 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     const bool startupNotificationChanged =
         next.showStartupNotification != previous.showStartupNotification;
     const bool adminModeChanged = next.runAsAdministrator != previous.runAsAdministrator;
+    const bool searchImeCompatibilityChanged =
+        next.searchImeCompatibility != previous.searchImeCompatibility;
     const bool maxItemsChanged = next.maxItems != previous.maxItems;
     const bool retentionChanged = next.retentionDays != previous.retentionDays;
     const bool maxDiskChanged = next.maxDiskMb != previous.maxDiskMb;
@@ -5233,7 +5407,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
         next.pauseMonitoring != previous.pauseMonitoring ||
         next.encryptData != previous.encryptData || next.language != previous.language ||
         dataDirectoryChanged ||
-        next.sensitiveExpiryHours != previous.sensitiveExpiryHours ||
+        next.sensitiveExpiryHours != previous.sensitiveExpiryHours || searchImeCompatibilityChanged ||
         next.ignoredApps != previous.ignoredApps;
     if (!changed) return true;
 
@@ -6568,6 +6742,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         g_app->popup = nullptr;
         g_app->searchEdit = nullptr;
+        g_app->popupSearchInputActive = false;
+        g_app->popupSearchControlDown = false;
+        g_app->popupSuppressImeTriggerSpace = false;
+        g_app->popupImeMode = false;
         g_app->popupOpening = false;
         g_app->popupActivated = false;
         g_app->popupOpenedByWinV = false;
@@ -6637,6 +6815,18 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         if (message == kPopupKeyboardMessage && g_app->popup) {
             PostMessageW(g_app->popup, WM_KEYDOWN, wParam, 0);
+            return 0;
+        }
+        if (message == kPopupEnterImeMessage) {
+            std::unique_ptr<PopupImeKeyEvent> event(
+                reinterpret_cast<PopupImeKeyEvent*>(wParam));
+            if (event && g_app->popup) {
+                enterPopupImeMode();
+                if (g_app->popupImeMode) {
+                    g_app->popupSuppressImeTriggerSpace = event->key.vkCode == VK_SPACE;
+                    forwardPopupSearchKey(event->key, event->hookMessage);
+                }
+            }
             return 0;
         }
         if (message == kRunPopupImageBenchmarkMessage) {
@@ -6986,7 +7176,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
 
     if (hwnd == g_app->popup) {
-        if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+        if (message == WM_MOUSEACTIVATE) {
+            return g_app->popupImeMode ? MA_ACTIVATE : MA_NOACTIVATE;
+        }
         if (message == WM_SETCURSOR) {
             POINT point{};
             GetCursorPos(&point);
@@ -7076,6 +7268,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 g_app->popupPinned || g_app->popupOpenedByWinV ||
                 g_app->filterDragging || g_app->scrollDragging ||
                 foreground == hwnd) {
+                return 0;
+            }
+            if (popupSearchHasFocus()) {
+                SetTimer(hwnd, kPopupDeactivateTimer, kPopupDeactivateDelayMs, nullptr);
                 return 0;
             }
             if (!g_app->popupOpenedByWinV && !g_app->popupActivated) return 0;

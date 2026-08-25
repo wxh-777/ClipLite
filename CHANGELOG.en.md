@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.5] - 2026-08-26
+
+Fixes history search focus handling and adds an optional Chinese IME compatibility mode.
+
+### Fixes and Experience
+
+- Search focuses its input by default, preventing search text from being sent to the original application.
+- Fixed history closing when search input was incorrectly treated as an external action.
+- Compatibility mode keeps the original app in the foreground, uses `Ctrl+Space` to enter real IME focus, and suppresses the trigger space from the search text.
+- Added an auto-saved Search input compatibility setting, disabled by default.
+
+### Build and Verification
+
+- Unified the application, resources, CMake, installer, package script, and both READMEs on version `1.0.5`.
+- x64 Release build, `ClipLiteStore` CTest, and the history-window stress test `100/100` passed.
+
 ## [1.0.4] - 2026-08-25
 
 Reduces documentation assets in installer and portable packages by serving UI screenshots from versioned GitHub URLs.

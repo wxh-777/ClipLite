@@ -2,7 +2,7 @@
 
 ClipLite is a lightweight native clipboard history manager for Windows. It is built with C++17, the Win32 API, and GDI/GDI+, without WebView, Electron, WinUI, Qt, or another large runtime. The project prioritizes low idle memory usage, reliable clipboard format handling, and portable distribution.
 
-Current release: **1.0.4** (Windows x64)
+Current release: **1.0.5** (Windows x64)
 
 中文文档：[README.md](README.md)
 
@@ -17,6 +17,7 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 - Open clipboard history with `Alt+V`, with an optional `Win+V` replacement mode.
 - Capture and restore plain text, HTML, file lists, DIB, and DIBV5 images.
 - Search, filter by type, pin, delete, clear, and paste history items.
+- Search focuses the input by default; an optional compatibility mode keeps the original app in the foreground and uses `Ctrl+Space` to enter Chinese IME input.
 - Paste as plain text or rich text; images are loaded on demand only when visible.
 - Automatic, light, and dark themes with blue, purple, green, and orange accents.
 - English and Simplified Chinese interfaces.
@@ -28,11 +29,11 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 
 History window with an image record:
 
-![ClipLite history window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.0.4/docs/screenshots/history.png)
+![ClipLite history window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.0.5/docs/screenshots/history.png)
 
 Settings window:
 
-![ClipLite settings window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.0.4/docs/screenshots/settings.png)
+![ClipLite settings window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.0.5/docs/screenshots/settings.png)
 
 ## Performance and Size
 
@@ -75,8 +76,8 @@ Features and versions vary across tools. This table describes product positionin
 
 The Windows x64 release provides:
 
-- Installer: `ClipLite-Setup-1.0.4-x64.exe`, with a selectable installation directory, shortcuts, and standard uninstall support.
-- Portable package: `ClipLite-1.0.4-portable-win-x64`, which can be moved as a directory. Data is stored in its `data\\` directory.
+- Installer: `ClipLite-Setup-1.0.5-x64.exe`, with a selectable installation directory, shortcuts, and standard uninstall support.
+- Portable package: `ClipLite-1.0.5-portable-win-x64`, which can be moved as a directory. Data is stored in its `data\\` directory.
 
 Use `SHA256SUM.txt` in the portable package to verify `ClipLite.exe`. Verify the download source before running the application.
 
