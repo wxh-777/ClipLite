@@ -1,6 +1,6 @@
 param(
     [string]$Configuration = "Release",
-    [string]$Version = "1.0.3"
+    [string]$Version = "1.0.4"
 )
 
 $root = Split-Path -Parent $PSScriptRoot
@@ -18,7 +18,6 @@ if (Test-Path $portableOut) {
 }
 New-Item -ItemType Directory -Path $portableOut | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $portableOut "data") | Out-Null
-New-Item -ItemType Directory -Path (Join-Path $portableOut "docs\screenshots") | Out-Null
 New-Item -ItemType File -Path (Join-Path $portableOut "portable.flag") | Out-Null
 Copy-Item $exe (Join-Path $portableOut "ClipLite.exe")
 Copy-Item (Join-Path $root "README.md") $portableOut
@@ -30,8 +29,6 @@ Copy-Item (Join-Path $root "CONTRIBUTING.md") $portableOut
 Copy-Item (Join-Path $root "CONTRIBUTING.en.md") $portableOut
 Copy-Item (Join-Path $root "SECURITY.md") $portableOut
 Copy-Item (Join-Path $root "SECURITY.en.md") $portableOut
-Copy-Item (Join-Path $root "docs\screenshots\history.png") (Join-Path $portableOut "docs\screenshots")
-Copy-Item (Join-Path $root "docs\screenshots\settings.png") (Join-Path $portableOut "docs\screenshots")
 $hash = (Get-FileHash (Join-Path $portableOut "ClipLite.exe") -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -Path (Join-Path $portableOut "SHA256SUM.txt") -Value "$hash  ClipLite.exe" -Encoding ASCII
 
@@ -40,6 +37,7 @@ $userInnoHome = [Environment]::GetEnvironmentVariable("INNO_SETUP_HOME", "User")
 $isccPath = @(
     if ($iscc) { $iscc.Source }
     if ($userInnoHome) { Join-Path $userInnoHome "ISCC.exe" }
+    (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe")
     (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe")
     (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe")
 ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1

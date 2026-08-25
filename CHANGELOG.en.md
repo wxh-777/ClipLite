@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.4] - 2026-08-25
+
+Reduces documentation assets in installer and portable packages by serving UI screenshots from versioned GitHub URLs.
+
+### Release Adjustments
+
+- Both READMEs now use fixed `v1.0.4` GitHub Raw URLs for UI screenshots.
+- Installer and portable packages no longer copy `docs/screenshots`; the repository images remain the online source.
+- Package tooling now detects per-user Inno Setup installations automatically.
+- Unified the application, Windows resources, build configuration, installer, package script, and both READMEs on version `1.0.4`.
+
 ## [1.0.3] - 2026-08-25
 
 Improves the settings window, history-encryption guidance, and support workflow while reducing bundled release assets.

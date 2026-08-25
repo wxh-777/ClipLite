@@ -1,6 +1,6 @@
 #define AppName "ClipLite"
 #ifndef AppVersion
-  #define AppVersion "1.0.3"
+  #define AppVersion "1.0.4"
 #endif
 #ifndef SourceRoot
   #define SourceRoot ".."
@@ -43,8 +43,6 @@ Source: "{#SourceRoot}\CONTRIBUTING.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\CONTRIBUTING.en.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\SECURITY.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\SECURITY.en.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#SourceRoot}\docs\screenshots\history.png"; DestDir: "{app}\docs\screenshots"; Flags: ignoreversion
-Source: "{#SourceRoot}\docs\screenshots\settings.png"; DestDir: "{app}\docs\screenshots"; Flags: ignoreversion
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\ClipLite.exe"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\ClipLite.exe"; Tasks: desktopicon
