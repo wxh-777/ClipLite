@@ -1,6 +1,6 @@
 param(
     [string]$Configuration = "Release",
-    [string]$Version = "1.0.2"
+    [string]$Version = "1.0.3"
 )
 
 $root = Split-Path -Parent $PSScriptRoot
@@ -32,10 +32,6 @@ Copy-Item (Join-Path $root "SECURITY.md") $portableOut
 Copy-Item (Join-Path $root "SECURITY.en.md") $portableOut
 Copy-Item (Join-Path $root "docs\screenshots\history.png") (Join-Path $portableOut "docs\screenshots")
 Copy-Item (Join-Path $root "docs\screenshots\settings.png") (Join-Path $portableOut "docs\screenshots")
-Copy-Item (Join-Path $root "resources\support-wechat.png") $portableOut
-Copy-Item (Join-Path $root "resources\support-alipay.png") $portableOut
-Copy-Item (Join-Path $root "resources\support-qq.jpg") $portableOut
-
 $hash = (Get-FileHash (Join-Path $portableOut "ClipLite.exe") -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -Path (Join-Path $portableOut "SHA256SUM.txt") -Value "$hash  ClipLite.exe" -Encoding ASCII
 

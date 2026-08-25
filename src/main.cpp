@@ -5,6 +5,7 @@
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <gdiplus.h>
+#include <winhttp.h>
 
 #include "clip_store.h"
 
@@ -18,6 +19,7 @@
 #include <initializer_list>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -119,6 +121,7 @@ constexpr UINT kClosePopupMessage = WM_APP + 5;
 constexpr UINT kPopupSearchCompleteMessage = WM_APP + 6;
 constexpr UINT kRunPopupImageBenchmarkMessage = WM_APP + 7;
 constexpr UINT kPopupKeyboardMessage = WM_APP + 8;
+constexpr UINT kSupportImageLoadedMessage = WM_APP + 9;
 constexpr UINT_PTR kExpiryTimer = 3;
 constexpr UINT_PTR kClipboardCaptureTimer = 7;
 constexpr UINT_PTR kSettingsToggleTimer = 4;
@@ -126,18 +129,19 @@ constexpr UINT_PTR kSettingsDropdownTimer = 5;
 constexpr UINT_PTR kSettingsSyncTimer = 6;
 constexpr UINT_PTR kSettingsThemeTimer = 7;
 constexpr UINT_PTR kSettingsActionFeedbackTimer = 8;
-constexpr UINT_PTR kPopupScrollTimer = 9;
+constexpr UINT_PTR kSettingsEncryptionTimer = 9;
 constexpr UINT_PTR kPopupOpenGuardTimer = 10;
 constexpr UINT_PTR kPopupDeactivateTimer = 11;
 constexpr UINT_PTR kWinVReleaseTimer = 12;
 constexpr UINT_PTR kPopupSearchTimer = 13;
+constexpr UINT_PTR kSupportOwnerTimer = 14;
 constexpr DWORD kSettingsToggleAnimationMs = 160;
 constexpr DWORD kSettingsDropdownAnimationMs = 150;
 constexpr DWORD kSettingsThemeAnimationMs = 180;
-constexpr DWORD kPopupScrollAnimationMs = 105;
 constexpr UINT kPopupOpenGuardMs = 120;
 constexpr UINT kPopupDeactivateDelayMs = 80;
 constexpr UINT kSettingsSyncDelayMs = 300;
+constexpr UINT kSettingsEncryptionDebounceMs = 800;
 constexpr UINT kSettingsActionFeedbackMs = 2400;
 constexpr UINT kPopupSearchDelayMs = 90;
 constexpr UINT kTrayId = 1;
@@ -227,6 +231,8 @@ struct AppState {
     HWND searchEdit = nullptr;
     HWND settings = nullptr;
     HWND support = nullptr;
+    HANDLE supportProcess = nullptr;
+    DWORD supportProcessId = 0;
     HWND targetWindow = nullptr;
     HWND targetFocusWindow = nullptr;
     HFONT popupFont = nullptr;
@@ -261,10 +267,6 @@ struct AppState {
     int selected = 0;
     int scrollOffset = 0;
     int scrollPosition = 0;
-    bool scrollAnimating = false;
-    int scrollAnimationFrom = 0;
-    int scrollAnimationTo = 0;
-    LONGLONG scrollAnimationStartTicks = 0;
     int filterScrollOffset = 0;
     bool filterDragging = false;
     int filterDragStartX = 0;
@@ -328,10 +330,39 @@ struct AppState {
 };
 
 struct SupportWindowState {
+    enum class ImageKind {
+        Wechat,
+        Alipay,
+        Qq,
+    };
+
+    struct DownloadResult {
+        ImageKind kind;
+        std::vector<BYTE> bytes;
+    };
+
+    struct DownloadQueue {
+        std::mutex mutex;
+        std::vector<DownloadResult> completed;
+    };
+
     bool qqGroup = false;
-    std::unique_ptr<Gdiplus::Image> wechat;
-    std::unique_ptr<Gdiplus::Image> alipay;
-    std::unique_ptr<Gdiplus::Image> qq;
+    struct Image {
+        IStream* stream = nullptr;
+        std::unique_ptr<Gdiplus::Image> value;
+
+        ~Image() {
+            value.reset();
+            if (stream) stream->Release();
+        }
+    };
+    std::unique_ptr<Image> wechat;
+    std::unique_ptr<Image> alipay;
+    std::unique_ptr<Image> qq;
+    std::shared_ptr<DownloadQueue> downloadQueue = std::make_shared<DownloadQueue>();
+    bool wechatLoading = false;
+    bool alipayLoading = false;
+    bool qqLoading = false;
     HFONT titleFont = nullptr;
     HFONT bodyFont = nullptr;
 };
@@ -340,6 +371,8 @@ AppState* g_app = nullptr;
 UINT g_taskbarCreated = 0;
 UINT g_uiDpi = 96;
 std::wstring g_diagnosticLogPath;
+bool g_supportProcessMode = false;
+HWND g_supportOwnerWindow = nullptr;
 
 struct PopupSearchResult {
     HWND popup = nullptr;
@@ -560,6 +593,7 @@ struct SettingsLocale {
     const wchar_t* historyStatistics;
     const wchar_t* privacyProtection;
     const wchar_t* protectHistory;
+    const wchar_t* encryptionNote;
     const wchar_t* ignoredApplications;
     const wchar_t* sensitiveContentExpiry;
     const wchar_t* protectionScope;
@@ -672,7 +706,8 @@ struct SettingsLocale {
     const wchar_t* qqGroupNumber;
     const wchar_t* copyQqGroup;
     const wchar_t* copiedQqGroup;
-    const wchar_t* supportAssetsMissing;
+    const wchar_t* supportImageLoading;
+    const wchar_t* supportImageLoadFailed;
 };
 
 const SettingsLocale kEnglishSettingsLocale{
@@ -687,6 +722,7 @@ const SettingsLocale kEnglishSettingsLocale{
     L"Maximum disk space (MB)", L"Maximum item size (MB)", L"Cache directory", L"Text", L"Images",
     L"Files", L"Category storage", L"History statistics", L"Privacy protection",
     L"Protect history with Windows user encryption",
+    L"Changes apply after a short delay and migrate all existing records. Encryption may reduce clipboard and scrolling performance, especially for large images. Encrypted data usually cannot be opened by another Windows user or device.",
     L"Ignored applications (one source name per line)",
     L"Sensitive content expiry (hours, 0 = off)", L"Protection scope", L"About ClipLite",
     L"General", L"Shortcuts", L"Storage", L"Privacy", L"About ClipLite", L"General settings",
@@ -697,7 +733,7 @@ const SettingsLocale kEnglishSettingsLocale{
     L"Some shortcuts could not be registered. Choose different combinations.",
     L"Custom shortcuts require at least one modifier key.",
     L"Sensitive markers: password, token, api_key, secret, and private keys; detected by content pattern.",
-     L"Application    ClipLite", L"Version        1.0.2 x64", L"Storage format  v4",
+     L"Application    ClipLite", L"Version        1.0.3 x64", L"Storage format  v4",
     L"Data directory  %LOCALAPPDATA%\\ClipLite", L"Browse", L"Clear history", L"Clear text",
     L"Clear images", L"Clear files", L"Press shortcut", L"Need modifier", L"One application per line", L"Auto",
     L"ClipLite Settings", L"Choose a valid cache directory.", L"Unable to create the cache directory.",
@@ -720,7 +756,7 @@ const SettingsLocale kEnglishSettingsLocale{
      L"Unable to open the log file.", L"Support the author", L"Join QQ group",
      L"Support ClipLite", L"Thank you for supporting continued development.", L"WeChat Pay",
      L"Alipay", L"ClipLite QQ group", L"Group: 1081580020", L"Copy group number",
-     L"Copied", L"Support images are missing from the application directory."
+     L"Copied", L"Loading image...", L"Unable to load the support image. Check your network connection."
 };
 
 const SettingsLocale kChineseSettingsLocale{
@@ -732,6 +768,7 @@ const SettingsLocale kChineseSettingsLocale{
     L"数据保留策略", L"最大记录数", L"保留天数（0 = 永久）", L"最大磁盘空间（MB）",
     L"单条内容上限（MB）", L"缓存目录", L"文本", L"图片", L"文件", L"分类存储设置",
     L"历史记录统计", L"隐私保护", L"使用 Windows 用户加密保护历史",
+    L"切换将在短暂延迟后生效，并迁移全部已有记录。开启加密可能降低剪贴板及列表滚动性能，处理大型图片时更明显。加密数据通常无法由其他 Windows 用户或设备解密。",
     L"忽略应用（每行一个来源名称）", L"敏感内容过期时间（小时，0 = 关闭）", L"保护范围",
     L"关于 ClipLite", L"通用", L"快捷键", L"存储管理", L"安全与隐私", L"关于 ClipLite",
     L"通用设置", L"快捷键", L"存储管理", L"安全与隐私", L"关于 ClipLite", L"已自动保存",
@@ -739,7 +776,7 @@ const SettingsLocale kChineseSettingsLocale{
     L"当前 %zu 条 \xB7 %ls", L"设置为 0 表示不限；置顶记录不会被自动清理。",
     L"部分快捷键注册失败，请更换组合键。", L"自定义快捷键至少需要一个修饰键。",
     L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。",
-     L"应用名称    ClipLite", L"版本        1.0.2 x64", L"存储格式    v4",
+     L"应用名称    ClipLite", L"版本        1.0.3 x64", L"存储格式    v4",
     L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清空历史", L"清理文本", L"清理图片",
     L"清理文件", L"按下组合键", L"需要修饰键", L"每行一个应用名称", L"自动", L"ClipLite 设置",
     L"请选择有效的缓存目录。", L"无法创建缓存目录。", L"目标目录已有历史数据，请选择空目录。",
@@ -757,8 +794,8 @@ const SettingsLocale kChineseSettingsLocale{
     L"无法打开剪贴板历史存储。", L"无法创建后台窗口。", L"无法监听剪贴板。",
      L"无法创建单实例锁。", L"日志文件        ", L"打开日志文件", L"无法打开日志文件。",
      L"支持作者", L"加入 QQ 群", L"支持 ClipLite", L"感谢你支持项目持续开发。", L"微信支付",
-     L"支付宝", L"ClipLite QQ 群", L"群号：1081580020", L"复制群号", L"已复制",
-     L"应用程序目录中缺少支持图片。"
+     L"支付宝", L"ClipLite QQ 群", L"群号：1081580020", L"复制群号", L"已复制", L"正在加载图片...",
+     L"无法加载支持图片，请检查网络连接。"
 };
 
 const SettingsLocale& settingsLocale() {
@@ -2025,8 +2062,6 @@ void applyVisibleCandidates(const std::vector<std::size_t>& candidates) {
         g_app->scrollOffset = g_app->selected - visibleRows + 1;
     }
     g_app->scrollPosition = g_app->scrollOffset * popupScrollStride();
-    g_app->scrollAnimating = false;
-    KillTimer(g_app->popup, kPopupScrollTimer);
     invalidatePopupList(g_app->popup);
     invalidateFilterBar(g_app->popup);
 }
@@ -2063,22 +2098,9 @@ void startPopupSearch(HWND popup) {
     });
 }
 
-void animatePopupScrollTo(int target) {
-    if (!g_app || !g_app->popup) return;
-    target = std::clamp(target, 0, popupMaxScrollPixels());
-    if (target == g_app->scrollPosition) return;
-    g_app->scrollAnimationFrom = g_app->scrollPosition;
-    g_app->scrollAnimationTo = target;
-    g_app->scrollAnimationStartTicks = settingsToggleClock();
-    g_app->scrollAnimating = true;
-    SetTimer(g_app->popup, kPopupScrollTimer, 8, nullptr);
-}
-
 void scrollPopup(int delta) {
     if (!g_app->popup || g_app->visible.empty()) return;
-    g_app->scrollAnimating = false;
     g_app->fastImagePreview = true;
-    KillTimer(g_app->popup, kPopupScrollTimer);
     setPopupScrollPosition(g_app->scrollPosition + delta);
     invalidatePopupList(g_app->popup);
 }
@@ -2358,7 +2380,6 @@ void showPopup(bool openedByWinV = false) {
     g_app->selected = 0;
     g_app->scrollOffset = 0;
     g_app->scrollPosition = 0;
-    g_app->scrollAnimating = false;
     g_app->fastImagePreview = false;
     g_app->filterScrollOffset = 0;
     g_app->filterType = 0;
@@ -2417,7 +2438,6 @@ void closePopup() {
         g_app->popupKeyboardHook = nullptr;
     }
     if (g_app->popup) {
-        KillTimer(g_app->popup, kPopupScrollTimer);
         KillTimer(g_app->popup, kPopupOpenGuardTimer);
         KillTimer(g_app->popup, kPopupDeactivateTimer);
         DestroyWindow(g_app->popup);
@@ -2673,22 +2693,105 @@ void updatePopupMouseHook() {
     }
 }
 
-std::wstring executableDirectory() {
-    wchar_t executable[MAX_PATH]{};
-    const DWORD length = GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
-    if (length == 0 || length >= ARRAYSIZE(executable)) return {};
-    std::wstring path(executable, length);
-    const std::size_t slash = path.find_last_of(L"\\/");
-    return slash == std::wstring::npos ? std::wstring{} : path.substr(0, slash);
+std::vector<BYTE> downloadSupportImage(const wchar_t* url) {
+    constexpr std::size_t maxImageBytes = 8u * 1024u * 1024u;
+    URL_COMPONENTS components{sizeof(components)};
+    components.dwHostNameLength = static_cast<DWORD>(-1);
+    components.dwUrlPathLength = static_cast<DWORD>(-1);
+    components.dwExtraInfoLength = static_cast<DWORD>(-1);
+    if (!WinHttpCrackUrl(url, 0, 0, &components)) return {};
+
+    const std::wstring host(components.lpszHostName, components.dwHostNameLength);
+    std::wstring path(components.lpszUrlPath, components.dwUrlPathLength);
+    if (components.dwExtraInfoLength > 0) {
+        path.append(components.lpszExtraInfo, components.dwExtraInfoLength);
+    }
+
+    const auto closeHandle = [](HINTERNET handle) {
+        if (handle) WinHttpCloseHandle(handle);
+    };
+    using HttpHandle = std::unique_ptr<void, decltype(closeHandle)>;
+    HttpHandle session(WinHttpOpen(L"ClipLite/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                   WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0), closeHandle);
+    if (!session) return {};
+    WinHttpSetTimeouts(session.get(), 5000, 5000, 5000, 10000);
+
+    HttpHandle connection(WinHttpConnect(session.get(), host.c_str(), components.nPort, 0), closeHandle);
+    if (!connection) return {};
+    const DWORD flags = components.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0;
+    HttpHandle request(WinHttpOpenRequest(connection.get(), L"GET", path.c_str(), nullptr,
+                                          WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags),
+                       closeHandle);
+    if (!request ||
+        !WinHttpSendRequest(request.get(), WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+        !WinHttpReceiveResponse(request.get(), nullptr)) {
+        return {};
+    }
+
+    DWORD statusCode = 0;
+    DWORD statusSize = sizeof(statusCode);
+    if (!WinHttpQueryHeaders(request.get(), WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                             WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize,
+                             WINHTTP_NO_HEADER_INDEX) || statusCode != 200) {
+        return {};
+    }
+
+    std::vector<BYTE> bytes;
+    for (;;) {
+        DWORD available = 0;
+        if (!WinHttpQueryDataAvailable(request.get(), &available)) return {};
+        if (available == 0) break;
+        if (available > maxImageBytes - bytes.size()) return {};
+        const std::size_t offset = bytes.size();
+        bytes.resize(offset + available);
+        DWORD read = 0;
+        if (!WinHttpReadData(request.get(), bytes.data() + offset, available, &read)) return {};
+        bytes.resize(offset + read);
+    }
+    return bytes;
 }
 
-std::unique_ptr<Gdiplus::Image> loadSupportImage(const wchar_t* fileName) {
-    const std::wstring directory = executableDirectory();
-    if (directory.empty()) return nullptr;
-    const std::wstring path = directory + L"\\" + fileName;
-    auto image = std::make_unique<Gdiplus::Image>(path.c_str(), FALSE);
-    if (image->GetLastStatus() != Gdiplus::Ok) return nullptr;
-    return image;
+std::unique_ptr<SupportWindowState::Image> decodeSupportImage(const std::vector<BYTE>& bytes) {
+    if (bytes.empty()) return nullptr;
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes.size());
+    if (!memory) return nullptr;
+    void* destination = GlobalLock(memory);
+    if (!destination) {
+        GlobalFree(memory);
+        return nullptr;
+    }
+    std::memcpy(destination, bytes.data(), bytes.size());
+    GlobalUnlock(memory);
+
+    IStream* stream = nullptr;
+    if (FAILED(CreateStreamOnHGlobal(memory, TRUE, &stream))) {
+        GlobalFree(memory);
+        return nullptr;
+    }
+    auto result = std::make_unique<SupportWindowState::Image>();
+    result->stream = stream;
+    result->value = std::make_unique<Gdiplus::Image>(stream, FALSE);
+    if (result->value->GetLastStatus() != Gdiplus::Ok) return nullptr;
+    return result;
+}
+
+bool loadSupportImageAsync(HWND hwnd,
+                           const std::shared_ptr<SupportWindowState::DownloadQueue>& queue,
+                           SupportWindowState::ImageKind kind, const wchar_t* url) {
+    try {
+        std::thread([hwnd, queue, kind, url = std::wstring(url)] {
+            SupportWindowState::DownloadResult result{kind, downloadSupportImage(url.c_str())};
+            {
+                std::lock_guard<std::mutex> lock(queue->mutex);
+                queue->completed.push_back(std::move(result));
+            }
+            PostMessageW(hwnd, kSupportImageLoadedMessage, 0, 0);
+        }).detach();
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 void drawSupportImage(HDC dc, Gdiplus::Image* image, const RECT& bounds) {
@@ -2756,13 +2859,16 @@ void paintSupportWindow(HWND hwnd, HDC dc) {
     if (state->qqGroup) {
         const RECT cardRect{ui(20), ui(88), client.right - ui(20), client.bottom - ui(94)};
         drawGdiRoundedSurface(dc, cardRect, card, line, 8);
-        drawSupportImage(dc, state->qq.get(), RECT{cardRect.left + ui(18), cardRect.top + ui(18),
-                                                   cardRect.right - ui(18), cardRect.bottom - ui(18)});
+        drawSupportImage(dc, state->qq ? state->qq->value.get() : nullptr,
+                         RECT{cardRect.left + ui(18), cardRect.top + ui(18),
+                              cardRect.right - ui(18), cardRect.bottom - ui(18)});
         drawSupportText(dc, state->bodyFont, settingsLocale().qqGroupNumber,
                         RECT{ui(24), client.bottom - ui(88), client.right - ui(24), client.bottom - ui(60)},
                         text, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         if (!state->qq) {
-            drawSupportText(dc, state->bodyFont, settingsLocale().supportAssetsMissing,
+            const wchar_t* status = state->qqLoading ? settingsLocale().supportImageLoading
+                                                     : settingsLocale().supportImageLoadFailed;
+            drawSupportText(dc, state->bodyFont, status,
                             RECT{cardRect.left + ui(20), cardRect.top + ui(20),
                                  cardRect.right - ui(20), cardRect.bottom - ui(20)},
                             secondary, DT_CENTER | DT_VCENTER | DT_WORDBREAK);
@@ -2786,20 +2892,24 @@ void paintSupportWindow(HWND hwnd, HDC dc) {
                         RECT{alipayCard.left + ui(10), alipayCard.top + ui(10),
                              alipayCard.right - ui(10), alipayCard.top + ui(36)}, text,
                         DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        drawSupportImage(dc, state->wechat.get(),
+        drawSupportImage(dc, state->wechat ? state->wechat->value.get() : nullptr,
                          RECT{wechatCard.left + ui(12), wechatCard.top + ui(42),
-                              wechatCard.right - ui(12), wechatCard.bottom - ui(12)});
-        drawSupportImage(dc, state->alipay.get(),
+                               wechatCard.right - ui(12), wechatCard.bottom - ui(12)});
+        drawSupportImage(dc, state->alipay ? state->alipay->value.get() : nullptr,
                          RECT{alipayCard.left + ui(12), alipayCard.top + ui(42),
-                              alipayCard.right - ui(12), alipayCard.bottom - ui(12)});
+                               alipayCard.right - ui(12), alipayCard.bottom - ui(12)});
         if (!state->wechat) {
-            drawSupportText(dc, state->bodyFont, settingsLocale().supportAssetsMissing,
+            const wchar_t* status = state->wechatLoading ? settingsLocale().supportImageLoading
+                                                         : settingsLocale().supportImageLoadFailed;
+            drawSupportText(dc, state->bodyFont, status,
                             RECT{wechatCard.left + ui(20), wechatCard.top + ui(50),
                                  wechatCard.right - ui(20), wechatCard.bottom - ui(20)},
                             secondary, DT_CENTER | DT_VCENTER | DT_WORDBREAK);
         }
         if (!state->alipay) {
-            drawSupportText(dc, state->bodyFont, settingsLocale().supportAssetsMissing,
+            const wchar_t* status = state->alipayLoading ? settingsLocale().supportImageLoading
+                                                         : settingsLocale().supportImageLoadFailed;
+            drawSupportText(dc, state->bodyFont, status,
                             RECT{alipayCard.left + ui(20), alipayCard.top + ui(50),
                                  alipayCard.right - ui(20), alipayCard.bottom - ui(20)},
                             secondary, DT_CENTER | DT_VCENTER | DT_WORDBREAK);
@@ -2831,12 +2941,6 @@ bool copySupportGroupNumber(HWND owner) {
         return false;
     }
     CloseClipboard();
-    if (g_app) {
-        const std::string value = wideToUtf8(groupNumber, ARRAYSIZE(groupNumber) - 1);
-        g_app->ignoredClipboardHash = clipLiteHash(value);
-        g_app->ignoredClipboardTextHash = g_app->ignoredClipboardHash;
-        g_app->ignoredClipboardUntil = GetTickCount64() + 750;
-    }
     return true;
 }
 
@@ -2850,8 +2954,14 @@ LRESULT CALLBACK supportWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         state->bodyFont = CreateFontW(-ui(13), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                       CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+        if (g_supportProcessMode && g_supportOwnerWindow) {
+            SetTimer(hwnd, kSupportOwnerTimer, 250, nullptr);
+        }
         if (state->qqGroup) {
-            state->qq = loadSupportImage(L"support-qq.jpg");
+            state->qqLoading = loadSupportImageAsync(
+                hwnd, state->downloadQueue, SupportWindowState::ImageKind::Qq,
+                L"https://env-00jx4xoyfjjc.normal.cloudstatic.cn/pic/ClipLite/support-qq.jpg");
             CreateWindowW(L"BUTTON", settingsLocale().copyQqGroup,
                           WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                           ui(180), ui(kSupportQqHeight - 54), ui(200), ui(30), hwnd,
@@ -2863,13 +2973,46 @@ LRESULT CALLBACK supportWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
                          (client.right - ui(200)) / 2, client.bottom - ui(52),
                          ui(200), ui(30), SWP_NOZORDER | SWP_NOACTIVATE);
         } else {
-            state->wechat = loadSupportImage(L"support-wechat.png");
-            state->alipay = loadSupportImage(L"support-alipay.png");
+            state->wechatLoading = loadSupportImageAsync(
+                hwnd, state->downloadQueue, SupportWindowState::ImageKind::Wechat,
+                L"https://env-00jx4xoyfjjc.normal.cloudstatic.cn/pic/common/support-wechat.png");
+            state->alipayLoading = loadSupportImageAsync(
+                hwnd, state->downloadQueue, SupportWindowState::ImageKind::Alipay,
+                L"https://env-00jx4xoyfjjc.normal.cloudstatic.cn/pic/common/support-alipay.png");
         }
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
         return 0;
     }
     auto* state = reinterpret_cast<SupportWindowState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (message == WM_TIMER && wParam == kSupportOwnerTimer) {
+        if (!g_supportOwnerWindow || !IsWindow(g_supportOwnerWindow)) DestroyWindow(hwnd);
+        return 0;
+    }
+    if (message == kSupportImageLoadedMessage && state) {
+        std::vector<SupportWindowState::DownloadResult> completed;
+        {
+            std::lock_guard<std::mutex> lock(state->downloadQueue->mutex);
+            completed.swap(state->downloadQueue->completed);
+        }
+        for (auto& result : completed) {
+            auto image = decodeSupportImage(result.bytes);
+            switch (result.kind) {
+            case SupportWindowState::ImageKind::Wechat:
+                state->wechat = std::move(image);
+                state->wechatLoading = false;
+                break;
+            case SupportWindowState::ImageKind::Alipay:
+                state->alipay = std::move(image);
+                state->alipayLoading = false;
+                break;
+            case SupportWindowState::ImageKind::Qq:
+                state->qq = std::move(image);
+                state->qqLoading = false;
+                break;
+            }
+        }
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
     if (message == WM_COMMAND && LOWORD(wParam) == kSupportCopyGroup) {
         if (copySupportGroupNumber(hwnd)) {
             SetWindowTextW(GetDlgItem(hwnd, kSupportCopyGroup), settingsLocale().copiedQqGroup);
@@ -2894,6 +3037,7 @@ LRESULT CALLBACK supportWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
     }
     if (message == WM_ERASEBKGND) return 1;
     if (message == WM_DESTROY) {
+        KillTimer(hwnd, kSupportOwnerTimer);
         if (state) {
             if (state->titleFont) DeleteObject(state->titleFont);
             if (state->bodyFont) DeleteObject(state->bodyFont);
@@ -2901,12 +3045,13 @@ LRESULT CALLBACK supportWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
         }
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         if (g_app && g_app->support == hwnd) g_app->support = nullptr;
+        if (g_supportProcessMode) PostQuitMessage(0);
         return 0;
     }
     return DefWindowProcW(hwnd, message, wParam, lParam);
 }
 
-void openSupportWindow(bool qqGroup) {
+void createSupportWindow(bool qqGroup) {
     if (!g_app) return;
     if (g_app->support) {
         SetForegroundWindow(g_app->support);
@@ -2936,6 +3081,106 @@ void openSupportWindow(bool qqGroup) {
     ShowWindow(g_app->support, SW_SHOW);
     UpdateWindow(g_app->support);
     SetForegroundWindow(g_app->support);
+}
+
+HWND supportWindowForProcess(DWORD processId) {
+    HWND window = nullptr;
+    while ((window = FindWindowExW(nullptr, window, L"ClipLiteSupport", nullptr)) != nullptr) {
+        DWORD windowProcessId = 0;
+        GetWindowThreadProcessId(window, &windowProcessId);
+        if (windowProcessId == processId) return window;
+    }
+    return nullptr;
+}
+
+void closeSupportProcess() {
+    if (!g_app || !g_app->supportProcess) return;
+    DWORD exitCode = 0;
+    if (GetExitCodeProcess(g_app->supportProcess, &exitCode) && exitCode == STILL_ACTIVE) {
+        if (HWND window = supportWindowForProcess(g_app->supportProcessId)) {
+            PostMessageW(window, WM_CLOSE, 0, 0);
+        }
+    }
+    CloseHandle(g_app->supportProcess);
+    g_app->supportProcess = nullptr;
+    g_app->supportProcessId = 0;
+}
+
+void openSupportWindow(bool qqGroup) {
+    if (!g_app || !g_app->settings) return;
+    if (g_app->supportProcess) {
+        DWORD exitCode = 0;
+        if (GetExitCodeProcess(g_app->supportProcess, &exitCode) && exitCode == STILL_ACTIVE) {
+            if (HWND window = supportWindowForProcess(g_app->supportProcessId)) {
+                ShowWindow(window, SW_RESTORE);
+                SetForegroundWindow(window);
+            }
+            return;
+        }
+        closeSupportProcess();
+    }
+
+    std::vector<wchar_t> executable(32768);
+    const DWORD length = GetModuleFileNameW(nullptr, executable.data(),
+                                            static_cast<DWORD>(executable.size()));
+    if (length == 0 || length >= executable.size()) return;
+    const auto owner = static_cast<unsigned long long>(
+        reinterpret_cast<ULONG_PTR>(g_app->settings));
+    std::wstring command = L"\"" + std::wstring(executable.data(), length) + L"\" ";
+    command += qqGroup ? L"--support-qq" : L"--support-payment";
+    command += L" --support-owner=" + std::to_wstring(owner);
+
+    STARTUPINFOW startup{sizeof(startup)};
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(executable.data(), command.data(), nullptr, nullptr, FALSE,
+                        CREATE_DEFAULT_ERROR_MODE, nullptr, nullptr, &startup, &process)) {
+        appendDiagnosticLog("WARN", "support: unable to launch helper process", GetLastError());
+        return;
+    }
+    CloseHandle(process.hThread);
+    g_app->supportProcess = process.hProcess;
+    g_app->supportProcessId = process.dwProcessId;
+    AllowSetForegroundWindow(process.dwProcessId);
+}
+
+int runSupportWindowProcess(HINSTANCE instance, bool qqGroup, HWND owner) {
+    if (!owner || !IsWindow(owner)) return 0;
+    g_supportProcessMode = true;
+    g_supportOwnerWindow = owner;
+
+    INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_STANDARD_CLASSES};
+    InitCommonControlsEx(&controls);
+    WNDCLASSW supportClass{};
+    supportClass.style = CS_HREDRAW | CS_VREDRAW;
+    supportClass.lpfnWndProc = supportWindowProc;
+    supportClass.hInstance = instance;
+    supportClass.hIcon = clipLiteIcon();
+    supportClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    supportClass.lpszClassName = L"ClipLiteSupport";
+    if (!RegisterClassW(&supportClass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;
+
+    Gdiplus::GdiplusStartupInput gdiplusInput;
+    if (Gdiplus::GdiplusStartup(&g_app->gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
+        g_app->gdiplusToken = 0;
+        return 1;
+    }
+    createSupportWindow(qqGroup);
+    if (!g_app->support) {
+        Gdiplus::GdiplusShutdown(g_app->gdiplusToken);
+        g_app->gdiplusToken = 0;
+        return 1;
+    }
+
+    MSG message{};
+    while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+    Gdiplus::GdiplusShutdown(g_app->gdiplusToken);
+    g_app->gdiplusToken = 0;
+    g_supportOwnerWindow = nullptr;
+    g_supportProcessMode = false;
+    return 0;
 }
 
 void resetWinKeyState(bool releaseForwardedKey) {
@@ -3382,7 +3627,7 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
                             {kSettingIgnoredApps}, {150}, {60}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().sensitiveContentExpiry,
                             {kSettingSensitiveExpiry}, {150}, {30}, contentWidth)
-        }, 28);
+        }, 90);
         makeCard(settingsLocale().protectionScope, {}, 48);
     } else {
         makeCard(settingsLocale().about, {}, 300);
@@ -3735,6 +3980,11 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
     } else if (g_app->settingsTab == 3 && layout.cards.size() >= 2) {
         SelectObject(dc, bodyFont);
         SetTextColor(dc, secondary);
+        const SettingsCardLayout& privacyCard = layout.cards.front();
+        RECT encryptionNote{contentLeft + ui(14), settingsContentY(privacyCard.bottom - 80),
+                            contentRight - ui(14), settingsContentY(privacyCard.bottom - 12)};
+        DrawTextW(dc, settingsLocale().encryptionNote, -1, &encryptionNote,
+                  DT_LEFT | DT_WORDBREAK);
         const SettingsCardLayout& card = layout.cards.back();
         RECT description{contentLeft + ui(14), settingsContentY(card.bottom - 38), contentRight - ui(14),
                          settingsContentY(card.bottom - 12)};
@@ -4823,7 +5073,7 @@ bool settingsWouldPruneExisting(const Settings& previous, const Settings& next) 
     return false;
 }
 
-bool syncSettingsFromControls(HWND hwnd) {
+bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     if (!hwnd) return false;
     HWND win = GetDlgItem(hwnd, kSettingWinV);
     HWND dark = GetDlgItem(hwnd, kSettingDark);
@@ -4940,7 +5190,8 @@ bool syncSettingsFromControls(HWND hwnd) {
     }
 
     const bool previousEncryption = g_app->store.encryptionEnabled();
-    const bool desiredEncryption = settingsToggleValue(encrypt);
+    const bool desiredEncryption = applyEncryption
+        ? settingsToggleValue(encrypt) : previousEncryption;
     if (desiredEncryption != previousEncryption && !g_app->store.rekey(desiredEncryption)) {
         appendDiagnosticLog("ERROR", "settings: history encryption migration failed");
         setSettingsToggleValue(encrypt, previousEncryption);
@@ -5042,6 +5293,12 @@ bool syncSettingsFromControls(HWND hwnd) {
 void scheduleSettingsSync(HWND hwnd) {
     if (hwnd && g_app && !g_app->settingsClosing) {
         SetTimer(hwnd, kSettingsSyncTimer, kSettingsSyncDelayMs, nullptr);
+    }
+}
+
+void scheduleSettingsEncryptionSync(HWND hwnd) {
+    if (hwnd && g_app && !g_app->settingsClosing) {
+        SetTimer(hwnd, kSettingsEncryptionTimer, kSettingsEncryptionDebounceMs, nullptr);
     }
 }
 
@@ -5658,86 +5915,6 @@ void paintSettingsLanguageCombo(HWND hwnd, HDC dc) {
         DeleteObject(bufferBitmap);
         DeleteDC(bufferDc);
     }
-}
-
-void paintSettingsEditFrame(HWND hwnd) {
-    HDC dc = GetWindowDC(hwnd);
-    if (!dc) return;
-    if (!g_app || g_app->gdiplusToken == 0) {
-        ReleaseDC(hwnd, dc);
-        return;
-    }
-    RECT windowRect{};
-    GetWindowRect(hwnd, &windowRect);
-    RECT rect{0, 0, windowRect.right - windowRect.left, windowRect.bottom - windowRect.top};
-    const bool focused = GetFocus() == hwnd;
-    const bool hovered = g_app->hoveredSettingsControl == GetDlgCtrlID(hwnd);
-    const bool highContrast = highContrastEnabled();
-    const COLORREF surface = highContrast ? GetSysColor(COLOR_WINDOW) :
-        settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
-    const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        (focused ? settingsAccentColor() :
-         hovered ? settingsThemeColor(RGB(120, 145, 137), RGB(119, 132, 145)) :
-                   settingsThemeColor(RGB(205, 219, 215), RGB(82, 92, 102)));
-    if (g_app->gdiplusToken != 0) {
-        auto makeColor = [](COLORREF value) {
-            return Gdiplus::Color(255, GetRValue(value), GetGValue(value), GetBValue(value));
-        };
-        Gdiplus::Graphics graphics(dc);
-        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
-        auto addRoundedPath = [](Gdiplus::GraphicsPath& path,
-                                 const Gdiplus::RectF& box, float radius) {
-            const float diameter = radius * 2.0f;
-            path.AddArc(box.X, box.Y, diameter, diameter, 180.0f, 90.0f);
-            path.AddArc(box.X + box.Width - diameter, box.Y, diameter, diameter,
-                        270.0f, 90.0f);
-            path.AddArc(box.X + box.Width - diameter, box.Y + box.Height - diameter,
-                        diameter, diameter, 0.0f, 90.0f);
-            path.AddArc(box.X, box.Y + box.Height - diameter, diameter, diameter,
-                        90.0f, 90.0f);
-            path.CloseFigure();
-        };
-        const float radius = static_cast<float>(ui(6));
-        const Gdiplus::RectF box(1.0f, 1.0f, static_cast<float>(rect.right - 2),
-                                 static_cast<float>(rect.bottom - 2));
-        Gdiplus::GraphicsPath path;
-        addRoundedPath(path, box, radius);
-        Gdiplus::Pen clearPen(makeColor(surface), 5.0f);
-        graphics.DrawPath(&clearPen, &path);
-        if (focused && !highContrast) {
-            const COLORREF shadowColor = settingsAccentColor();
-            Gdiplus::Color shadow(72, GetRValue(shadowColor), GetGValue(shadowColor),
-                                  GetBValue(shadowColor));
-            Gdiplus::Pen shadowPen(shadow, 2.0f);
-            graphics.DrawPath(&shadowPen, &path);
-        }
-        graphics.Flush(Gdiplus::FlushIntentionSync);
-        Gdiplus::Pen borderPen(makeColor(border), 1.0f);
-        graphics.DrawPath(&borderPen, &path);
-    }
-    ReleaseDC(hwnd, dc);
-}
-
-void paintSettingsEditPlaceholder(HWND hwnd) {
-    if (!hwnd || GetDlgCtrlID(hwnd) != kSettingIgnoredApps ||
-        GetWindowTextLengthW(hwnd) != 0 || GetFocus() == hwnd) {
-        return;
-    }
-    HDC dc = GetDC(hwnd);
-    if (!dc) return;
-    RECT client{};
-    GetClientRect(hwnd, &client);
-    client.left = ui(10);
-    client.top = ui(8);
-    client.right -= ui(10);
-    client.bottom -= ui(8);
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, highContrastEnabled() ? GetSysColor(COLOR_GRAYTEXT) :
-        settingsThemeColor(RGB(150, 160, 157), RGB(145, 155, 166)));
-    DrawTextW(dc, settingsLocale().ignoredAppsPlaceholder, -1, &client,
-              DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
-    ReleaseDC(hwnd, dc);
 }
 
 void paintSettingsEdit(HWND hwnd, HDC dc, WNDPROC oldProc) {
@@ -6397,6 +6574,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         g_app->popupOpenInputTick = 0;
     }
     if (message == WM_DESTROY && hwnd == g_app->settings) {
+        closeSupportProcess();
         if (g_app->languageDropdown) {
             DestroyWindow(g_app->languageDropdown);
             g_app->languageDropdown = nullptr;
@@ -6416,6 +6594,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         KillTimer(hwnd, kSettingsToggleTimer);
         KillTimer(hwnd, kSettingsDropdownTimer);
         KillTimer(hwnd, kSettingsSyncTimer);
+        KillTimer(hwnd, kSettingsEncryptionTimer);
         KillTimer(hwnd, kSettingsThemeTimer);
         g_app->toggleAnimationControl = nullptr;
         g_app->settingsThemeAnimating = false;
@@ -6559,7 +6738,12 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         if (message == WM_TIMER && wParam == kSettingsSyncTimer) {
             KillTimer(hwnd, kSettingsSyncTimer);
-            if (!g_app->settingsClosing) syncSettingsFromControls(hwnd);
+            if (!g_app->settingsClosing) syncSettingsFromControls(hwnd, false);
+            return 0;
+        }
+        if (message == WM_TIMER && wParam == kSettingsEncryptionTimer) {
+            KillTimer(hwnd, kSettingsEncryptionTimer);
+            if (!g_app->settingsClosing) syncSettingsFromControls(hwnd, true);
             return 0;
         }
         if (message == WM_TIMER && wParam == kSettingsActionFeedbackTimer) {
@@ -6692,7 +6876,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (toggleId != 0) {
                 HWND toggle = GetDlgItem(hwnd, toggleId);
                 animateSettingsToggle(toggle);
-                syncSettingsFromControls(hwnd);
+                if (toggleId == kSettingEncrypt) scheduleSettingsEncryptionSync(hwnd);
+                else syncSettingsFromControls(hwnd, false);
                 return 0;
             }
             if (x >= ui(8) && x < ui(kSettingsSidebarWidth) &&
@@ -6739,7 +6924,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 (HIWORD(wParam) == BN_CLICKED || HIWORD(wParam) == BN_DOUBLECLICKED)) {
                 HWND toggle = GetDlgItem(hwnd, LOWORD(wParam));
                 animateSettingsToggle(toggle);
-                syncSettingsFromControls(hwnd);
+                if (LOWORD(wParam) == kSettingEncrypt) scheduleSettingsEncryptionSync(hwnd);
+                else syncSettingsFromControls(hwnd, false);
                 return 0;
             }
             const int actionId = LOWORD(wParam);
@@ -6787,9 +6973,11 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == WM_CLOSE) {
             g_app->settingsClosing = true;
             KillTimer(hwnd, kSettingsSyncTimer);
+            KillTimer(hwnd, kSettingsEncryptionTimer);
             KillTimer(hwnd, kSettingsActionFeedbackTimer);
             g_app->settingsActionFeedback.clear();
-            syncSettingsFromControls(hwnd);
+            syncSettingsFromControls(hwnd, true);
+            closeSupportProcess();
             DestroyWindow(hwnd);
             g_app->settings = nullptr;
             g_app->settingsClosing = false;
@@ -6909,24 +7097,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                     SetTimer(hwnd, kPopupDeactivateTimer, kPopupDeactivateDelayMs, nullptr);
                 }
             }
-            return 0;
-        }
-        if (message == WM_TIMER && wParam == kPopupScrollTimer) {
-            const LONGLONG elapsed = settingsToggleClock() - g_app->scrollAnimationStartTicks;
-            const LONGLONG duration = settingsToggleClockFrequency() * kPopupScrollAnimationMs / 1000LL;
-            if (elapsed >= duration) {
-                setPopupScrollPosition(g_app->scrollAnimationTo);
-                g_app->scrollAnimating = false;
-                KillTimer(hwnd, kPopupScrollTimer);
-            } else {
-                const float linear = std::clamp(static_cast<float>(elapsed) /
-                    static_cast<float>(std::max<LONGLONG>(1, duration)), 0.0f, 1.0f);
-                const float eased = linear * linear * (3.0f - 2.0f * linear);
-                const float position = static_cast<float>(g_app->scrollAnimationFrom) +
-                    static_cast<float>(g_app->scrollAnimationTo - g_app->scrollAnimationFrom) * eased;
-                setPopupScrollPosition(static_cast<int>(position + 0.5f));
-            }
-            invalidatePopupList(hwnd);
             return 0;
         }
         if (message == WM_TIMER && wParam == kPopupSearchTimer) {
@@ -7186,8 +7356,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             if (popupScrollThumbAt(clickX, clickY)) {
                 g_app->scrollDragging = true;
-                g_app->scrollAnimating = false;
-                KillTimer(hwnd, kPopupScrollTimer);
                 g_app->scrollDragStartY = clickY;
                 g_app->scrollDragStartOffset = g_app->scrollPosition;
                 g_app->hoveredRow = -1;
@@ -7331,7 +7499,8 @@ void openSettings() {
         (monitorInfo.rcWork.bottom - monitorInfo.rcWork.top - height) / 2;
     g_app->settings = CreateWindowExW(WS_EX_APPWINDOW, L"ClipLiteSettings",
                                       settingsLocale().windowTitle,
-                                       WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
+                                       WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
+                                           WS_MINIMIZEBOX | WS_CLIPCHILDREN,
                                       x, y, width, height,
                                        nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (g_app->settings) {
@@ -7359,6 +7528,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     const bool commandSettings = wcsstr(commandLine, L"--settings") || wcsstr(commandLine, L"/settings");
     const bool commandImageBenchmark = wcsstr(commandLine, L"--benchmark-image-scroll") != nullptr;
     const bool commandElevatedRestart = wcsstr(commandLine, L"--elevated-restart") != nullptr;
+    const bool commandSupportPayment = wcsstr(commandLine, L"--support-payment") != nullptr;
+    const bool commandSupportQq = wcsstr(commandLine, L"--support-qq") != nullptr;
+    if (commandSupportPayment || commandSupportQq) {
+        loadSettings(app.settingsData);
+        const wchar_t* ownerArgument = wcsstr(commandLine, L"--support-owner=");
+        if (!ownerArgument) return 1;
+        ownerArgument += std::wcslen(L"--support-owner=");
+        const auto ownerValue = static_cast<ULONG_PTR>(_wcstoui64(ownerArgument, nullptr, 10));
+        return runSupportWindowProcess(instance, commandSupportQq,
+                                       reinterpret_cast<HWND>(ownerValue));
+    }
     BenchmarkDirectoryGuard benchmarkDirectory;
     if (commandImageBenchmark) {
         if (!createImageBenchmarkDirectory(benchmarkDirectory)) return 1;
@@ -7540,6 +7720,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         DispatchMessageW(&message);
     }
     appendDiagnosticLog("INFO", "shutdown: process cleanup started");
+    closeSupportProcess();
     RemoveClipboardFormatListener(app.hidden);
     KillTimer(app.hidden, kExpiryTimer);
     removeTrayIcon();

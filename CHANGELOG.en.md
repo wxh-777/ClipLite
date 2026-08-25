@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.0.3] - 2026-08-25
+
+Improves the settings window, history-encryption guidance, and support workflow while reducing bundled release assets.
+
+### Features and Experience
+
+- The settings window can now be minimized from its title bar or by clicking its taskbar button, while remaining fixed-size and non-maximizable.
+- Windows user encryption now uses an 800 ms debounce, so repeated toggles migrate history only once to the final state; closing settings applies it immediately.
+- Privacy settings now explain migration, cross-user/device recovery limits, and the possible clipboard and scrolling performance impact of large encrypted images.
+- Support and QQ group windows now run in an isolated helper process that is closed with the settings window or main application.
+- Support images are downloaded asynchronously, removing bundled payment and QQ group images from installer and portable packages.
+- History wheel input now updates the scroll position directly, removing the unused interpolation timer.
+
+### Build and Verification
+
+- Unified CMake, Windows resources, installer, package script, About page, and both READMEs on version `1.0.3`.
+- Updated bilingual UI screenshots and enabled additional MSVC Release function-level and non-incremental linker optimizations.
+- x64 Debug and Release builds and the isolated `ClipLiteStore` CTest pass.
+
 ## [1.0.2] - 2026-08-24
 
 Fixed the history popup taking input focus, bringing paste interaction closer to the Windows clipboard experience.
