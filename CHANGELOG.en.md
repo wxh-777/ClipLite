@@ -10,11 +10,15 @@ Fixes history search focus handling and adds an optional Chinese IME compatibili
 - Fixed history closing when search input was incorrectly treated as an external action.
 - Compatibility mode keeps the original app in the foreground, uses `Ctrl+Space` to enter real IME focus, and suppresses the trigger space from the search text.
 - Added an auto-saved Search input compatibility setting, disabled by default.
+- Widened the history window to `400px`, reduced the gap between filters and the history list, and retained more clipboard preview space.
+- Increased the text and HTML history preview limit from `160` to `256` bytes.
+- Preserved line breaks and tabs in text previews, and fixed inconsistent formatting between runtime capture and restart recovery.
 
 ### Build and Verification
 
 - Unified the application, resources, CMake, installer, package script, and both READMEs on version `1.0.5`.
 - x64 Release build, `ClipLiteStore` CTest, and the history-window stress test `100/100` passed.
+- Latest Release measurements: main executable `549.5 KB`, startup `56.12 ms`, Working Set `13.51 MB`, Private Bytes `2.73 MB`, GDI `13`, and USER `10`.
 
 ## [1.0.4] - 2026-08-25
 

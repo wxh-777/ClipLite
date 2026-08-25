@@ -39,8 +39,8 @@ Settings window:
 
 ClipLite is designed to stay quietly in the tray. It uses less memory than many clipboard history tools, making it suitable for long-running background use without requiring a separate runtime.
 
-- The Windows Task Manager showed about `2.4 MB` of memory in a local idle observation.
-- The main executable is about `535 KB`, smaller than an ordinary phone photo.
+- The Windows Task Manager showed about `2.7 MB` of memory in a local idle observation.
+- The main executable is about `550 KB`, smaller than an ordinary phone photo.
 - Startup took about `0.06 seconds`, while full history and images are read only when needed.
 - The history popup caches recently displayed image thumbnails, so continuous scrolling does not reread and decode the same source image.
 
@@ -49,7 +49,7 @@ This makes ClipLite suitable for long-running background use and portable folder
 <details>
 <summary>Show detailed measurements</summary>
 
-Reference measurements from the current Windows x64 Release build on this machine: Working Set `13.35 MB`, Private Bytes `2.40 MB`, main executable `535.5 KB`, startup time `60.12 ms`, GDI `13`, and USER `10`. Task Manager and measurement tools use different memory definitions, so their displayed values can differ.
+Reference measurements from the current Windows x64 Release build on this machine: Working Set `13.51 MB`, Private Bytes `2.73 MB`, main executable `549.5 KB`, startup time `56.12 ms`, GDI `13`, and USER `10`. Task Manager and measurement tools use different memory definitions, so their displayed values can differ.
 
 The values were sampled by `tools/measure.ps1` about one second after startup while idle, with the history window closed. Actual values vary with Windows version, DPI, system state, history data, and runtime scenario. These figures describe the local Release baseline and are not a fixed guarantee for every device.
 
@@ -61,8 +61,8 @@ ClipLite is for people who want clipboard history to be easy to find without mak
 
 | Comparison | ClipLite | Common clipboard tools |
 | --- | --- | --- |
-| Background usage | Lightweight by design; about `2.4 MB` in a local idle observation | Resident usage often grows with feature scope |
-| Program size | Main executable about `535 KB` | Usually larger when bundled with runtimes or extra features |
+| Background usage | Lightweight by design; about `2.7 MB` in a local idle observation | Resident usage often grows with feature scope |
+| Program size | Main executable about `550 KB` | Usually larger when bundled with runtimes or extra features |
 | Runtime | Native Win32, without WebView or a large runtime | Some tools depend on an additional runtime or framework |
 | Data control | History stays local by default, with optional DPAPI encryption | Data location and privacy policies vary |
 | Distribution | Installer and portable packages, including USB-friendly use | Usually installer-first |

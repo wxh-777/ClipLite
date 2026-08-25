@@ -131,15 +131,28 @@ int main() {
     ClipStore previewBoundary(10);
     previewBoundary.open();
     previewBoundary.clear();
-    const std::string boundaryText = std::string(159, 'a') + u8"中";
+    const std::string boundaryText = std::string(255, 'a') + u8"中";
     if (!previewBoundary.append(ClipType::Text, boundaryText, clipLiteHash(boundaryText)) ||
-        previewBoundary.items()[0].preview != std::string(159, 'a')) return 84;
+        previewBoundary.items()[0].preview != std::string(255, 'a')) return 84;
     ClipStore previewBoundaryReopened(10);
     if (!previewBoundaryReopened.open()) return 851;
     if (previewBoundaryReopened.items().size() != 1) return 852;
-    if (previewBoundaryReopened.items()[0].preview != std::string(159, 'a')) return 85;
+    if (previewBoundaryReopened.items()[0].preview != std::string(255, 'a')) return 85;
     previewBoundaryReopened.clear();
     previewBoundary.clear();
+
+    ClipStore previewWhitespace(10);
+    previewWhitespace.open();
+    previewWhitespace.clear();
+    const std::string whitespaceText = "first\r\nsecond\tthird\nfourth";
+    if (!previewWhitespace.append(ClipType::Text, whitespaceText,
+                                  clipLiteHash(whitespaceText)) ||
+        previewWhitespace.items()[0].preview != whitespaceText) return 86;
+    ClipStore previewWhitespaceReopened(10);
+    if (!previewWhitespaceReopened.open() || previewWhitespaceReopened.items().size() != 1 ||
+        previewWhitespaceReopened.items()[0].preview != whitespaceText) return 87;
+    previewWhitespaceReopened.clear();
+    previewWhitespace.clear();
 
     const std::string visibleHtmlText = "personal token";
     const std::string hiddenHtml = "<p>personal token</p><span data-offset=\"23\"></span>";

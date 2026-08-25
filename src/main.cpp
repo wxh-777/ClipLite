@@ -150,19 +150,19 @@ constexpr UINT kTrayId = 1;
 constexpr int kPopupFilterTop = 58;
 constexpr int kPopupFilterBottom = 82;
 constexpr int kPopupSearchLeft = 86;
-constexpr int kPopupSearchRight = 218;
-constexpr int kPopupClearLeft = 222;
-constexpr int kPopupClearRight = 254;
-constexpr int kPopupPinLeft = 258;
-constexpr int kPopupPinRight = 278;
-constexpr int kPopupCloseLeft = 282;
-constexpr int kPopupWidth = 320;
+constexpr int kPopupSearchRight = 298;
+constexpr int kPopupClearLeft = 302;
+constexpr int kPopupClearRight = 334;
+constexpr int kPopupPinLeft = 338;
+constexpr int kPopupPinRight = 358;
+constexpr int kPopupCloseLeft = 362;
+constexpr int kPopupWidth = 400;
 constexpr int kPopupHeight = 500;
 constexpr int kPopupCornerRadius = 10;
 constexpr int kPopupBorderInset = 1;
-constexpr int kPopupListTop = 108;
+constexpr int kPopupListTop = 96;
 constexpr int kPopupBottomPadding = 14;
-constexpr int kPopupCardHeight = 92;
+constexpr int kPopupCardHeight = 108;
 constexpr int kPopupCardGap = 8;
 constexpr int kSettingsWidth = 740;
 constexpr int kSettingsHeight = 520;
@@ -2058,8 +2058,10 @@ void cancelPopupSearch() {
     ++g_app->searchGeneration;
 }
 
-void applyVisibleCandidates(const std::vector<std::size_t>& candidates) {
+void applyVisibleCandidates(const std::vector<std::size_t>& candidates,
+                            bool preserveScrollPosition = false) {
     if (!g_app || !g_app->popup) return;
+    const int previousScrollPosition = g_app->scrollPosition;
     g_app->visible.clear();
     for (const std::size_t index : candidates) {
         if (index >= g_app->store.items().size()) continue;
@@ -2071,23 +2073,27 @@ void applyVisibleCandidates(const std::vector<std::size_t>& candidates) {
     }
     if (g_app->visible.empty()) g_app->selected = 0;
     else g_app->selected = std::clamp(g_app->selected, 0, static_cast<int>(g_app->visible.size()) - 1);
-    const int visibleRows = popupVisibleRows();
-    const int maxOffset = std::max(0, static_cast<int>(g_app->visible.size()) - visibleRows);
-    g_app->scrollOffset = std::clamp(g_app->scrollOffset, 0, maxOffset);
-    if (g_app->selected < g_app->scrollOffset) g_app->scrollOffset = g_app->selected;
-    if (g_app->selected >= g_app->scrollOffset + visibleRows) {
-        g_app->scrollOffset = g_app->selected - visibleRows + 1;
+    if (preserveScrollPosition) {
+        setPopupScrollPosition(previousScrollPosition);
+    } else {
+        const int visibleRows = popupVisibleRows();
+        const int maxOffset = std::max(0, static_cast<int>(g_app->visible.size()) - visibleRows);
+        g_app->scrollOffset = std::clamp(g_app->scrollOffset, 0, maxOffset);
+        if (g_app->selected < g_app->scrollOffset) g_app->scrollOffset = g_app->selected;
+        if (g_app->selected >= g_app->scrollOffset + visibleRows) {
+            g_app->scrollOffset = g_app->selected - visibleRows + 1;
+        }
+        g_app->scrollPosition = g_app->scrollOffset * popupScrollStride();
     }
-    g_app->scrollPosition = g_app->scrollOffset * popupScrollStride();
     invalidatePopupList(g_app->popup);
     invalidateFilterBar(g_app->popup);
 }
 
-void refreshVisible() {
+void refreshVisible(bool preserveScrollPosition = false) {
     if (!g_app->popup) return;
     KillTimer(g_app->popup, kPopupSearchTimer);
     cancelPopupSearch();
-    applyVisibleCandidates(g_app->store.search(g_app->query));
+    applyVisibleCandidates(g_app->store.search(g_app->query), preserveScrollPosition);
 }
 
 void startPopupSearch(HWND popup) {
@@ -4372,13 +4378,15 @@ void paintPopupContent(HWND hwnd, HDC dc) {
                                   accent, accent, 2);
         }
         const bool image = isImageType(item.type);
+        const int metadataTop = y + height - ui(24);
         if (image && drawImagePreview(dc, item, RECT{rowRect.left + ui(12), y + ui(12),
-                                                     rowRect.left + ui(56), y + ui(56)})) {
+                                                     rowRect.left + ui(84), y + ui(84)})) {
         } else {
             const std::wstring preview = localizedPopupPreview(item);
             SelectObject(dc, previewFont);
             SetTextColor(dc, text);
-            RECT previewRect{rowRect.left + ui(12), y + ui(10), rowRect.right - ui(12), y + ui(48)};
+            RECT previewRect{rowRect.left + ui(12), y + ui(10), rowRect.right - ui(12),
+                             metadataTop - ui(4)};
             DrawTextW(dc, preview.c_str(), -1, &previewRect,
                       DT_LEFT | DT_TOP | DT_WORDBREAK | DT_END_ELLIPSIS);
         }
@@ -4387,7 +4395,6 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         SetTextColor(dc, secondary);
         const std::wstring source = item.source.empty()
             ? std::wstring(settingsLocale().popupClipboardSource) : utf8ToWide(item.source);
-        const int metadataTop = y + height - ui(24);
         const bool metadataVisible = metadataTop >= ui(kPopupListTop) &&
             metadataTop + ui(16) <= listBottom;
         if (metadataVisible) {
@@ -6855,7 +6862,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         if (message == WM_TIMER && wParam == kExpiryTimer) {
             if (g_app->store.pruneExpired(nowUnix()) && g_app->popup) {
-                refreshVisible();
+                refreshVisible(true);
                 InvalidateRect(g_app->popup, nullptr, FALSE);
             }
             return 0;
@@ -6893,7 +6900,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                     g_app->ignoredClipboardUntil = 0;
                 }
             }
-            if (g_app->popup) refreshVisible();
+            if (g_app->popup) refreshVisible(true);
             return 0;
         }
     }
@@ -7155,7 +7162,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                     appendDiagnosticLog("ERROR", "settings: history clear operation failed");
                     setSettingsActionFeedback(hwnd, settingsLocale().clearFailed, false);
                 }
-                if (g_app->popup) refreshVisible();
+                if (g_app->popup) refreshVisible(true);
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
             return 0;

@@ -19,6 +19,7 @@ constexpr std::uint32_t kMaxPayload = 32u * 1024u * 1024u;
 constexpr std::uint32_t kMaxSource = 256;
 constexpr std::uint32_t kStoredHtmlMagic = 0x314D5448; // HTM1
 constexpr std::size_t kStoredHtmlHeaderSize = 12;
+constexpr std::size_t kPreviewMaxBytes = 256;
 
 #pragma pack(push, 1)
 struct DiskHeader {
@@ -364,7 +365,7 @@ bool ClipStore::open() {
         const bool isImage = header.type == static_cast<std::uint8_t>(ClipType::Image) ||
                              header.type == static_cast<std::uint8_t>(ClipType::ImageV5);
         const std::size_t previewLimit = item.encrypted || isImage ? 0 :
-            (header.type == static_cast<std::uint8_t>(ClipType::Html) ? 4096 : 160);
+            (header.type == static_cast<std::uint8_t>(ClipType::Html) ? 4096 : kPreviewMaxBytes);
         std::uint32_t remaining = header.payloadSize;
         std::uint32_t checksum = 0xFFFFFFFFu;
         char buffer[64 * 1024];
@@ -388,9 +389,9 @@ bool ClipStore::open() {
         else if (isImage) preview = "[Image]";
         if (header.type == static_cast<std::uint8_t>(ClipType::Html)) {
             const std::string htmlPreview = htmlTextPreview(preview);
-            preview = htmlPreview.empty() ? "[HTML]" : truncateUtf8(htmlPreview, 160);
+            preview = htmlPreview.empty() ? "[HTML]" : truncateUtf8(htmlPreview, kPreviewMaxBytes);
         } else {
-            preview = truncateUtf8(preview, 160);
+            preview = truncateUtf8(preview, kPreviewMaxBytes);
         }
         if (header.type == static_cast<std::uint8_t>(ClipType::Files)) preview = "[Files] " + preview;
         item.preview = std::move(preview);
@@ -923,9 +924,8 @@ std::string ClipStore::makePreview(ClipType type, const std::string& payload) {
     if (type == ClipType::Image || type == ClipType::ImageV5) return "[Image]";
     std::string value = type == ClipType::Html ? htmlTextPreview(payload) : payload;
     if (value.empty() && type == ClipType::Html) return "[HTML]";
-    value = truncateUtf8(value, 160);
+    value = truncateUtf8(value, kPreviewMaxBytes);
     if (type == ClipType::Files) value = "[Files] " + value;
-    for (char& c : value) if (c == '\r' || c == '\n' || c == '\t') c = ' ';
     return value;
 }
 
