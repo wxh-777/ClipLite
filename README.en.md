@@ -2,7 +2,7 @@
 
 ClipLite is a lightweight native clipboard history manager for Windows. It is built with C++17, the Win32 API, and GDI/GDI+, without WebView, Electron, WinUI, Qt, or another large runtime. The project prioritizes low idle memory usage, reliable clipboard format handling, and portable distribution.
 
-Current release: **1.0.5** (Windows x64)
+Current release: **1.1.0** (Windows x64)
 
 中文文档：[README.md](README.md)
 
@@ -16,7 +16,7 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 
 - Open clipboard history with `Alt+V`, with an optional `Win+V` replacement mode.
 - Capture and restore plain text, HTML, file lists, DIB, and DIBV5 images.
-- Search, filter by type, pin, delete, clear, and paste history items.
+- Search and combine type, time range, content length, source application, and sort filters; pin, delete, clear, and paste history items.
 - Search focuses the input by default; an optional compatibility mode keeps the original app in the foreground and uses `Ctrl+Space` to enter Chinese IME input.
 - Paste as plain text or rich text; images are loaded on demand only when visible.
 - Automatic, light, and dark themes with blue, purple, green, and orange accents.
@@ -29,11 +29,11 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 
 History window with an image record:
 
-![ClipLite history window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.0.5/docs/screenshots/history.png)
+![ClipLite history window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.1.0/docs/screenshots/history.png)
 
 Settings window:
 
-![ClipLite settings window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.0.5/docs/screenshots/settings.png)
+![ClipLite settings window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.1.0/docs/screenshots/settings.png)
 
 ## Performance and Size
 
@@ -41,9 +41,9 @@ ClipLite is designed to stay quietly in the tray. It uses less memory than many 
 
 Clipboard format capture runs in the background. When an application delays providing HTML, text, or image formats after copying, ClipLite keeps its history window, paste flow, and global shortcuts responsive.
 
-- The Windows Task Manager showed about `2.7 MB` of memory in a local idle observation.
-- The main executable is about `550 KB`, smaller than an ordinary phone photo.
-- Startup took about `0.06 seconds`, while full history and images are read only when needed.
+- A local Release measurement showed about `2.5 MB` of Private Bytes while idle.
+- The main executable is about `587.5 KB`, smaller than an ordinary phone photo.
+- Startup took about `0.05 seconds`, while full history and images are read only when needed.
 - The history popup caches recently displayed image thumbnails, so continuous scrolling does not reread and decode the same source image.
 
 This makes ClipLite suitable for long-running background use and portable folders such as a USB drive.
@@ -51,7 +51,7 @@ This makes ClipLite suitable for long-running background use and portable folder
 <details>
 <summary>Show detailed measurements</summary>
 
-Reference measurements from the current Windows x64 Release build on this machine: Working Set `13.51 MB`, Private Bytes `2.73 MB`, main executable `549.5 KB`, startup time `56.12 ms`, GDI `13`, and USER `10`. Task Manager and measurement tools use different memory definitions, so their displayed values can differ.
+Reference measurements from the current Windows x64 Release build on this machine: Working Set `13.73 MB`, Private Bytes `2.50 MB`, main executable `587.5 KB`, startup time `53.03 ms`, GDI `13`, and USER `10`. Task Manager and measurement tools use different memory definitions, so their displayed values can differ.
 
 The values were sampled by `tools/measure.ps1` about one second after startup while idle, with the history window closed. Actual values vary with Windows version, DPI, system state, history data, and runtime scenario. These figures describe the local Release baseline and are not a fixed guarantee for every device.
 
@@ -63,8 +63,8 @@ ClipLite is for people who want clipboard history to be easy to find without mak
 
 | Comparison | ClipLite | Common clipboard tools |
 | --- | --- | --- |
-| Background usage | Lightweight by design; about `2.7 MB` in a local idle observation | Resident usage often grows with feature scope |
-| Program size | Main executable about `550 KB` | Usually larger when bundled with runtimes or extra features |
+| Background usage | Lightweight by design; about `2.5 MB` Private Bytes in a local Release measurement | Resident usage often grows with feature scope |
+| Program size | Main executable about `587.5 KB` | Usually larger when bundled with runtimes or extra features |
 | Runtime | Native Win32, without WebView or a large runtime | Some tools depend on an additional runtime or framework |
 | Data control | History stays local by default, with optional DPAPI encryption | Data location and privacy policies vary |
 | Distribution | Installer and portable packages, including USB-friendly use | Usually installer-first |
@@ -78,8 +78,8 @@ Features and versions vary across tools. This table describes product positionin
 
 The Windows x64 release provides:
 
-- Installer: `ClipLite-Setup-1.0.5-x64.exe`, with a selectable installation directory, shortcuts, and standard uninstall support.
-- Portable package: `ClipLite-1.0.5-portable-win-x64`, which can be moved as a directory. Data is stored in its `data\\` directory.
+- Installer: `ClipLite-Setup-1.1.0-x64.exe`, with a selectable installation directory, shortcuts, and standard uninstall support.
+- Portable package: `ClipLite-1.1.0-portable-win-x64.zip`, which can be extracted and moved as a directory. Data is stored in its `data\\` directory.
 
 Use `SHA256SUM.txt` in the portable package to verify `ClipLite.exe`. Verify the download source before running the application.
 
@@ -96,7 +96,7 @@ Use `SHA256SUM.txt` in the portable package to verify `ClipLite.exe`. Verify the
 
 History, settings, and monitoring shortcuts can be changed in Settings. `Win+V` replacement depends on Windows, the current integrity level, and shortcut conflicts. `Alt+V` remains available when registration fails.
 
-The History window shortcuts section includes a "Move pasted item to top" setting. When enabled, history is ordered by recent use activity; when disabled, it is ordered by recent copy time. Each record also stores a stable ID, first-captured time, millisecond copy time, last-used time, copy count, use count, and logical content length as a basis for future sorting and filters.
+The General settings section includes a "Move pasted item to top" setting. When enabled, history is ordered by recent use activity; when disabled, it is ordered by recent copy time. Each record also stores a stable ID, first-captured time, millisecond copy time, last-used time, copy count, use count, and logical content length for sorting and filters.
 
 ## Data and Privacy
 

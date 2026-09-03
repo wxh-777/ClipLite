@@ -583,6 +583,20 @@ bool ClipStore::open() {
             if (nextRecordId_ != std::numeric_limits<std::uint64_t>::max()) ++nextRecordId_;
         }
     }
+    if (validBytes == fileSize) return true;
+
+    // A damaged tail cannot contain a recoverable record. Truncate it in place
+    // so opening a large history does not rewrite every valid payload.
+    std::FILE* repair = nullptr;
+    _wfopen_s(&repair, path_.c_str(), L"r+b");
+    if (repair) {
+        const bool truncated = _chsize_s(_fileno(repair), static_cast<__int64>(validBytes)) == 0;
+        const bool closed = std::fclose(repair) == 0;
+        if (truncated && closed) {
+            diskBytes_ = validBytes;
+            return true;
+        }
+    }
     return rebuildFile();
 }
 

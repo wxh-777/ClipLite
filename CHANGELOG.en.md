@@ -1,11 +1,27 @@
 # Changelog
 
-## Unreleased
+## [1.1.0] - 2026-09-03
 
+- Added a "Move pasted item to top" toggle to the history item and empty-area context menus; changes are saved immediately and update list ordering.
+- Fixed the filter entry in the history list context menu still using the old menu; it now opens the same custom filter menu.
+- Moved "Move pasted item to top" from the history-window shortcuts card to the General settings card.
+- Improved the history header layout by widening the filter entry and moving the condition count into a separate badge, avoiding crowding and text truncation at high DPI.
+- Added system thumbnail icons for running applications in the source filter list, with the icon cache released when the history window closes.
+- Fixed rectangular background corners showing outside the rounded filter menu surfaces by applying rounded window-region clipping to both menu levels.
+- Fixed the filter menu closing after the first selection; multiple conditions can now be selected before clicking outside the menu or pressing Esc.
+- Replaced the filter button menu with a double-buffered custom floating menu to reduce flicker; first-level rows remain visible while opening their submenus, and the source application list supports the wheel, scrollbar, and thumb dragging.
+- Fixed the global mouse hook closing the history window when the filter menu or source submenu opens outside the popup.
+- Fixed slow startup caused by rebuilding the history file on every launch; valid histories are now only scanned, and damaged tails are truncated to the last valid record.
+- Expanded the history filter menu with time range, content length, multi-select source application, and sort filters. The keyword, type, and menu conditions are combined, with active-condition and match counts shown in the popup.
 - Added a "Move pasted item to top" setting. When enabled, history is ordered by recent use activity; when disabled, it remains ordered by recent copies.
 - Extended v4 history records with a stable record ID, first-captured time, millisecond copy time, last-used time, copy count, use count, and logical content length for future sorting, length, and usage-frequency filters.
 - Added metadata version, size, and CRC validation while retaining reads and automatic upgrades for the earlier v4 metadata layout.
 - Fixed fast-paste delays caused by forced usage-stat disk commits and rebuilding the whole history for duplicate copies; unchanged content now updates metadata in place when possible.
+
+### Build and Verification
+
+- Unified the application, resources, CMake, installer, package script, and both READMEs on version `1.1.0`.
+- x64 Release build, `ClipLiteStore` CTest, and resource measurement passed; the current Release baseline is a `587.5 KB` executable, `53.03 ms` startup, `13.73 MB` Working Set, `2.50 MB` Private Bytes, GDI `13`, and USER `10`.
 
 ## [1.0.5] - 2026-08-26
 

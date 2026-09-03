@@ -107,12 +107,20 @@ constexpr int kMenuDelete = 102;
 constexpr int kMenuPastePlain = 103;
 constexpr int kMenuPasteRich = 104;
 constexpr int kMenuPopupPinned = 105;
+constexpr int kMenuFilter = 106;
+constexpr int kMenuPromotePastedItem = 107;
 constexpr int kFilterAll = 130;
 constexpr int kFilterText = 131;
 constexpr int kFilterFiles = 132;
 constexpr int kFilterImage = 133;
 constexpr int kFilterPinned = 134;
 constexpr int kFilterOther = 135;
+constexpr int kFilterTimeBase = 420;
+constexpr int kFilterLengthBase = 430;
+constexpr int kFilterSourceAll = 500;
+constexpr int kFilterSourceBase = 501;
+constexpr int kFilterSortBase = 700;
+constexpr int kFilterReset = 710;
 constexpr int kStorageCategoryCount = 3;
 constexpr int kAccentCount = 4;
 constexpr UINT kShowPopupMessage = WM_APP + 1;
@@ -152,14 +160,21 @@ constexpr UINT kTrayId = 1;
 constexpr int kPopupFilterTop = 58;
 constexpr int kPopupFilterBottom = 82;
 constexpr int kPopupSearchLeft = 86;
-constexpr int kPopupSearchRight = 298;
-constexpr int kPopupClearLeft = 302;
-constexpr int kPopupClearRight = 334;
-constexpr int kPopupPinLeft = 338;
-constexpr int kPopupPinRight = 358;
-constexpr int kPopupCloseLeft = 362;
+constexpr int kPopupSearchRight = 250;
+constexpr int kPopupClearLeft = 254;
+constexpr int kPopupClearRight = 268;
+constexpr int kPopupFilterButtonLeft = 270;
+constexpr int kPopupFilterButtonRight = 338;
+constexpr int kPopupPinLeft = 342;
+constexpr int kPopupPinRight = 362;
+constexpr int kPopupCloseLeft = 366;
 constexpr int kPopupWidth = 400;
 constexpr int kPopupHeight = 500;
+constexpr int kFilterMenuWidth = 204;
+constexpr int kFilterMenuRowHeight = 32;
+constexpr int kFilterSubmenuWidth = 190;
+constexpr int kFilterSubmenuRowHeight = 30;
+constexpr int kFilterSubmenuMaxHeight = 280;
 constexpr int kPopupCornerRadius = 10;
 constexpr int kPopupBorderInset = 1;
 constexpr int kPopupListTop = 96;
@@ -187,6 +202,7 @@ constexpr int kSupportPaymentHeight = 630;
 constexpr int kSupportQqWidth = 560;
 constexpr int kSupportQqHeight = 700;
 constexpr std::size_t kPopupImagePreviewCacheLimit = 12;
+constexpr std::size_t kPopupSourceIconCacheLimit = 32;
 
 struct Settings {
     bool winV = false;
@@ -229,6 +245,11 @@ struct PopupImagePreview {
     HBITMAP bitmap = nullptr;
     int width = 0;
     int height = 0;
+};
+
+struct PopupSourceIcon {
+    std::string source;
+    HICON icon = nullptr;
 };
 
 struct AppState {
@@ -281,6 +302,16 @@ struct AppState {
     bool popupOpening = false;
     bool popupActivated = false;
     bool popupOpenedByWinV = false;
+    bool filterMenuOpen = false;
+    HWND filterMenuWindow = nullptr;
+    HWND filterSubmenuWindow = nullptr;
+    int filterMenuSubmenu = -1;
+    int filterMenuHover = -1;
+    int filterSubmenuHover = -1;
+    int filterSubmenuScrollOffset = 0;
+    bool filterSubmenuDragging = false;
+    int filterSubmenuDragStartY = 0;
+    int filterSubmenuDragStartOffset = 0;
     DWORD popupOpenInputTick = 0;
     bool popupImeMode = false;
     bool scrollDragging = false;
@@ -321,6 +352,10 @@ struct AppState {
     bool shortcutRegistrationWarning = false;
     int filterType = 0;
     bool pinnedOnly = false;
+    int filterTimeRange = 0;
+    int filterLength = 0;
+    int filterSort = 0;
+    std::vector<std::string> filterSources;
     std::string query;
     bool popupSearchInputActive = false;
     bool popupSearchControlDown = false;
@@ -335,6 +370,7 @@ struct AppState {
     ClipStore store;
     std::vector<std::size_t> visible;
     std::vector<PopupImagePreview> imagePreviews;
+    std::vector<PopupSourceIcon> sourceIcons;
     std::uint64_t imagePreviewRevision = 0;
     int benchmarkExitCode = 0;
     std::uint64_t ignoredClipboardHash = 0;
@@ -446,6 +482,9 @@ void openSupportWindow(bool qqGroup);
 LRESULT CALLBACK supportWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 HICON clipLiteIcon();
 void clearPopupImagePreviews();
+void clearPopupSourceIcons();
+void closeFilterMenu();
+bool filterMenuContainsPoint(POINT point);
 
 int ui(int value) {
     return MulDiv(value, static_cast<int>(g_uiDpi), 96);
@@ -761,7 +800,7 @@ const SettingsLocale kEnglishSettingsLocale{
     L"Some shortcuts could not be registered. Choose different combinations.",
     L"Custom shortcuts require at least one modifier key.",
     L"Sensitive markers: password, token, api_key, secret, and private keys; detected by content pattern.",
-      L"Application    ClipLite", L"Version        1.0.5 x64", L"Storage format  v4",
+      L"Application    ClipLite", L"Version        1.1.0 x64", L"Storage format  v4",
     L"Data directory  %LOCALAPPDATA%\\ClipLite", L"Browse", L"Clear history", L"Clear text",
     L"Clear images", L"Clear files", L"Press shortcut", L"Need modifier", L"One application per line", L"Auto",
     L"ClipLite Settings", L"Choose a valid cache directory.", L"Unable to create the cache directory.",
@@ -805,7 +844,7 @@ const SettingsLocale kChineseSettingsLocale{
     L"当前 %zu 条 \xB7 %ls", L"设置为 0 表示不限；置顶记录不会被自动清理。",
     L"部分快捷键注册失败，请更换组合键。", L"自定义快捷键至少需要一个修饰键。",
     L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。",
-     L"应用名称    ClipLite", L"版本        1.0.5 x64", L"存储格式    v4",
+     L"应用名称    ClipLite", L"版本        1.1.0 x64", L"存储格式    v4",
     L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清空历史", L"清理文本", L"清理图片",
     L"清理文件", L"按下组合键", L"需要修饰键", L"每行一个应用名称", L"自动", L"ClipLite 设置",
     L"请选择有效的缓存目录。", L"无法创建缓存目录。", L"目标目录已有历史数据，请选择空目录。",
@@ -1612,6 +1651,57 @@ bool isAutomaticTypeMatch(int filterType, ClipType type) {
            type != ClipType::Files && type != ClipType::Html;
 }
 
+std::uint64_t popupItemTimestamp(const ClipItem& item) {
+    return item.timestamp;
+}
+
+std::uint64_t popupItemSortTimestamp(const ClipItem& item) {
+    return item.lastCopiedAt != 0 ? item.lastCopiedAt : item.timestamp * 1000ULL;
+}
+
+bool popupTimeMatches(int range, const ClipItem& item) {
+    if (range == 0) return true;
+    const std::uint64_t timestamp = popupItemTimestamp(item);
+    if (timestamp == 0) return false;
+    const std::uint64_t current = nowUnix();
+    const std::uint64_t age = current > timestamp ? current - timestamp : 0;
+    if (range == 1) return age <= 86400;
+    if (range == 2) return age > 86400 && age <= 172800;
+    if (range == 3) return age <= 7 * 86400;
+    return age > 7 * 86400;
+}
+
+bool popupLengthMatches(int length, const ClipItem& item) {
+    if (length == 0) return true;
+    const std::uint64_t size = item.contentSize;
+    if (length == 1) return size < 20;
+    if (length == 2) return size >= 20 && size <= 100;
+    return size > 100;
+}
+
+bool popupSourceMatches(const ClipItem& item) {
+    return g_app->filterSources.empty() ||
+        std::find(g_app->filterSources.begin(), g_app->filterSources.end(), item.source) !=
+        g_app->filterSources.end();
+}
+
+int popupFilterConditionCount() {
+    return (g_app->filterType != 0 || g_app->pinnedOnly ? 1 : 0) +
+        (g_app->filterTimeRange != 0 ? 1 : 0) +
+        (g_app->filterLength != 0 ? 1 : 0) +
+        static_cast<int>(g_app->filterSources.size());
+}
+
+void resetPopupFilters() {
+    if (!g_app) return;
+    g_app->filterType = 0;
+    g_app->pinnedOnly = false;
+    g_app->filterTimeRange = 0;
+    g_app->filterLength = 0;
+    g_app->filterSort = 0;
+    g_app->filterSources.clear();
+}
+
 const wchar_t* automaticTypeLabel(ClipType type) {
     if (type == ClipType::Text || type == ClipType::Html) return settingsLocale().popupTextType;
     if (isImageType(type)) return settingsLocale().popupImageType;
@@ -1707,14 +1797,17 @@ void invalidatePopupHover(HWND hwnd, int row, int filter, bool header) {
         RECT filterRect = automaticFilterRect(filter, g_app->filterScrollOffset);
         InflateRect(&filterRect, ui(2), ui(2));
         InvalidateRect(hwnd, &filterRect, FALSE);
-    } else if (filter >= 7 && filter <= 9) {
+    } else if (filter >= 7 && filter <= 10) {
         RECT buttonRect{};
         if (filter == 7) {
             buttonRect = RECT{ui(kPopupClearLeft), ui(12), ui(kPopupClearRight), ui(46)};
         } else if (filter == 8) {
             buttonRect = RECT{ui(kPopupPinLeft), ui(12), ui(kPopupPinRight), ui(46)};
-        } else {
+        } else if (filter == 9) {
             buttonRect = RECT{ui(kPopupCloseLeft), ui(12), client.right - ui(16), ui(46)};
+        } else {
+            buttonRect = RECT{ui(kPopupFilterButtonLeft), ui(12),
+                              ui(kPopupFilterButtonRight), ui(46)};
         }
         InvalidateRect(hwnd, &buttonRect, FALSE);
     }
@@ -1943,6 +2036,24 @@ void drawSearchIcon(HDC dc, int centerX, int centerY, COLORREF color) {
                       x + 7.0f * scale, y + 8.0f * scale);
 }
 
+void drawFilterIcon(HDC dc, int centerX, int centerY, COLORREF color) {
+    if (!g_app || g_app->gdiplusToken == 0) return;
+    Gdiplus::Graphics graphics(dc);
+    configureGdiGraphics(graphics);
+    const float scale = static_cast<float>(g_uiDpi) / 96.0f;
+    Gdiplus::Pen pen(makeGdiColor(color), 1.5f * scale);
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    const float x = static_cast<float>(centerX);
+    const float y = static_cast<float>(centerY);
+    graphics.DrawLine(&pen, x - 7.0f * scale, y - 5.0f * scale,
+                      x + 7.0f * scale, y - 5.0f * scale);
+    graphics.DrawLine(&pen, x - 4.0f * scale, y,
+                      x + 4.0f * scale, y);
+    graphics.DrawLine(&pen, x - 1.5f * scale, y + 5.0f * scale,
+                      x + 1.5f * scale, y + 5.0f * scale);
+}
+
 void drawMetadataTag(HDC dc, const RECT& rect, const std::wstring& value,
                      COLORREF background, COLORREF border, COLORREF text, int radius) {
     if (!g_app || g_app->gdiplusToken == 0) return;
@@ -2106,9 +2217,24 @@ void applyVisibleCandidates(const std::vector<std::size_t>& candidates,
         if (index >= g_app->store.items().size()) continue;
         const ClipItem& item = g_app->store.items()[index];
         const bool typeMatches = isAutomaticTypeMatch(g_app->filterType, item.type);
-        if (typeMatches && (!g_app->pinnedOnly || item.pinned)) {
+        if (typeMatches && (!g_app->pinnedOnly || item.pinned) &&
+            popupTimeMatches(g_app->filterTimeRange, item) &&
+            popupLengthMatches(g_app->filterLength, item) && popupSourceMatches(item)) {
             g_app->visible.push_back(index);
         }
+    }
+    if (g_app->filterSort != 0) {
+        std::stable_sort(g_app->visible.begin(), g_app->visible.end(), [](std::size_t first,
+                                                                          std::size_t second) {
+            const ClipItem& a = g_app->store.items()[first];
+            const ClipItem& b = g_app->store.items()[second];
+            if (g_app->filterSort == 1) return popupItemSortTimestamp(a) > popupItemSortTimestamp(b);
+            if (g_app->filterSort == 2) {
+                return a.source < b.source ||
+                    (a.source == b.source && popupItemSortTimestamp(a) < popupItemSortTimestamp(b));
+            }
+            return a.contentSize > b.contentSize;
+        });
     }
     if (g_app->visible.empty()) g_app->selected = 0;
     else g_app->selected = std::clamp(g_app->selected, 0, static_cast<int>(g_app->visible.size()) - 1);
@@ -2455,8 +2581,7 @@ void showPopup(bool openedByWinV = false) {
     g_app->scrollPosition = 0;
     g_app->fastImagePreview = false;
     g_app->filterScrollOffset = 0;
-    g_app->filterType = 0;
-    g_app->pinnedOnly = false;
+    resetPopupFilters();
     g_app->hoveredRow = -1;
     g_app->hoveredFilter = -1;
     g_app->hoveredDeleteRow = -1;
@@ -2502,6 +2627,8 @@ void showPopup(bool openedByWinV = false) {
 
 void closePopup() {
     cancelPopupSearch();
+    closeFilterMenu();
+    clearPopupSourceIcons();
     const HWND target = g_app->targetWindow;
     if (g_app->popupMouseHook) {
         UnhookWindowsHookEx(g_app->popupMouseHook);
@@ -2525,6 +2652,7 @@ void closePopup() {
     g_app->popupOpening = false;
     g_app->popupActivated = false;
     g_app->popupOpenedByWinV = false;
+    g_app->filterMenuOpen = false;
     g_app->popupOpenInputTick = 0;
     if (IsWindow(target)) restorePasteTargetFocus(target);
 }
@@ -2668,6 +2796,9 @@ LRESULT CALLBACK popupMouseProc(int code, WPARAM wParam, LPARAM lParam) {
         RECT popupRect{};
         GetWindowRect(g_app->popup, &popupRect);
         if (!PtInRect(&popupRect, mouse->pt)) {
+            if (g_app->filterMenuOpen && filterMenuContainsPoint(mouse->pt)) {
+                return CallNextHookEx(nullptr, code, wParam, lParam);
+            }
             PostMessageW(g_app->hidden, kClosePopupMessage, 0, 0);
         }
     }
@@ -3762,7 +3893,9 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
             makeSettingsRow(hwnd, settingsLocale().runAsAdministrator,
                             {kSettingRunAsAdministrator}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().searchInputCompatibility,
-                            {kSettingSearchImeCompatibility}, {36}, {20}, contentWidth)
+                            {kSettingSearchImeCompatibility}, {36}, {20}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().promotePastedItem,
+                            {kSettingPromotePastedItem}, {36}, {20}, contentWidth)
         });
     } else if (g_app->settingsTab == kSettingsShortcutPage) {
         makeCard(settingsLocale().importantSystemShortcut, {
@@ -3780,8 +3913,6 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
         makeCard(settingsLocale().historyWindowShortcuts, {
             makeSettingsRow(hwnd, settingsLocale().pasteSelectedItem,
                             {kSettingShortcutPaste}, {150}, {30}, contentWidth),
-            makeSettingsRow(hwnd, settingsLocale().promotePastedItem,
-                            {kSettingPromotePastedItem}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().pastePlainText,
                             {kSettingShortcutPastePlain}, {150}, {30}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().pasteRichText,
@@ -4343,7 +4474,6 @@ void paintPopupContent(HWND hwnd, HDC dc) {
                           searchBorder, 6);
     drawSearchIcon(dc, ui(kPopupSearchLeft + 14), ui(30),
                    g_app->searchEdit && g_app->popupSearchInputActive ? accent : secondary);
-    const wchar_t* clearLabel = settingsLocale().popupClearSearch;
     SelectObject(dc, filterFont);
     RECT clearRect{ui(kPopupClearLeft), ui(14), ui(kPopupClearRight), ui(46)};
     if (g_app->hoveredFilter == 7) {
@@ -4351,7 +4481,31 @@ void paintPopupContent(HWND hwnd, HDC dc) {
                               settingsAccentSoftColor(), 4);
     }
     SetTextColor(dc, g_app->hoveredFilter == 7 ? accent : secondary);
-    DrawTextW(dc, clearLabel, -1, &clearRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    drawDeleteIcon(dc, ui(kPopupClearLeft + 2), ui(25),
+                   g_app->hoveredFilter == 7 ? accent : secondary);
+    const int filterCount = popupFilterConditionCount();
+    const bool filterActive = filterCount > 0;
+    const RECT filterButtonRect{ui(kPopupFilterButtonLeft), ui(12),
+                                ui(kPopupFilterButtonRight), ui(46)};
+    drawGdiRoundedSurface(dc, filterButtonRect,
+                          filterActive ? settingsAccentSoftColor() : chip,
+                          filterActive || g_app->hoveredFilter == 10 ? accent : border, 5);
+    const COLORREF filterColor = filterActive || g_app->hoveredFilter == 10 ? accent : secondary;
+    drawFilterIcon(dc, ui(kPopupFilterButtonLeft + 11), ui(29), filterColor);
+    RECT filterTextRect{ui(kPopupFilterButtonLeft + 19), ui(14),
+                        ui(kPopupFilterButtonRight - 26), ui(46)};
+    SetTextColor(dc, filterColor);
+    DrawTextW(dc, settingsLocale().popupFilter, -1, &filterTextRect,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if (filterCount > 0) {
+        const RECT badge{ui(kPopupFilterButtonRight - 24), ui(19),
+                         ui(kPopupFilterButtonRight - 4), ui(35)};
+        drawGdiRoundedSurface(dc, badge, accent, accent, 8);
+        const std::wstring count = std::to_wstring(filterCount);
+        SetTextColor(dc, RGB(255, 255, 255));
+        DrawTextW(dc, count.c_str(), -1, const_cast<RECT*>(&badge),
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
     const RECT pinRect{ui(kPopupPinLeft), ui(14), ui(kPopupPinRight), ui(46)};
     const RECT closeRect{ui(kPopupCloseLeft), ui(14), client.right - ui(16), ui(46)};
     if (g_app->hoveredFilter == 8 && !g_app->popupPinned) {
@@ -4390,6 +4544,16 @@ void paintPopupContent(HWND hwnd, HDC dc) {
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
     RestoreDC(dc, filterClip);
+
+    if (filterCount > 0) {
+        wchar_t status[96]{};
+        swprintf_s(status, tr(L"%d filters - %zu/%zu", L"已按 %d 项筛选 - 命中 %zu/%zu 条"),
+                   filterCount, g_app->visible.size(), g_app->store.activeCount());
+        SetTextColor(dc, secondary);
+        RECT statusRect{ui(16), ui(83), client.right - ui(16), ui(96)};
+        DrawTextW(dc, status, -1, &statusRect,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
 
     const int listBottom = client.bottom - ui(kPopupBottomPadding);
     const int listClip = SaveDC(dc);
@@ -4942,19 +5106,36 @@ void appendPasteMenu(HMENU menu, const ClipItem& item) {
 }
 
 void appendFilterMenu(HMENU menu) {
-    HMENU filters = CreatePopupMenu();
-    AppendMenuW(filters, MF_STRING, kFilterAll, settingsLocale().popupFilterAll);
-    AppendMenuW(filters, MF_STRING, kFilterPinned, settingsLocale().popupFilterPinned);
-    AppendMenuW(filters, MF_STRING, kFilterText, settingsLocale().popupFilterText);
-    AppendMenuW(filters, MF_STRING, kFilterImage, settingsLocale().popupFilterImages);
-    AppendMenuW(filters, MF_STRING, kFilterFiles, settingsLocale().popupFilterFiles);
-    AppendMenuW(filters, MF_STRING, kFilterOther, settingsLocale().popupFilterOther);
-    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(filters),
-                settingsLocale().popupFilter);
+    AppendMenuW(menu, MF_STRING, kMenuFilter, settingsLocale().popupFilter);
 }
 
 void applyFilterCommand(int command) {
-    if (command == kFilterAll) {
+    if (command == kFilterReset) {
+        resetPopupFilters();
+    } else if (command >= kFilterTimeBase && command < kFilterTimeBase + 5) {
+        g_app->filterTimeRange = command - kFilterTimeBase;
+    } else if (command >= kFilterLengthBase && command < kFilterLengthBase + 4) {
+        g_app->filterLength = command - kFilterLengthBase;
+    } else if (command == kFilterSourceAll) {
+        g_app->filterSources.clear();
+    } else if (command >= kFilterSourceBase && command < kFilterSortBase) {
+        std::vector<std::string> sources;
+        for (const ClipItem& item : g_app->store.items()) {
+            if (!item.source.empty() && std::find(sources.begin(), sources.end(), item.source) == sources.end()) {
+                sources.push_back(item.source);
+            }
+        }
+        std::sort(sources.begin(), sources.end());
+        const std::size_t sourceIndex = static_cast<std::size_t>(command - kFilterSourceBase);
+        if (sourceIndex < sources.size()) {
+            const auto existing = std::find(g_app->filterSources.begin(), g_app->filterSources.end(),
+                                            sources[sourceIndex]);
+            if (existing == g_app->filterSources.end()) g_app->filterSources.push_back(sources[sourceIndex]);
+            else g_app->filterSources.erase(existing);
+        }
+    } else if (command >= kFilterSortBase && command < kFilterSortBase + 4) {
+        g_app->filterSort = command - kFilterSortBase;
+    } else if (command == kFilterAll) {
         g_app->filterType = 0;
         g_app->pinnedOnly = false;
     } else if (command == kFilterText) {
@@ -4973,6 +5154,412 @@ void applyFilterCommand(int command) {
         g_app->filterType = 4;
         g_app->pinnedOnly = false;
     }
+}
+
+std::vector<std::string> popupFilterSourceNames() {
+    std::vector<std::string> sources;
+    for (const ClipItem& item : g_app->store.items()) {
+        if (!item.source.empty() &&
+            std::find(sources.begin(), sources.end(), item.source) == sources.end()) {
+            sources.push_back(item.source);
+        }
+    }
+    std::sort(sources.begin(), sources.end());
+    return sources;
+}
+
+std::wstring popupSourceExecutableName(const std::string& source) {
+    if (source == "Chrome") return L"chrome";
+    if (source == "Edge") return L"msedge";
+    if (source == "Firefox") return L"firefox";
+    if (source == "VS Code") return L"code";
+    if (source == "Visual Studio") return L"devenv";
+    if (source == "WeChat") return L"wechat";
+    if (source == "Word") return L"winword";
+    if (source == "Excel") return L"excel";
+    if (source == "PowerPoint") return L"powerpnt";
+    if (source == "Photoshop") return L"photoshop";
+    if (source == "File Explorer") return L"explorer";
+    return utf8ToWide(source);
+}
+
+struct PopupSourceExecutableSearch {
+    std::wstring stem;
+    std::wstring path;
+};
+
+BOOL CALLBACK findPopupSourceExecutable(HWND hwnd, LPARAM parameter) {
+    if (!IsWindowVisible(hwnd)) return TRUE;
+    auto* search = reinterpret_cast<PopupSourceExecutableSearch*>(parameter);
+    DWORD processId = 0;
+    GetWindowThreadProcessId(hwnd, &processId);
+    if (processId == 0) return TRUE;
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+    if (!process) return TRUE;
+    wchar_t path[MAX_PATH]{};
+    DWORD length = ARRAYSIZE(path);
+    const bool queried = QueryFullProcessImageNameW(process, 0, path, &length) != FALSE;
+    CloseHandle(process);
+    if (!queried) return TRUE;
+    std::wstring executable(path, length);
+    const std::size_t separator = executable.find_last_of(L"\\/");
+    executable = separator == std::wstring::npos ? executable : executable.substr(separator + 1);
+    const std::size_t extension = executable.find_last_of(L'.');
+    const std::wstring stem = extension == std::wstring::npos
+        ? executable : executable.substr(0, extension);
+    if (_wcsicmp(stem.c_str(), search->stem.c_str()) != 0) return TRUE;
+    search->path.assign(path, length);
+    return FALSE;
+}
+
+HICON popupSourceIcon(const std::string& source) {
+    if (!g_app) return nullptr;
+    const auto cached = std::find_if(g_app->sourceIcons.begin(), g_app->sourceIcons.end(),
+                                     [&source](const PopupSourceIcon& value) {
+        return value.source == source;
+    });
+    if (cached != g_app->sourceIcons.end()) return cached->icon;
+
+    PopupSourceExecutableSearch search{popupSourceExecutableName(source), {}};
+    EnumWindows(findPopupSourceExecutable, reinterpret_cast<LPARAM>(&search));
+    HICON icon = nullptr;
+    if (!search.path.empty()) {
+        SHFILEINFOW information{};
+        if (SHGetFileInfoW(search.path.c_str(), 0, &information, sizeof(information),
+                           SHGFI_ICON | SHGFI_SMALLICON) != 0) {
+            icon = information.hIcon;
+        }
+    }
+    if (g_app->sourceIcons.size() >= kPopupSourceIconCacheLimit) {
+        if (g_app->sourceIcons.front().icon) DestroyIcon(g_app->sourceIcons.front().icon);
+        g_app->sourceIcons.erase(g_app->sourceIcons.begin());
+    }
+    g_app->sourceIcons.push_back(PopupSourceIcon{source, icon});
+    return icon;
+}
+
+void clearPopupSourceIcons() {
+    if (!g_app) return;
+    for (const PopupSourceIcon& source : g_app->sourceIcons) {
+        if (source.icon) DestroyIcon(source.icon);
+    }
+    g_app->sourceIcons.clear();
+}
+
+int filterSubmenuOptionCount(int submenu) {
+    if (submenu == 0) return 5;
+    if (submenu == 1) return 4;
+    if (submenu == 2) return 1 + static_cast<int>(popupFilterSourceNames().size());
+    return 4;
+}
+
+int filterSubmenuHeight(int submenu) {
+    const int rows = filterSubmenuOptionCount(submenu);
+    return std::min(kFilterSubmenuMaxHeight,
+                    10 + rows * kFilterSubmenuRowHeight);
+}
+
+int filterMenuMainRowAt(int y) {
+    const int logicalY = MulDiv(y, 96, static_cast<int>(g_uiDpi));
+    if (logicalY >= 5 && logicalY < 5 + 4 * kFilterMenuRowHeight) {
+        return (logicalY - 5) / kFilterMenuRowHeight;
+    }
+    return logicalY >= 5 + 4 * kFilterMenuRowHeight + 8 &&
+        logicalY < 5 + 5 * kFilterMenuRowHeight + 8 ? 4 : -1;
+}
+
+int filterSubmenuRowAt(int y) {
+    if (!g_app || g_app->filterMenuSubmenu < 0) return -1;
+    const int logicalY = MulDiv(y, 96, static_cast<int>(g_uiDpi));
+    const int row = (logicalY - 5) / kFilterSubmenuRowHeight + g_app->filterSubmenuScrollOffset;
+    if (logicalY < 5 || row < 0 || row >= filterSubmenuOptionCount(g_app->filterMenuSubmenu)) return -1;
+    return row;
+}
+
+int filterSubmenuMaxScroll() {
+    if (!g_app || g_app->filterMenuSubmenu != 2) return 0;
+    const int visibleRows = std::max(1,
+        (filterSubmenuHeight(g_app->filterMenuSubmenu) - 10) / kFilterSubmenuRowHeight);
+    return std::max(0, filterSubmenuOptionCount(2) - visibleRows);
+}
+
+bool filterSubmenuScrollbarMetrics(HWND hwnd, int& trackTop, int& trackBottom,
+                                   int& thumbTop, int& thumbHeight, int& maxOffset) {
+    if (!g_app || hwnd != g_app->filterSubmenuWindow || g_app->filterMenuSubmenu != 2) return false;
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const int logicalHeight = filterSubmenuHeight(2);
+    const int itemCount = filterSubmenuOptionCount(2);
+    const int visibleRows = std::max(1, (logicalHeight - 10) / kFilterSubmenuRowHeight);
+    maxOffset = std::max(0, itemCount - visibleRows);
+    if (maxOffset == 0) return false;
+    trackTop = ui(8);
+    trackBottom = client.bottom - ui(8);
+    const int trackHeight = std::max(1, trackBottom - trackTop);
+    thumbHeight = std::max(ui(24), trackHeight * visibleRows / itemCount);
+    thumbHeight = std::min(trackHeight, thumbHeight);
+    thumbTop = trackTop + (trackHeight - thumbHeight) * g_app->filterSubmenuScrollOffset /
+        std::max(1, maxOffset);
+    return true;
+}
+
+bool filterSubmenuScrollbarAt(HWND hwnd, int x, int y) {
+    int trackTop = 0;
+    int trackBottom = 0;
+    int thumbTop = 0;
+    int thumbHeight = 0;
+    int maxOffset = 0;
+    if (!filterSubmenuScrollbarMetrics(hwnd, trackTop, trackBottom, thumbTop, thumbHeight, maxOffset)) {
+        return false;
+    }
+    (void)trackTop;
+    (void)trackBottom;
+    (void)maxOffset;
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    return x >= client.right - ui(16) && x < client.right - ui(2) &&
+        y >= thumbTop && y < thumbTop + thumbHeight;
+}
+
+void paintFilterMenuWindow(HWND hwnd, HDC dc) {
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const bool isSubmenu = hwnd == g_app->filterSubmenuWindow;
+    const COLORREF background = settingsThemeColor(RGB(255, 255, 255), RGB(48, 53, 60));
+    const COLORREF border = settingsThemeColor(RGB(225, 228, 232), RGB(75, 83, 92));
+    const COLORREF text = settingsThemeColor(RGB(30, 34, 40), RGB(240, 243, 247));
+    const COLORREF secondary = settingsThemeColor(RGB(110, 116, 124), RGB(175, 183, 193));
+    const COLORREF hover = settingsAccentSoftColor();
+    const COLORREF accent = settingsAccentColor();
+    HBRUSH brush = CreateSolidBrush(background);
+    FillRect(dc, &client, brush);
+    DeleteObject(brush);
+    drawGdiRoundedSurface(dc, RECT{1, 1, client.right - 1, client.bottom - 1},
+                          background, border, 8);
+    SetBkMode(dc, TRANSPARENT);
+    SelectObject(dc, g_app->popupFilterFont);
+
+    const wchar_t* groups[] = {
+        tr(L"Time range", L"时间范围"), tr(L"Content length", L"内容长度"),
+        tr(L"Source application", L"来源应用"), tr(L"Sort order", L"排序方式")
+    };
+    const wchar_t* timeValues[] = {
+        tr(L"All time", L"所有时间"), tr(L"Today", L"今天"), tr(L"Yesterday", L"昨天"),
+        tr(L"Last 7 days", L"最近 7 天"), tr(L"Older", L"更早")
+    };
+    const wchar_t* lengthValues[] = {
+        tr(L"Any length", L"不限"), tr(L"Short", L"短文本"), tr(L"Medium", L"中等"),
+        tr(L"Long", L"长文本")
+    };
+    const wchar_t* sortValues[] = {
+        tr(L"Most recent", L"时间倒序"), tr(L"Oldest first", L"时间正序"),
+        tr(L"By application", L"按应用分组"), tr(L"Longest first", L"按内容长度")
+    };
+    auto drawText = [&](const std::wstring& value, RECT rect, COLORREF color, UINT flags) {
+        SetTextColor(dc, color);
+        DrawTextW(dc, value.c_str(), -1, &rect, flags);
+    };
+    if (!isSubmenu) {
+        for (int row = 0; row < 4; ++row) {
+            RECT rect{ui(5), ui(5 + row * kFilterMenuRowHeight),
+                      client.right - ui(5), ui(5 + (row + 1) * kFilterMenuRowHeight)};
+            if (g_app->filterMenuHover == row) {
+                drawGdiRoundedSurface(dc, rect, hover, hover, 5);
+            }
+            std::wstring value;
+            if (row == 0) value = timeValues[g_app->filterTimeRange];
+            else if (row == 1) value = lengthValues[g_app->filterLength];
+            else if (row == 2) {
+                value = g_app->filterSources.empty()
+                    ? tr(L"All applications", L"所有应用")
+                    : tr(L"Selected ", L"已选 ") + std::to_wstring(g_app->filterSources.size());
+            } else value = sortValues[g_app->filterSort];
+            RECT label{ui(16), rect.top, client.right - ui(90), rect.bottom};
+            drawText(groups[row], label, text, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            RECT valueRect{client.right - ui(88), rect.top, client.right - ui(22), rect.bottom};
+            drawText(value, valueRect, secondary,
+                     DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            RECT arrow{client.right - ui(20), rect.top, client.right - ui(10), rect.bottom};
+            drawText(L">", arrow, secondary, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+        drawGdiLine(dc, ui(12), ui(141), client.right - ui(12), ui(141),
+                    settingsThemeColor(RGB(235, 237, 240), RGB(70, 77, 86)));
+        RECT resetRect{ui(5), ui(146), client.right - ui(5), ui(178)};
+        if (g_app->filterMenuHover == 4) drawGdiRoundedSurface(dc, resetRect, hover, hover, 5);
+        drawText(tr(L"Reset filters", L"重置筛选"),
+                 RECT{ui(16), resetRect.top, client.right - ui(16), resetRect.bottom},
+                 popupFilterConditionCount() == 0 ? secondary : text,
+                 DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        return;
+    }
+
+    const int submenu = g_app->filterMenuSubmenu;
+    const int count = filterSubmenuOptionCount(submenu);
+    const int scroll = g_app->filterSubmenuScrollOffset;
+    const int clip = SaveDC(dc);
+    IntersectClipRect(dc, ui(5), ui(5), client.right - ui(5), client.bottom - ui(5));
+    const std::vector<std::string> sources = submenu == 2 ? popupFilterSourceNames()
+                                                          : std::vector<std::string>{};
+    for (int row = 0; row < count; ++row) {
+        const int top = 5 + (row - scroll) * kFilterSubmenuRowHeight;
+        RECT rect{ui(5), ui(top), client.right - ui(5), ui(top + kFilterSubmenuRowHeight)};
+        if (top + kFilterSubmenuRowHeight <= 5 || top >= MulDiv(client.bottom, 96, static_cast<int>(g_uiDpi))) continue;
+        if (g_app->filterSubmenuHover == row) drawGdiRoundedSurface(dc, rect, hover, hover, 5);
+        bool active = false;
+        std::wstring label;
+        if (submenu == 0) {
+            active = g_app->filterTimeRange == row;
+            label = timeValues[row];
+        } else if (submenu == 1) {
+            active = g_app->filterLength == row;
+            label = lengthValues[row];
+        } else if (submenu == 2) {
+            if (row == 0) {
+                active = g_app->filterSources.empty();
+                label = tr(L"All applications", L"所有应用");
+            } else {
+                active = std::find(g_app->filterSources.begin(), g_app->filterSources.end(),
+                                   sources[static_cast<std::size_t>(row - 1)]) != g_app->filterSources.end();
+                label = utf8ToWide(sources[static_cast<std::size_t>(row - 1)]);
+            }
+        } else {
+            active = g_app->filterSort == row;
+            label = sortValues[row];
+        }
+        if (submenu == 2) {
+            if (row > 0) {
+                if (HICON icon = popupSourceIcon(sources[static_cast<std::size_t>(row - 1)])) {
+                    DrawIconEx(dc, ui(12), rect.top + (rect.bottom - rect.top - ui(16)) / 2,
+                               icon, ui(16), ui(16), 0, nullptr, DI_NORMAL);
+                }
+            } else {
+                drawFilterIcon(dc, ui(20), rect.top + ui(15), secondary);
+            }
+            if (active) drawText(L"\x2713",
+                                 RECT{client.right - ui(27), rect.top, client.right - ui(10), rect.bottom},
+                                 accent, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            drawText(label, RECT{ui(34), rect.top, client.right - ui(30), rect.bottom},
+                     active ? accent : text,
+                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        } else {
+            if (active) drawText(L"\x2713", RECT{ui(12), rect.top, ui(27), rect.bottom}, accent,
+                                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            drawText(label, RECT{ui(32), rect.top, client.right - ui(12), rect.bottom},
+                     active ? accent : text,
+                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+    }
+    RestoreDC(dc, clip);
+    int trackTop = 0;
+    int trackBottom = 0;
+    int thumbTop = 0;
+    int thumbHeight = 0;
+    int maxOffset = 0;
+    if (filterSubmenuScrollbarMetrics(hwnd, trackTop, trackBottom, thumbTop, thumbHeight, maxOffset)) {
+        (void)maxOffset;
+        const RECT track{client.right - ui(8), trackTop, client.right - ui(5), trackBottom};
+        const RECT thumb{client.right - ui(10), thumbTop, client.right - ui(4),
+                         thumbTop + thumbHeight};
+        drawGdiRoundedSurface(dc, track,
+                              settingsThemeColor(RGB(242, 244, 247), RGB(58, 64, 72)),
+                              settingsThemeColor(RGB(242, 244, 247), RGB(58, 64, 72)), 2);
+        drawGdiRoundedSurface(dc, thumb,
+                              settingsThemeColor(RGB(190, 195, 202), RGB(112, 123, 136)),
+                              settingsThemeColor(RGB(190, 195, 202), RGB(112, 123, 136)), 3);
+    }
+}
+
+bool filterMenuContainsPoint(POINT point) {
+    RECT rect{};
+    return (g_app->filterMenuWindow && GetWindowRect(g_app->filterMenuWindow, &rect) &&
+            PtInRect(&rect, point)) ||
+        (g_app->filterSubmenuWindow && GetWindowRect(g_app->filterSubmenuWindow, &rect) &&
+         PtInRect(&rect, point));
+}
+
+void closeFilterMenu() {
+    if (!g_app) return;
+    if (g_app->filterSubmenuDragging) ReleaseCapture();
+    g_app->filterSubmenuDragging = false;
+    g_app->filterMenuOpen = false;
+    g_app->filterMenuSubmenu = -1;
+    g_app->filterMenuHover = -1;
+    g_app->filterSubmenuHover = -1;
+    if (g_app->filterSubmenuWindow) DestroyWindow(g_app->filterSubmenuWindow);
+    if (g_app->filterMenuWindow) DestroyWindow(g_app->filterMenuWindow);
+    g_app->filterSubmenuWindow = nullptr;
+    g_app->filterMenuWindow = nullptr;
+}
+
+void positionFilterSubmenu() {
+    if (!g_app || !g_app->filterMenuWindow || g_app->filterMenuSubmenu < 0) return;
+    RECT mainRect{};
+    GetWindowRect(g_app->filterMenuWindow, &mainRect);
+    const int width = ui(kFilterSubmenuWidth);
+    const int height = ui(filterSubmenuHeight(g_app->filterMenuSubmenu));
+    const int rowTop = mainRect.top + ui(5 + g_app->filterMenuSubmenu * kFilterMenuRowHeight);
+    HMONITOR monitor = MonitorFromWindow(g_app->filterMenuWindow, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{sizeof(info)};
+    GetMonitorInfoW(monitor, &info);
+    int x = mainRect.left - width - ui(6);
+    if (x < info.rcWork.left) x = mainRect.right + ui(6);
+    int y = std::clamp(rowTop, static_cast<int>(info.rcWork.top),
+                       static_cast<int>(info.rcWork.bottom) - height);
+    SetWindowPos(g_app->filterSubmenuWindow, HWND_TOPMOST, x, y, width, height,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+}
+
+void openFilterSubmenu(int submenu) {
+    if (!g_app || !g_app->filterMenuWindow || submenu < 0 || submenu > 3) return;
+    if (g_app->filterSubmenuDragging) ReleaseCapture();
+    g_app->filterSubmenuDragging = false;
+    g_app->filterMenuSubmenu = submenu;
+    g_app->filterSubmenuHover = -1;
+    g_app->filterSubmenuScrollOffset = 0;
+    if (g_app->filterSubmenuWindow) DestroyWindow(g_app->filterSubmenuWindow);
+    g_app->filterSubmenuWindow = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, L"ClipLiteFilterMenu", L"",
+        WS_POPUP, 0, 0, ui(kFilterSubmenuWidth), ui(filterSubmenuHeight(submenu)),
+        nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!g_app->filterSubmenuWindow) return;
+    applyPopupWindowFrame(g_app->filterSubmenuWindow, ui(kFilterSubmenuWidth),
+                          ui(filterSubmenuHeight(submenu)));
+    positionFilterSubmenu();
+}
+
+void showPopupFilterMenu(HWND hwnd) {
+    if (g_app->filterMenuOpen) {
+        closeFilterMenu();
+        return;
+    }
+    RECT buttonRect{ui(kPopupFilterButtonLeft), ui(12),
+                    ui(kPopupFilterButtonRight), ui(46)};
+    POINT point{buttonRect.right, buttonRect.bottom};
+    ClientToScreen(hwnd, &point);
+    HMONITOR monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{sizeof(info)};
+    GetMonitorInfoW(monitor, &info);
+    const int width = ui(kFilterMenuWidth);
+    const int height = ui(180);
+    int x = point.x - width;
+    int y = point.y + ui(4);
+    x = std::clamp(x, static_cast<int>(info.rcWork.left),
+                   static_cast<int>(info.rcWork.right) - width);
+    y = std::clamp(y, static_cast<int>(info.rcWork.top),
+                   static_cast<int>(info.rcWork.bottom) - height);
+    g_app->filterMenuOpen = true;
+    g_app->filterMenuSubmenu = -1;
+    g_app->filterMenuHover = -1;
+    g_app->filterMenuWindow = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, L"ClipLiteFilterMenu", L"",
+        WS_POPUP, x, y, width, height, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!g_app->filterMenuWindow) {
+        g_app->filterMenuOpen = false;
+        return;
+    }
+    applyPopupWindowFrame(g_app->filterMenuWindow, width, height);
+    ShowWindow(g_app->filterMenuWindow, SW_SHOWNOACTIVATE);
+    UpdateWindow(g_app->filterMenuWindow);
 }
 
 void applyFontToChildren(HWND parent, HFONT font) {
@@ -5008,6 +5595,23 @@ void appendPopupPinMenu(HMENU menu) {
                 kMenuPopupPinned,
                 g_app->popupPinned
                     ? settingsLocale().popupUnpin : settingsLocale().popupPin);
+}
+
+void appendPopupPromotePastedItemMenu(HMENU menu) {
+    AppendMenuW(menu, MF_STRING | (g_app->settingsData.promotePastedItem ? MF_CHECKED : 0),
+                kMenuPromotePastedItem, settingsLocale().promotePastedItem);
+}
+
+void togglePopupPromotePastedItem() {
+    if (!g_app) return;
+    g_app->settingsData.promotePastedItem = !g_app->settingsData.promotePastedItem;
+    g_app->store.setSortByLastUsed(g_app->settingsData.promotePastedItem);
+    if (g_app->settings) {
+        setSettingsToggleValue(GetDlgItem(g_app->settings, kSettingPromotePastedItem),
+                               g_app->settingsData.promotePastedItem);
+        InvalidateRect(g_app->settings, nullptr, FALSE);
+    }
+    saveSettings(g_app->settingsData);
 }
 
 void refreshPopupBrush() {
@@ -6579,6 +7183,168 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         applyVisibleCandidates(result->candidates);
         return 0;
     }
+    if (hwnd == g_app->filterMenuWindow || hwnd == g_app->filterSubmenuWindow) {
+        const bool submenu = hwnd == g_app->filterSubmenuWindow;
+        if (message == WM_ERASEBKGND) return 1;
+        if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+        if (message == WM_SETCURSOR) {
+            POINT cursor{};
+            GetCursorPos(&cursor);
+            ScreenToClient(hwnd, &cursor);
+            if (submenu && (g_app->filterSubmenuDragging ||
+                            filterSubmenuScrollbarAt(hwnd, cursor.x, cursor.y))) {
+                SetCursor(LoadCursorW(nullptr, IDC_SIZENS));
+            } else {
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
+            }
+            return TRUE;
+        }
+        if (message == WM_MOUSEMOVE) {
+            TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};
+            TrackMouseEvent(&tracking);
+            if (submenu && g_app->filterSubmenuDragging) {
+                int trackTop = 0;
+                int trackBottom = 0;
+                int thumbTop = 0;
+                int thumbHeight = 0;
+                int maxOffset = 0;
+                if (filterSubmenuScrollbarMetrics(hwnd, trackTop, trackBottom,
+                                                  thumbTop, thumbHeight, maxOffset)) {
+                    const int travel = std::max(1, trackBottom - trackTop - thumbHeight);
+                    const int delta = GET_Y_LPARAM(lParam) - g_app->filterSubmenuDragStartY;
+                    g_app->filterSubmenuScrollOffset = std::clamp(
+                        g_app->filterSubmenuDragStartOffset + delta * maxOffset / travel,
+                        0, maxOffset);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+            const int value = submenu ? filterSubmenuRowAt(GET_Y_LPARAM(lParam))
+                                      : filterMenuMainRowAt(GET_Y_LPARAM(lParam));
+            int& hover = submenu ? g_app->filterSubmenuHover : g_app->filterMenuHover;
+            if (value != hover) {
+                hover = value;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            if (!submenu && value >= 0 && value < 4 && value != g_app->filterMenuSubmenu) {
+                openFilterSubmenu(value);
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+        if (message == WM_MOUSELEAVE) {
+            if (submenu) g_app->filterSubmenuHover = -1;
+            else g_app->filterMenuHover = -1;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        if (message == WM_LBUTTONUP && submenu && g_app->filterSubmenuDragging) {
+            g_app->filterSubmenuDragging = false;
+            ReleaseCapture();
+            return 0;
+        }
+        if (message == WM_LBUTTONDOWN && submenu && g_app->filterMenuSubmenu == 2) {
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            const int x = GET_X_LPARAM(lParam);
+            const int y = GET_Y_LPARAM(lParam);
+            if (x >= client.right - ui(16)) {
+                if (filterSubmenuScrollbarAt(hwnd, x, y)) {
+                    g_app->filterSubmenuDragging = true;
+                    g_app->filterSubmenuDragStartY = y;
+                    g_app->filterSubmenuDragStartOffset = g_app->filterSubmenuScrollOffset;
+                    SetCapture(hwnd);
+                    return 0;
+                }
+                int trackTop = 0;
+                int trackBottom = 0;
+                int thumbTop = 0;
+                int thumbHeight = 0;
+                int maxOffset = 0;
+                if (filterSubmenuScrollbarMetrics(hwnd, trackTop, trackBottom,
+                                                  thumbTop, thumbHeight, maxOffset)) {
+                    const int page = std::max(1, (filterSubmenuHeight(2) - 10) /
+                        kFilterSubmenuRowHeight);
+                    g_app->filterSubmenuScrollOffset = std::clamp(
+                        g_app->filterSubmenuScrollOffset + (y < thumbTop ? -page : page),
+                        0, maxOffset);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+        }
+        if (message == WM_MOUSEWHEEL && submenu && g_app->filterMenuSubmenu == 2) {
+            const int direction = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -2 : 2;
+            g_app->filterSubmenuScrollOffset = std::clamp(
+                g_app->filterSubmenuScrollOffset + direction, 0, filterSubmenuMaxScroll());
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        if (message == WM_LBUTTONUP) {
+            if (!submenu) {
+                const int row = filterMenuMainRowAt(GET_Y_LPARAM(lParam));
+                if (row >= 0 && row < 4) openFilterSubmenu(row);
+                else if (row == 4) {
+                    resetPopupFilters();
+                    g_app->selected = 0;
+                    g_app->scrollOffset = 0;
+                    g_app->scrollPosition = 0;
+                    refreshVisible();
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    if (g_app->filterSubmenuWindow) InvalidateRect(g_app->filterSubmenuWindow, nullptr, FALSE);
+                }
+            } else {
+                const int row = filterSubmenuRowAt(GET_Y_LPARAM(lParam));
+                if (row >= 0) {
+                    int command = 0;
+                    if (g_app->filterMenuSubmenu == 0) command = kFilterTimeBase + row;
+                    else if (g_app->filterMenuSubmenu == 1) command = kFilterLengthBase + row;
+                    else if (g_app->filterMenuSubmenu == 2) {
+                        command = row == 0 ? kFilterSourceAll : kFilterSourceBase + row - 1;
+                    } else command = kFilterSortBase + row;
+                    applyFilterCommand(command);
+                    g_app->selected = 0;
+                    g_app->scrollOffset = 0;
+                    g_app->scrollPosition = 0;
+                    refreshVisible();
+                    InvalidateRect(g_app->filterMenuWindow, nullptr, FALSE);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+            }
+            return 0;
+        }
+        if (message == WM_PAINT) {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd, &ps);
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            const int width = client.right - client.left;
+            const int height = client.bottom - client.top;
+            HDC buffer = CreateCompatibleDC(dc);
+            HBITMAP bitmap = buffer ? CreateCompatibleBitmap(dc, width, height) : nullptr;
+            if (buffer && bitmap) {
+                HGDIOBJ oldBitmap = SelectObject(buffer, bitmap);
+                paintFilterMenuWindow(hwnd, buffer);
+                BitBlt(dc, 0, 0, width, height, buffer, 0, 0, SRCCOPY);
+                SelectObject(buffer, oldBitmap);
+                DeleteObject(bitmap);
+                DeleteDC(buffer);
+            } else {
+                if (bitmap) DeleteObject(bitmap);
+                if (buffer) DeleteDC(buffer);
+                paintFilterMenuWindow(hwnd, dc);
+            }
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        if (message == WM_DESTROY) {
+            if (g_app->filterSubmenuDragging) ReleaseCapture();
+            g_app->filterSubmenuDragging = false;
+            if (hwnd == g_app->filterSubmenuWindow) g_app->filterSubmenuWindow = nullptr;
+            if (hwnd == g_app->filterMenuWindow) g_app->filterMenuWindow = nullptr;
+            return 0;
+        }
+    }
     if (hwnd == g_app->settings && message == WM_DRAWITEM) {
         const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
         if (item && item->CtlType == ODT_BUTTON && isSettingsToggle(GetDlgCtrlID(item->hwndItem))) {
@@ -6789,6 +7555,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     if (message == WM_DESTROY && hwnd == g_app->popup) {
         cancelPopupSearch();
         clearPopupImagePreviews();
+        clearPopupSourceIcons();
         if (g_app->popupFont) DeleteObject(g_app->popupFont);
         if (g_app->popupInputBrush) DeleteObject(g_app->popupInputBrush);
         releasePaintFonts(g_app->popupTitleFont, g_app->popupFilterFont,
@@ -7287,6 +8054,11 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 SetCursor(LoadCursorW(nullptr, IDC_HAND));
                 return TRUE;
             }
+            if (point.x >= ui(kPopupFilterButtonLeft) && point.x < ui(kPopupFilterButtonRight) &&
+                point.y >= ui(12) && point.y < ui(46)) {
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                return TRUE;
+            }
             if (point.x >= ui(kPopupPinLeft) && point.x < ui(kPopupPinRight) &&
                 point.y >= ui(12) && point.y < ui(46)) {
                 SetCursor(LoadCursorW(nullptr, IDC_HAND));
@@ -7318,6 +8090,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return TRUE;
         }
         if (message == WM_ACTIVATEAPP && !wParam) {
+            if (g_app->filterMenuOpen) {
+                KillTimer(hwnd, kPopupDeactivateTimer);
+                return 0;
+            }
             if (g_app->popupPinned || g_app->popupOpenedByWinV) {
                 const HWND target = GetForegroundWindow();
                 if (IsWindow(target) && target != hwnd) rememberPasteTarget(target, false);
@@ -7342,6 +8118,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const HWND foreground = GetForegroundWindow();
             if (g_app->popup != hwnd || g_app->popupOpening ||
                 g_app->popupPinned || g_app->popupOpenedByWinV ||
+                g_app->filterMenuOpen ||
                 g_app->filterDragging || g_app->scrollDragging ||
                 foreground == hwnd) {
                 return 0;
@@ -7377,6 +8154,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == WM_NCACTIVATE && !wParam) {
+            if (g_app->filterMenuOpen) {
+                KillTimer(hwnd, kPopupDeactivateTimer);
+                return 0;
+            }
             if (g_app->popupPinned || g_app->popupOpenedByWinV) {
                 return DefWindowProcW(hwnd, message, wParam, lParam);
             }
@@ -7405,7 +8186,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == WM_KEYDOWN) {
-            if (shortcutMatches(g_app->settingsData.popupCloseHotkey, static_cast<UINT>(wParam))) {
+            if (g_app->filterMenuOpen && wParam == VK_ESCAPE) {
+                closeFilterMenu();
+            }
+            else if (shortcutMatches(g_app->settingsData.popupCloseHotkey, static_cast<UINT>(wParam))) {
                 closePopup();
             }
             else if (shortcutMatches(g_app->settingsData.popupPlainPasteHotkey,
@@ -7418,7 +8202,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             else if (shortcutMatches(g_app->settingsData.popupClearFilterHotkey,
                                      static_cast<UINT>(wParam))) {
-                applyFilterCommand(kFilterAll);
+                resetPopupFilters();
                 refreshVisible();
             }
             else if (wParam == VK_UP) { --g_app->selected; refreshVisible(); }
@@ -7506,7 +8290,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 y < rowTop + ui(kPopupCardHeight) ? row : -1;
             const bool headerHover = popupPointInHeader(client, x, y);
             int headerButton = -1;
-            if (x >= ui(kPopupClearLeft) && x < ui(kPopupClearRight) &&
+            if (x >= ui(kPopupFilterButtonLeft) && x < ui(kPopupFilterButtonRight) &&
+                y >= ui(12) && y < ui(46)) {
+                headerButton = 10;
+            } else if (x >= ui(kPopupClearLeft) && x < ui(kPopupClearRight) &&
                 y >= ui(12) && y < ui(46)) {
                 headerButton = 7;
             } else if (x >= ui(kPopupPinLeft) && x < ui(kPopupPinRight) &&
@@ -7591,7 +8378,17 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const int clickY = GET_Y_LPARAM(lParam);
             const bool inSearch = clickX >= ui(kPopupSearchLeft) && clickX < ui(kPopupSearchRight) &&
                 clickY >= ui(12) && clickY < ui(48);
+            const bool inFilterButton = clickX >= ui(kPopupFilterButtonLeft) &&
+                clickX < ui(kPopupFilterButtonRight) && clickY >= ui(12) && clickY < ui(46);
             if (!inSearch) SetFocus(hwnd);
+            if (g_app->filterMenuOpen) {
+                closeFilterMenu();
+                if (inFilterButton) return 0;
+            }
+            if (inFilterButton) {
+                showPopupFilterMenu(hwnd);
+                return 0;
+            }
             if (GET_Y_LPARAM(lParam) >= ui(12) && GET_Y_LPARAM(lParam) < ui(46) &&
                 GET_X_LPARAM(lParam) >= ui(kPopupClearLeft) &&
                 GET_X_LPARAM(lParam) < ui(kPopupClearRight)) {
@@ -7677,32 +8474,47 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 const ClipItem& item = g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]];
                 appendPasteMenu(menu, item);
                 appendPopupPinMenu(menu);
+                appendPopupPromotePastedItemMenu(menu);
                 AppendMenuW(menu, MF_STRING, kMenuDelete, settingsLocale().popupDelete);
                 appendFilterMenu(menu);
                 POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
                 ClientToScreen(hwnd, &point);
+                g_app->filterMenuOpen = true;
                 const int command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
                                                    point.x, point.y, 0, hwnd, nullptr);
+                g_app->filterMenuOpen = false;
                 DestroyMenu(menu);
                 const std::size_t index = g_app->visible[static_cast<std::size_t>(g_app->selected)];
-                if (command == kMenuPopupPinned) setPopupPinned(!g_app->popupPinned);
-                else if (command == kMenuPaste) sendPaste();
+                 if (command == kMenuPopupPinned) setPopupPinned(!g_app->popupPinned);
+                 else if (command == kMenuPromotePastedItem) {
+                     togglePopupPromotePastedItem();
+                 }
+                 else if (command == kMenuPaste) sendPaste();
                 else if (command == kMenuPastePlain) sendPaste(PasteMode::PlainText);
                 else if (command == kMenuPasteRich) sendPaste(PasteMode::RichText);
                 else if (command == kMenuDelete) g_app->store.remove(index);
-                else if (command >= kFilterAll && command <= kFilterOther) applyFilterCommand(command);
+                else if (command == kMenuFilter) showPopupFilterMenu(hwnd);
+                else if (command != 0) applyFilterCommand(command);
                 refreshVisible();
             } else {
                 HMENU menu = CreatePopupMenu();
                 appendPopupPinMenu(menu);
+                appendPopupPromotePastedItemMenu(menu);
                 appendFilterMenu(menu);
                 POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
                 ClientToScreen(hwnd, &point);
+                g_app->filterMenuOpen = true;
                 const int command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
                                                    point.x, point.y, 0, hwnd, nullptr);
+                g_app->filterMenuOpen = false;
                 DestroyMenu(menu);
                 if (command == kMenuPopupPinned) {
                     setPopupPinned(!g_app->popupPinned);
+                } else if (command == kMenuPromotePastedItem) {
+                    togglePopupPromotePastedItem();
+                    refreshVisible();
+                } else if (command == kMenuFilter) {
+                    showPopupFilterMenu(hwnd);
                 } else {
                     applyFilterCommand(command);
                     refreshVisible();
@@ -7726,6 +8538,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
         }
         if (message == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE) {
+            if (g_app->filterMenuOpen) return 0;
             if (g_app->popupPinned || g_app->popupOpenedByWinV) {
                 const HWND target = reinterpret_cast<HWND>(lParam);
                 if (IsWindow(target) && target != hwnd) rememberPasteTarget(target, false);
@@ -7930,6 +8743,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     popupClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     popupClass.lpszClassName = L"ClipLitePopup";
     RegisterClassW(&popupClass);
+    WNDCLASSW filterMenuClass = popupClass;
+    filterMenuClass.style = CS_HREDRAW | CS_VREDRAW;
+    filterMenuClass.hbrBackground = nullptr;
+    filterMenuClass.lpszClassName = L"ClipLiteFilterMenu";
+    RegisterClassW(&filterMenuClass);
     WNDCLASSW settingsClass = popupClass;
     settingsClass.style = 0;
     settingsClass.lpszClassName = L"ClipLiteSettings";
