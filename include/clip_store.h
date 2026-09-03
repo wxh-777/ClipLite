@@ -18,16 +18,24 @@ enum class ClipType : std::uint8_t {
 
 struct ClipItem {
     ClipType type = ClipType::Text;
+    std::uint64_t recordId = 0;
     std::uint64_t timestamp = 0;
+    std::uint64_t lastCopiedAt = 0;
     std::uint64_t hash = 0;
     std::uint32_t category = 0;
     bool pinned = false;
     std::uint64_t fileOffset = 0;
+    std::uint32_t headerSize = 0;
     std::uint32_t payloadSize = 0;
     std::uint32_t payloadCrc = 0;
     bool encrypted = false;
     std::string source;
     std::uint64_t expiresAt = 0;
+    std::uint64_t createdAt = 0;
+    std::uint64_t lastUsedAt = 0;
+    std::uint64_t useCount = 0;
+    std::uint64_t copyCount = 0;
+    std::uint64_t contentSize = 0;
     std::string preview;
 };
 
@@ -43,6 +51,7 @@ public:
 
     void setMaxItems(std::size_t maxItems) { maxItems_ = maxItems; }
     bool setDataDirectory(const std::wstring& directory);
+    bool setSortByLastUsed(bool enabled);
     void setEncryption(bool enabled) { encryptionEnabled_ = enabled; }
     bool encryptionEnabled() const { return encryptionEnabled_; }
     void setMaxPayloadBytes(std::uint32_t bytes) { maxPayloadBytes_ = bytes; }
@@ -52,6 +61,7 @@ public:
                 const std::string& source = {}, std::uint64_t expiresAt = 0);
     bool appendOrUpdate(ClipType type, const std::string& payload, std::uint64_t hash,
                         const std::string& source = {}, std::uint64_t expiresAt = 0);
+    bool recordUse(std::size_t index, bool promote);
     bool readPayload(std::size_t index, std::string& payload) const;
     bool remove(std::size_t index);
     bool togglePinned(std::size_t index);
@@ -88,6 +98,8 @@ private:
     std::uint32_t maxPayloadBytes_ = 32u * 1024u * 1024u;
     std::uint64_t diskBytes_ = 0;
     std::uint64_t revision_ = 0;
+    bool sortByLastUsed_ = false;
+    std::uint64_t nextRecordId_ = 1;
     std::vector<ClipItem> items_;
 };
 

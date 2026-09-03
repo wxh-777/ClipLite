@@ -24,6 +24,20 @@ struct TestDiskHeader {
     std::uint64_t expiresAt;
 };
 
+struct TestDiskMetadata {
+    std::uint32_t magic;
+    std::uint16_t version;
+    std::uint16_t size;
+    std::uint64_t recordId;
+    std::uint64_t createdAt;
+    std::uint64_t lastCopiedAt;
+    std::uint64_t lastUsedAt;
+    std::uint64_t useCount;
+    std::uint64_t contentSize;
+    std::uint64_t copyCount;
+    std::uint32_t crc;
+};
+
 struct TestStoredHtmlHeader {
     std::uint32_t magic;
     std::uint32_t textSize;
@@ -92,6 +106,10 @@ int main() {
     const std::string text = "ClipLite store test with a long searchable suffix";
     if (!store.append(ClipType::Text, text, clipLiteHash(text), "VS Code")) return 2;
     if (store.activeCount() != 1) return 3;
+    if (store.items()[0].recordId == 0 || store.items()[0].createdAt == 0 ||
+        store.items()[0].lastCopiedAt == 0 ||
+        store.items()[0].lastUsedAt != 0 || store.items()[0].useCount != 0 ||
+        store.items()[0].copyCount != 1 || store.items()[0].contentSize != text.size()) return 88;
     if (store.countType(ClipType::Text) != 1 || store.bytesType(ClipType::Text) != text.size()) return 44;
     if (store.items()[0].source != "VS Code") return 40;
     std::string restored;
@@ -266,9 +284,11 @@ int main() {
     const std::uint64_t sameTextHash = clipLiteHash("same text");
     if (!merged.appendOrUpdate(ClipType::Text, "same text", sameTextHash, "Editor")) return 61;
     if (!merged.appendOrUpdate(ClipType::Text, "same text", sameTextHash, {})) return 62;
-    if (merged.activeCount() != 1 || merged.items()[0].source != "Editor") return 63;
+    if (merged.activeCount() != 1 || merged.items()[0].source != "Editor" ||
+        merged.items()[0].copyCount != 2) return 63;
     if (!merged.appendOrUpdate(ClipType::Html, "<b>same text</b>", sameTextHash, "Browser") ||
-        merged.activeCount() != 1 || merged.items()[0].type != ClipType::Html) return 64;
+        merged.activeCount() != 1 || merged.items()[0].type != ClipType::Html ||
+        merged.items()[0].copyCount != 3) return 64;
     if (!merged.readPayload(0, restored) || restored != "<b>same text</b>") return 65;
     if (!merged.appendOrUpdate(ClipType::Text, "different", clipLiteHash("different"), "Other") ||
         merged.activeCount() != 2) return 66;
@@ -305,6 +325,24 @@ int main() {
     orderingReopened.clear();
     ordering.clear();
 
+    ClipStore usage(10);
+    usage.setSortByLastUsed(true);
+    usage.open();
+    usage.clear();
+    if (!usage.append(ClipType::Text, "usage-old", clipLiteHash("usage-old")) ||
+        !usage.append(ClipType::Text, "usage-new", clipLiteHash("usage-new"))) return 89;
+    if (!usage.recordUse(1, true) || usage.items()[0].preview != "usage-old" ||
+        usage.items()[0].useCount != 1 || usage.items()[0].lastUsedAt == 0) return 90;
+    ClipStore usageReopened(10);
+    usageReopened.setSortByLastUsed(true);
+    if (!usageReopened.open() || usageReopened.items()[0].preview != "usage-old" ||
+        usageReopened.items()[0].useCount != 1 ||
+        usageReopened.items()[0].contentSize != std::string("usage-old").size()) return 91;
+    if (!usageReopened.recordUse(0, false) || usageReopened.items()[0].useCount != 2 ||
+        usageReopened.items()[0].preview != "usage-old") return 92;
+    usageReopened.clear();
+    usage.clear();
+
     ClipStore legacyOrdering(10);
     legacyOrdering.open();
     legacyOrdering.clear();
@@ -324,10 +362,12 @@ int main() {
     TestDiskHeader firstHeader{};
     TestDiskHeader secondHeader{};
     std::memcpy(&firstHeader, legacyBytes.data(), sizeof(firstHeader));
-    const std::size_t firstSize = sizeof(firstHeader) + firstHeader.sourceSize + firstHeader.payloadSize;
+    const std::size_t firstSize = sizeof(firstHeader) + sizeof(TestDiskMetadata) +
+        firstHeader.sourceSize + firstHeader.payloadSize;
     if (firstSize >= legacyBytes.size()) return 79;
     std::memcpy(&secondHeader, legacyBytes.data() + firstSize, sizeof(secondHeader));
-    const std::size_t secondSize = sizeof(secondHeader) + secondHeader.sourceSize + secondHeader.payloadSize;
+    const std::size_t secondSize = sizeof(secondHeader) + sizeof(TestDiskMetadata) +
+        secondHeader.sourceSize + secondHeader.payloadSize;
     if (firstSize + secondSize != legacyBytes.size()) return 80;
     std::vector<char> reversedBytes;
     reversedBytes.insert(reversedBytes.end(), legacyBytes.begin() + firstSize, legacyBytes.end());

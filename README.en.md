@@ -39,6 +39,8 @@ Settings window:
 
 ClipLite is designed to stay quietly in the tray. It uses less memory than many clipboard history tools, making it suitable for long-running background use without requiring a separate runtime.
 
+Clipboard format capture runs in the background. When an application delays providing HTML, text, or image formats after copying, ClipLite keeps its history window, paste flow, and global shortcuts responsive.
+
 - The Windows Task Manager showed about `2.7 MB` of memory in a local idle observation.
 - The main executable is about `550 KB`, smaller than an ordinary phone photo.
 - Startup took about `0.06 seconds`, while full history and images are read only when needed.
@@ -93,6 +95,8 @@ Use `SHA256SUM.txt` in the portable package to verify `ClipLite.exe`. Verify the
 - `Ctrl+0`: Clear the history filter.
 
 History, settings, and monitoring shortcuts can be changed in Settings. `Win+V` replacement depends on Windows, the current integrity level, and shortcut conflicts. `Alt+V` remains available when registration fails.
+
+The History window shortcuts section includes a "Move pasted item to top" setting. When enabled, history is ordered by recent use activity; when disabled, it is ordered by recent copy time. Each record also stores a stable ID, first-captured time, millisecond copy time, last-used time, copy count, use count, and logical content length as a basis for future sorting and filters.
 
 ## Data and Privacy
 

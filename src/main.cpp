@@ -89,6 +89,7 @@ constexpr int kSettingClearFiles = 42;
 constexpr int kSettingSupportAuthor = 43;
 constexpr int kSettingJoinQqGroup = 44;
 constexpr int kSettingSearchImeCompatibility = 45;
+constexpr int kSettingPromotePastedItem = 46;
 constexpr int kSettingShortcutHistory = 50;
 constexpr int kSettingShortcutSettings = 51;
 constexpr int kSettingShortcutPause = 52;
@@ -124,6 +125,7 @@ constexpr UINT kRunPopupImageBenchmarkMessage = WM_APP + 7;
 constexpr UINT kPopupKeyboardMessage = WM_APP + 8;
 constexpr UINT kSupportImageLoadedMessage = WM_APP + 9;
 constexpr UINT kPopupEnterImeMessage = WM_APP + 10;
+constexpr UINT kClipboardCaptureCompleteMessage = WM_APP + 11;
 constexpr UINT_PTR kExpiryTimer = 3;
 constexpr UINT_PTR kClipboardCaptureTimer = 7;
 constexpr UINT_PTR kSettingsToggleTimer = 4;
@@ -196,6 +198,7 @@ struct Settings {
     bool showSettingsOnStartup = true;
     bool showStartupNotification = true;
     bool searchImeCompatibility = false;
+    bool promotePastedItem = false;
     bool historyWindowPinned = false;
     bool runAsAdministrator = false;
     bool encryptData = false;
@@ -324,6 +327,9 @@ struct AppState {
     bool popupSuppressImeTriggerSpace = false;
     std::shared_ptr<std::atomic<bool>> searchCancellation;
     std::thread searchWorker;
+    std::shared_ptr<std::atomic<bool>> clipboardCaptureRunning =
+        std::make_shared<std::atomic<bool>>(false);
+    bool clipboardCapturePending = false;
     std::uint64_t searchGeneration = 0;
     Settings settingsData;
     ClipStore store;
@@ -386,6 +392,13 @@ struct PopupSearchResult {
     std::uint64_t generation = 0;
     std::uint64_t storeRevision = 0;
     std::vector<std::size_t> candidates;
+};
+
+struct ClipboardCaptureResult {
+    ClipType type = ClipType::Text;
+    std::string payload;
+    std::string source;
+    bool captured = false;
 };
 
 struct PopupImeKeyEvent {
@@ -586,6 +599,7 @@ struct SettingsLocale {
     const wchar_t* pauseResumeMonitoring;
     const wchar_t* historyWindowShortcuts;
     const wchar_t* pasteSelectedItem;
+    const wchar_t* promotePastedItem;
     const wchar_t* pastePlainText;
     const wchar_t* pasteRichText;
     const wchar_t* closeHistoryWindow;
@@ -730,7 +744,7 @@ const SettingsLocale kEnglishSettingsLocale{
     L"Show startup notification", L"Run ClipLite as administrator (restart required to disable)",
     L"Important system shortcut", L"Force replace Win + V", L"Global shortcuts", L"Open clipboard history", L"Open settings",
     L"Pause/resume clipboard monitoring", L"History window shortcuts", L"Paste selected item",
-    L"Paste as plain text", L"Paste as rich text", L"Close history window",
+    L"Move pasted item to top", L"Paste as plain text", L"Paste as rich text", L"Close history window",
     L"Open settings in history window", L"Clear history filter", L"Delete selected record",
     L"Registration status", L"Data retention", L"Maximum records", L"Retention days (0 = forever)",
     L"Maximum disk space (MB)", L"Maximum item size (MB)", L"Cache directory", L"Text", L"Images",
@@ -778,7 +792,7 @@ const SettingsLocale kChineseSettingsLocale{
     L"搜索输入兼容模式\n保持原应用前台；按 Ctrl + Space 使用中文输入法。", L"暂停剪贴板监听", L"随 Windows 启动",
     L"启动后打开设置", L"启动后显示系统提示", L"以管理员权限运行（关闭后下次启动生效）",
     L"重要系统快捷键", L"强制替换 Win + V", L"全局快捷键", L"打开剪贴板历史", L"打开设置",
-    L"暂停/恢复剪贴板监听", L"历史窗口快捷键", L"粘贴选中项目", L"粘贴为纯文本", L"粘贴为富文本",
+    L"暂停/恢复剪贴板监听", L"历史窗口快捷键", L"粘贴选中项目", L"粘贴后移到首位", L"粘贴为纯文本", L"粘贴为富文本",
     L"关闭历史窗口", L"在历史窗口打开设置", L"清除历史筛选", L"删除选中记录", L"注册状态",
     L"数据保留策略", L"最大记录数", L"保留天数（0 = 永久）", L"最大磁盘空间（MB）",
     L"单条内容上限（MB）", L"缓存目录", L"文本", L"图片", L"文件", L"分类存储设置",
@@ -921,6 +935,7 @@ void loadSettings(Settings& settings) {
         if (std::strncmp(line, "showStartupNotification=0", 25) == 0) settings.showStartupNotification = false;
         if (std::strncmp(line, "showStartupNotification=1", 25) == 0) settings.showStartupNotification = true;
         if (std::strncmp(line, "searchImeCompatibility=1", 24) == 0) settings.searchImeCompatibility = true;
+        if (std::strncmp(line, "promotePastedItem=1", 19) == 0) settings.promotePastedItem = true;
         if (std::strncmp(line, "historyWindowPinned=1", 21) == 0) settings.historyWindowPinned = true;
         if (std::strncmp(line, "runAsAdministrator=1", 20) == 0) settings.runAsAdministrator = true;
         if (std::strncmp(line, "encryptData=1", 13) == 0) settings.encryptData = true;
@@ -1042,6 +1057,7 @@ void saveSettings(const Settings& settings) {
            << "showSettingsOnStartup=" << (settings.showSettingsOnStartup ? 1 : 0) << "\n"
            << "showStartupNotification=" << (settings.showStartupNotification ? 1 : 0) << "\n"
            << "searchImeCompatibility=" << (settings.searchImeCompatibility ? 1 : 0) << "\n"
+           << "promotePastedItem=" << (settings.promotePastedItem ? 1 : 0) << "\n"
            << "historyWindowPinned=" << (settings.historyWindowPinned ? 1 : 0) << "\n"
            << "runAsAdministrator=" << (settings.runAsAdministrator ? 1 : 0) << "\n"
            << "encryptData=" << (settings.encryptData ? 1 : 0) << "\n"
@@ -1292,9 +1308,9 @@ std::uint64_t clipboardDedupHash(ClipType type, const std::string& payload) {
     return clipLiteHash(payload);
 }
 
-bool openClipboardWithRetry() {
+bool openClipboardWithRetry(HWND owner) {
     for (int attempt = 0; attempt < 5; ++attempt) {
-        if (OpenClipboard(g_app->hidden)) return true;
+        if (OpenClipboard(owner)) return true;
         Sleep(5);
     }
     return false;
@@ -1360,9 +1376,9 @@ bool isValidDibPayload(const std::string& payload) {
     return validateDibPayload(payload, nullptr);
 }
 
-bool captureClipboard(ClipType& type, std::string& payload, std::string& source) {
+bool captureClipboard(HWND owner, ClipType& type, std::string& payload, std::string& source) {
     source = clipboardSource();
-    if (!openClipboardWithRetry()) return false;
+    if (!openClipboardWithRetry(owner)) return false;
 
     std::string htmlPayload;
     if (const UINT format = htmlClipboardFormat(); format != 0) {
@@ -1466,9 +1482,32 @@ bool captureClipboard(ClipType& type, std::string& payload, std::string& source)
     return false;
 }
 
+void startClipboardCapture() {
+    if (!g_app || g_app->settingsData.pauseMonitoring || !g_app->hidden) return;
+    const std::shared_ptr<std::atomic<bool>> running = g_app->clipboardCaptureRunning;
+    if (running->exchange(true, std::memory_order_acq_rel)) return;
+    g_app->clipboardCapturePending = false;
+    const HWND hidden = g_app->hidden;
+    try {
+        std::thread([hidden, running] {
+            auto result = std::make_unique<ClipboardCaptureResult>();
+            result->captured = captureClipboard(hidden, result->type, result->payload,
+                                                result->source);
+            ClipboardCaptureResult* raw = result.release();
+            if (!PostMessageW(hidden, kClipboardCaptureCompleteMessage,
+                              reinterpret_cast<WPARAM>(raw), 0)) {
+                delete raw;
+            }
+            running->store(false, std::memory_order_release);
+        }).detach();
+    } catch (...) {
+        running->store(false, std::memory_order_release);
+    }
+}
+
 bool setClipboardDataForItem(const ClipItem& item, const std::string& payload,
-                             PasteMode mode = PasteMode::Automatic) {
-    if (!openClipboardWithRetry()) return false;
+                              PasteMode mode = PasteMode::Automatic) {
+    if (!openClipboardWithRetry(g_app->hidden)) return false;
     if (!EmptyClipboard()) {
         CloseClipboard();
         return false;
@@ -2308,6 +2347,9 @@ void sendPaste(PasteMode mode = PasteMode::Automatic) {
     g_app->ignoredClipboardHash = hash;
     g_app->ignoredClipboardTextHash = clipboardDedupHash(g_app->store.items()[index].type, payload);
     g_app->ignoredClipboardUntil = GetTickCount64() + 750;
+    if (!g_app->store.recordUse(index, g_app->settingsData.promotePastedItem)) {
+        appendDiagnosticLog("WARN", "paste: unable to persist usage metadata");
+    }
     HWND target = g_app->targetWindow;
     const bool keepPopup = g_app->popupPinned;
     g_app->popupImeMode = false;
@@ -3738,6 +3780,8 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
         makeCard(settingsLocale().historyWindowShortcuts, {
             makeSettingsRow(hwnd, settingsLocale().pasteSelectedItem,
                             {kSettingShortcutPaste}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().promotePastedItem,
+                            {kSettingPromotePastedItem}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().pastePlainText,
                             {kSettingShortcutPastePlain}, {150}, {30}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().pasteRichText,
@@ -4638,6 +4682,8 @@ void createSettingsControlsModern(HWND hwnd) {
     createToggle(kSettingRunAsAdministrator, 640, 404, g_app->settingsData.runAsAdministrator);
     createToggle(kSettingSearchImeCompatibility, 640, 439,
                  g_app->settingsData.searchImeCompatibility);
+    createToggle(kSettingPromotePastedItem, 640, 474,
+                 g_app->settingsData.promotePastedItem);
     createToggle(kSettingEncrypt, 640, 116, g_app->settingsData.encryptData);
     createShortcut(kSettingShortcutHistory, 110, g_app->settingsData.historyHotkey);
     createShortcut(kSettingShortcutSettings, 154, g_app->settingsData.settingsHotkey);
@@ -4799,7 +4845,7 @@ void updateSettingsTabControls(HWND hwnd) {
     const int ids[] = {kSettingDark, kSettingWinV, kSettingLanguage, kSettingPause,
                          kSettingStartup, kSettingStartupSettings, kSettingStartupNotification,
                          kSettingRunAsAdministrator, kSettingSearchImeCompatibility,
-                        kSettingEncrypt, kSettingMaxItems,
+                         kSettingPromotePastedItem, kSettingEncrypt, kSettingMaxItems,
                         kSettingRetentionDays, kSettingMaxDiskMb, kSettingMaxContentMb,
                         kSettingDataDirectory, kSettingBrowseDataDirectory,
                           kSettingIgnoredApps, kSettingSensitiveExpiry, kSettingClear,
@@ -4995,7 +5041,8 @@ bool isSettingsToggle(int id) {
     return id == kSettingWinV || id == kSettingDark || id == kSettingPause ||
            id == kSettingStartup || id == kSettingStartupSettings ||
            id == kSettingStartupNotification || id == kSettingRunAsAdministrator ||
-           id == kSettingSearchImeCompatibility || id == kSettingEncrypt;
+           id == kSettingSearchImeCompatibility || id == kSettingPromotePastedItem ||
+           id == kSettingEncrypt;
 }
 
 int settingsToggleAtPoint(int tab, int x, int y) {
@@ -5267,6 +5314,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     HWND startupNotification = GetDlgItem(hwnd, kSettingStartupNotification);
     HWND runAsAdministrator = GetDlgItem(hwnd, kSettingRunAsAdministrator);
     HWND searchImeCompatibility = GetDlgItem(hwnd, kSettingSearchImeCompatibility);
+    HWND promotePastedItem = GetDlgItem(hwnd, kSettingPromotePastedItem);
     HWND encrypt = GetDlgItem(hwnd, kSettingEncrypt);
     HWND categoryMax[kStorageCategoryCount]{};
     HWND categoryDisk[kStorageCategoryCount]{};
@@ -5277,7 +5325,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     if (!win || !dark || !language || !pause || !maxItems || !retentionDays || !maxDiskMb ||
         !maxContentMb || !dataDirectory || !ignoredApps || !sensitiveExpiry || !startup ||
         !startupSettings || !startupNotification || !runAsAdministrator ||
-        !searchImeCompatibility || !encrypt) {
+        !searchImeCompatibility || !promotePastedItem || !encrypt) {
         return false;
     }
     for (int i = 0; i < kStorageCategoryCount; ++i) {
@@ -5293,6 +5341,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     next.showStartupNotification = settingsToggleValue(startupNotification);
     next.runAsAdministrator = settingsToggleValue(runAsAdministrator);
     next.searchImeCompatibility = settingsToggleValue(searchImeCompatibility);
+    next.promotePastedItem = settingsToggleValue(promotePastedItem);
     next.language = settingsLanguageSelection(language);
     next.language = next.language <= 0 ? -1 : next.language - 1;
 
@@ -5402,6 +5451,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     const bool adminModeChanged = next.runAsAdministrator != previous.runAsAdministrator;
     const bool searchImeCompatibilityChanged =
         next.searchImeCompatibility != previous.searchImeCompatibility;
+    const bool promotePastedItemChanged = next.promotePastedItem != previous.promotePastedItem;
     const bool maxItemsChanged = next.maxItems != previous.maxItems;
     const bool retentionChanged = next.retentionDays != previous.retentionDays;
     const bool maxDiskChanged = next.maxDiskMb != previous.maxDiskMb;
@@ -5415,10 +5465,14 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
         next.encryptData != previous.encryptData || next.language != previous.language ||
         dataDirectoryChanged ||
         next.sensitiveExpiryHours != previous.sensitiveExpiryHours || searchImeCompatibilityChanged ||
+        promotePastedItemChanged ||
         next.ignoredApps != previous.ignoredApps;
     if (!changed) return true;
 
     g_app->settingsData = std::move(next);
+    if (promotePastedItemChanged) {
+        g_app->store.setSortByLastUsed(g_app->settingsData.promotePastedItem);
+    }
     if (darkChanged) {
         animateSettingsTheme(hwnd, previousDark, g_app->settingsData.dark);
         invalidateSettingsTheme(hwnd);
@@ -6869,6 +6923,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         if (message == WM_CLIPBOARDUPDATE) {
             if (!g_app->settingsData.pauseMonitoring) {
+                g_app->clipboardCapturePending = true;
                 SetTimer(hwnd, kClipboardCaptureTimer, 35, nullptr);
             }
             return 0;
@@ -6876,31 +6931,45 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == WM_TIMER && wParam == kClipboardCaptureTimer) {
             KillTimer(hwnd, kClipboardCaptureTimer);
             if (g_app->settingsData.pauseMonitoring) return 0;
-            ClipType type{};
-            std::string payload;
-            std::string source;
-            if (captureClipboard(type, payload, source)) {
+            if (g_app->clipboardCaptureRunning->load(std::memory_order_acquire)) {
+                SetTimer(hwnd, kClipboardCaptureTimer, 35, nullptr);
+                return 0;
+            }
+            startClipboardCapture();
+            return 0;
+        }
+        if (message == kClipboardCaptureCompleteMessage) {
+            std::unique_ptr<ClipboardCaptureResult> result(
+                reinterpret_cast<ClipboardCaptureResult*>(wParam));
+            if (result && result->captured && !g_app->settingsData.pauseMonitoring) {
+                const ClipType type = result->type;
+                const std::string& payload = result->payload;
+                const std::string& source = result->source;
                 const std::size_t maxPayload = static_cast<std::size_t>(g_app->settingsData.maxContentMb) * 1024u * 1024u;
-                if (payload.size() > maxPayload || isIgnoredClipboardSource(source)) return 0;
-                const auto hash = clipboardDedupHash(type, payload);
-                const bool ignoredSelfWrite = GetTickCount64() <= g_app->ignoredClipboardUntil &&
-                    (hash == g_app->ignoredClipboardHash ||
-                     hash == g_app->ignoredClipboardTextHash);
-                if (!ignoredSelfWrite) {
-                    const std::uint64_t expiresAt = g_app->settingsData.sensitiveExpiryHours > 0 &&
-                        containsSensitiveMarker(type, payload)
-                        ? nowUnix() + static_cast<std::uint64_t>(g_app->settingsData.sensitiveExpiryHours) * 3600ULL
-                        : 0;
-                    if (!g_app->store.appendOrUpdate(type, payload, hash, source, expiresAt)) {
-                        appendDiagnosticLog("ERROR", "clipboard: unable to append history record");
+                if (payload.size() <= maxPayload && !isIgnoredClipboardSource(source)) {
+                    const auto hash = clipboardDedupHash(type, payload);
+                    const bool ignoredSelfWrite = GetTickCount64() <= g_app->ignoredClipboardUntil &&
+                        (hash == g_app->ignoredClipboardHash ||
+                         hash == g_app->ignoredClipboardTextHash);
+                    if (!ignoredSelfWrite) {
+                        const std::uint64_t expiresAt = g_app->settingsData.sensitiveExpiryHours > 0 &&
+                            containsSensitiveMarker(type, payload)
+                            ? nowUnix() + static_cast<std::uint64_t>(g_app->settingsData.sensitiveExpiryHours) * 3600ULL
+                            : 0;
+                        if (!g_app->store.appendOrUpdate(type, payload, hash, source, expiresAt)) {
+                            appendDiagnosticLog("ERROR", "clipboard: unable to append history record");
+                        }
+                    } else {
+                        g_app->ignoredClipboardHash = 0;
+                        g_app->ignoredClipboardTextHash = 0;
+                        g_app->ignoredClipboardUntil = 0;
                     }
-                } else {
-                    g_app->ignoredClipboardHash = 0;
-                    g_app->ignoredClipboardTextHash = 0;
-                    g_app->ignoredClipboardUntil = 0;
                 }
             }
             if (g_app->popup) refreshVisible(true);
+            if (g_app->clipboardCapturePending && !g_app->settingsData.pauseMonitoring) {
+                SetTimer(hwnd, kClipboardCaptureTimer, 35, nullptr);
+            }
             return 0;
         }
     }
@@ -7762,6 +7831,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     app.popupPinned = app.settingsData.historyWindowPinned;
     appendDiagnosticLog("INFO", "startup: settings loaded");
     app.store.setMaxItems(static_cast<std::size_t>(app.settingsData.maxItems));
+    app.store.setSortByLastUsed(app.settingsData.promotePastedItem);
     app.store.setEncryption(app.settingsData.encryptData);
     app.store.setMaxPayloadBytes(static_cast<std::uint32_t>(app.settingsData.maxContentMb) * 1024u * 1024u);
     if (commandImageBenchmark) {

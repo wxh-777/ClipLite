@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Added a "Move pasted item to top" setting. When enabled, history is ordered by recent use activity; when disabled, it remains ordered by recent copies.
+- Extended v4 history records with a stable record ID, first-captured time, millisecond copy time, last-used time, copy count, use count, and logical content length for future sorting, length, and usage-frequency filters.
+- Added metadata version, size, and CRC validation while retaining reads and automatic upgrades for the earlier v4 metadata layout.
+- Fixed fast-paste delays caused by forced usage-stat disk commits and rebuilding the whole history for duplicate copies; unchanged content now updates metadata in place when possible.
+
 ## [1.0.5] - 2026-08-26
 
 Fixes history search focus handling and adds an optional Chinese IME compatibility mode.
