@@ -147,6 +147,7 @@ constexpr UINT_PTR kPopupDeactivateTimer = 11;
 constexpr UINT_PTR kWinVReleaseTimer = 12;
 constexpr UINT_PTR kPopupSearchTimer = 13;
 constexpr UINT_PTR kSupportOwnerTimer = 14;
+constexpr UINT_PTR kPasteInputTimer = 15;
 constexpr DWORD kSettingsToggleAnimationMs = 160;
 constexpr DWORD kSettingsDropdownAnimationMs = 150;
 constexpr DWORD kSettingsThemeAnimationMs = 180;
@@ -156,6 +157,8 @@ constexpr UINT kSettingsSyncDelayMs = 300;
 constexpr UINT kSettingsEncryptionDebounceMs = 800;
 constexpr UINT kSettingsActionFeedbackMs = 2400;
 constexpr UINT kPopupSearchDelayMs = 90;
+constexpr UINT kPasteInputRetryMs = 4;
+constexpr UINT kPasteInputTimeoutMs = 500;
 constexpr UINT kTrayId = 1;
 constexpr int kPopupFilterTop = 58;
 constexpr int kPopupFilterBottom = 82;
@@ -376,6 +379,10 @@ struct AppState {
     std::uint64_t ignoredClipboardHash = 0;
     std::uint64_t ignoredClipboardTextHash = 0;
     ULONGLONG ignoredClipboardUntil = 0;
+    bool pasteInputPending = false;
+    HWND pasteTarget = nullptr;
+    bool pasteKeepPopup = false;
+    ULONGLONG pasteInputDeadline = 0;
 };
 
 struct SupportWindowState {
@@ -2437,25 +2444,19 @@ void restorePasteTargetFocus(HWND target) {
     if (attached) AttachThreadInput(currentThread, targetThread, FALSE);
 }
 
-bool waitForPasteModifiersReleased() {
-    constexpr int kMaxWaitMs = 500;
-    for (int elapsed = 0; elapsed < kMaxWaitMs; elapsed += 10) {
-        const bool pressed = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 ||
-            (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0 ||
-            (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0 ||
-            (GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0 ||
-            (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0 ||
-            (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0 ||
-            (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0 ||
-            (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0;
-        if (!pressed) return true;
-        Sleep(10);
-    }
-    return false;
+bool pasteModifiersPressed() {
+    return (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 ||
+        (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0 ||
+        (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0 ||
+        (GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0 ||
+        (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0 ||
+        (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0 ||
+        (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0 ||
+        (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0;
 }
 
 void sendPaste(PasteMode mode = PasteMode::Automatic) {
-    if (!g_app->popup || g_app->visible.empty()) return;
+    if (!g_app->popup || g_app->visible.empty() || g_app->pasteInputPending) return;
     const int selected = std::clamp(g_app->selected, 0, static_cast<int>(g_app->visible.size()) - 1);
     const std::size_t index = g_app->visible[static_cast<std::size_t>(selected)];
     std::string payload;
@@ -2496,30 +2497,64 @@ void sendPaste(PasteMode mode = PasteMode::Automatic) {
         return;
     }
     restorePasteTargetFocus(target);
-    if (!waitForPasteModifiersReleased()) {
+    g_app->pasteInputPending = true;
+    g_app->pasteTarget = target;
+    g_app->pasteKeepPopup = keepPopup;
+    g_app->pasteInputDeadline = GetTickCount64() + kPasteInputTimeoutMs;
+    SetTimer(g_app->hidden, kPasteInputTimer, kPasteInputRetryMs, nullptr);
+}
+
+void dispatchPendingPaste() {
+    if (!g_app || !g_app->pasteInputPending) return;
+    if (pasteModifiersPressed()) {
+        if (GetTickCount64() < g_app->pasteInputDeadline) {
+            SetTimer(g_app->hidden, kPasteInputTimer, kPasteInputRetryMs, nullptr);
+            return;
+        }
+        KillTimer(g_app->hidden, kPasteInputTimer);
+        const bool keepPopup = g_app->pasteKeepPopup;
+        g_app->pasteInputPending = false;
+        g_app->pasteTarget = nullptr;
+        g_app->pasteKeepPopup = false;
+        g_app->pasteInputDeadline = 0;
         appendDiagnosticLog("WARN", "paste: user modifier key is still pressed");
+        notifyPasteFailure();
+        if (keepPopup && IsWindow(g_app->popup)) {
+            ShowWindow(g_app->popup, SW_SHOWNOACTIVATE);
+        }
+        return;
+    }
+
+    KillTimer(g_app->hidden, kPasteInputTimer);
+    const HWND target = g_app->pasteTarget;
+    const bool keepPopup = g_app->pasteKeepPopup;
+    g_app->pasteInputPending = false;
+    g_app->pasteTarget = nullptr;
+    g_app->pasteKeepPopup = false;
+    g_app->pasteInputDeadline = 0;
+    if (!IsWindow(target)) {
+        appendDiagnosticLog("WARN", "paste: target window is no longer valid");
         notifyPasteFailure();
         if (keepPopup && IsWindow(g_app->popup)) ShowWindow(g_app->popup, SW_SHOWNOACTIVATE);
         return;
     }
-    INPUT keyDown[2]{};
-    keyDown[0].type = INPUT_KEYBOARD;
-    keyDown[0].ki.wVk = VK_LCONTROL;
-    keyDown[1].type = INPUT_KEYBOARD;
-    keyDown[1].ki.wVk = 'V';
-    const UINT sentDown = SendInput(2, keyDown, sizeof(INPUT));
-    Sleep(8);
-    INPUT keyUp[2]{};
-    keyUp[0] = keyDown[1];
-    keyUp[0].ki.dwFlags = KEYEVENTF_KEYUP;
-    keyUp[1] = keyDown[0];
-    keyUp[1].ki.dwFlags = KEYEVENTF_KEYUP;
-    const UINT sentUp = SendInput(2, keyUp, sizeof(INPUT));
-    if (sentDown != 2 || sentUp != 2) {
-        SendInput(2, keyUp, sizeof(INPUT));
+
+    INPUT inputs[4]{};
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = VK_LCONTROL;
+    inputs[1].type = INPUT_KEYBOARD;
+    inputs[1].ki.wVk = 'V';
+    inputs[2] = inputs[1];
+    inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
+    inputs[3] = inputs[0];
+    inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
+    if (SendInput(ARRAYSIZE(inputs), inputs, sizeof(INPUT)) != ARRAYSIZE(inputs)) {
+        SendInput(2, inputs + 2, sizeof(INPUT));
         appendDiagnosticLog("ERROR", "paste: SendInput failed", GetLastError());
         notifyPasteFailure();
-        if (keepPopup && IsWindow(g_app->popup)) ShowWindow(g_app->popup, SW_SHOWNOACTIVATE);
+        if (keepPopup && IsWindow(g_app->popup)) {
+            ShowWindow(g_app->popup, SW_SHOWNOACTIVATE);
+        }
         return;
     }
     appendDiagnosticLog("INFO", "paste: keyboard input sent");
@@ -7688,6 +7723,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             return 0;
         }
+        if (message == WM_TIMER && wParam == kPasteInputTimer) {
+            dispatchPendingPaste();
+            return 0;
+        }
         if (message == WM_CLIPBOARDUPDATE) {
             if (!g_app->settingsData.pauseMonitoring) {
                 g_app->clipboardCapturePending = true;
@@ -8814,6 +8853,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     closeSupportProcess();
     RemoveClipboardFormatListener(app.hidden);
     KillTimer(app.hidden, kExpiryTimer);
+    KillTimer(app.hidden, kPasteInputTimer);
     removeTrayIcon();
     UnregisterHotKey(app.hidden, kHotkeyAltV);
     UnregisterHotKey(app.hidden, kHotkeyWinV);

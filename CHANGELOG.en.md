@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fixed paste shortcuts blocking the UI message thread while waiting for modifier keys, which could delay pasting and stall typing immediately afterward; modifier release is now polled asynchronously and the paste keystrokes are sent as one sequence.
+
 ## [1.1.0] - 2026-09-03
 
 - Added a "Move pasted item to top" toggle to the history item and empty-area context menus; changes are saved immediately and update list ordering.
