@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Improved image-list scrolling by keeping a fixed anti-aliased preview placeholder while thumbnails load instead of switching from `[Image]` text to the rendered thumbnail.
+- Fixed stale image-preview generations filling the queue and preventing current-viewport thumbnails from being scheduled after scrolling.
+- Fixed loading thumbnail entries being evicted at the memory-cache limit before their background result arrived.
+- Fixed a race between scrolling preloads and background thumbnail writes that could make image thumbnails disappear after scrolling.
+- Fixed empty bitmaps from failed background DIB scaling being treated as successful previews, which could leave image entries showing text instead of thumbnails.
+- Fixed image preview jobs being blocked by stale generations or failed states during scrolling; current-viewport jobs are prioritized and failed entries retry on later scrolling.
+- Added a bounded disk thumbnail cache separate from history data, with a 24-item in-memory LRU, a 32 MB/5,000-item disk limit, and DPAPI protection when history encryption is enabled.
+- Increased the in-memory history image thumbnail cache from 12 to 24 items to reduce reloads when navigating long lists.
+- Fixed cached image thumbnails briefly disappearing during fast scrolling; only uncached images are deferred now.
+- Improved image previews during fast history scrolling: new image decoding is paused while scrolling and resumes for the current viewport plus one screen on either side, reducing large-image reads, scaling, and queued background work.
+- Fixed a brief transparent empty window appearing when history was first opened before its first frame had been painted.
+- Image files in file-list records now show on-demand thumbnails; records are still stored and pasted as file lists, with the original path shown when the file is missing or cannot be decoded.
+- Fixed multiline settings labels being clipped on some DPI and font configurations.
 - Fixed paste shortcuts blocking the UI message thread while waiting for modifier keys, which could delay pasting and stall typing immediately afterward; modifier release is now polled asynchronously and the paste keystrokes are sent as one sequence.
 
 ## [1.1.0] - 2026-09-03

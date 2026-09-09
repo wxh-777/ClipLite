@@ -15,10 +15,10 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 ## Features
 
 - Open clipboard history with `Alt+V`, with an optional `Win+V` replacement mode.
-- Capture and restore plain text, HTML, file lists, DIB, and DIBV5 images.
+- Capture and restore plain text, HTML, file lists, DIB, and DIBV5 images; image files in file lists show on-demand thumbnails.
 - Search and combine type, time range, content length, source application, and sort filters; pin, delete, clear, and paste history items.
 - Search focuses the input by default; an optional compatibility mode keeps the original app in the foreground and uses `Ctrl+Space` to enter Chinese IME input.
-- Paste as plain text or rich text; images are loaded on demand only when visible.
+- Paste as plain text or rich text; images are loaded on demand with bounded memory and disk thumbnail caches.
 - Automatic, light, and dark themes with blue, purple, green, and orange accents.
 - English and Simplified Chinese interfaces.
 - Limits for record count, disk usage, retention period, item size, and monitoring pause.
@@ -95,6 +95,7 @@ Use `SHA256SUM.txt` in the portable package to verify `ClipLite.exe`. Verify the
 - `Ctrl+0`: Clear the history filter.
 
 History, settings, and monitoring shortcuts can be changed in Settings. `Win+V` replacement depends on Windows, the current integrity level, and shortcut conflicts. `Alt+V` remains available when registration fails.
+Settings descriptions automatically reserve enough space for multiple lines.
 
 The General settings section includes a "Move pasted item to top" setting. When enabled, history is ordered by recent use activity; when disabled, it is ordered by recent copy time. Each record also stores a stable ID, first-captured time, millisecond copy time, last-used time, copy count, use count, and logical content length for sorting and filters.
 

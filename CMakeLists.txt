@@ -17,7 +17,9 @@ endif()
 add_executable(ClipLite WIN32
     src/main.cpp
     src/clip_store.cpp
+    src/thumbnail_cache.cpp
     include/clip_store.h
+    include/thumbnail_cache.h
     resources/clipLite.rc
 )
 
@@ -30,7 +32,9 @@ if(BUILD_TESTING)
     add_executable(ClipLiteStoreTests
         tests/store_tests.cpp
         src/clip_store.cpp
+        src/thumbnail_cache.cpp
         include/clip_store.h
+        include/thumbnail_cache.h
     )
     target_include_directories(ClipLiteStoreTests PRIVATE include)
     target_compile_definitions(ClipLiteStoreTests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)

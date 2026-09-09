@@ -1,11 +1,14 @@
 #include "clip_store.h"
+#include "thumbnail_cache.h"
 
 #include <windows.h>
 
 #include <cstdio>
 #include <cstring>
 #include <io.h>
+#include <atomic>
 #include <string>
+#include <thread>
 #include <vector>
 
 #pragma pack(push, 1)
@@ -61,6 +64,10 @@ struct TestDataScope {
     ~TestDataScope() {
         DeleteFileW((path + L"\\history.bin").c_str());
         DeleteFileW((path + L"\\history.bin.tmp").c_str());
+        ThumbnailCache thumbnails;
+        if (thumbnails.setDirectory(path)) {
+            thumbnails.clear();
+        }
         _wputenv_s(L"CLIPLITE_TEST_DATA_DIR", L"");
         RemoveDirectoryW(path.c_str());
     }
@@ -71,6 +78,36 @@ int main() {
     ClipStore store(10);
     if (!store.open()) return 1;
     store.clear();
+    ThumbnailCache thumbnailCache;
+    if (!thumbnailCache.setDirectory(testData.path)) return 2;
+    const std::string thumbnailData("png-thumbnail-data");
+    if (!thumbnailCache.write(1, false, thumbnailData)) return 3;
+    std::string restoredThumbnail;
+    if (!thumbnailCache.read(1, false, restoredThumbnail) || restoredThumbnail != thumbnailData) return 4;
+    if (!thumbnailCache.write(2, true, thumbnailData)) return 5;
+    restoredThumbnail.clear();
+    if (!thumbnailCache.read(2, true, restoredThumbnail) || restoredThumbnail != thumbnailData) return 6;
+    if (GetFileAttributesW((testData.path + L"\\thumbnails.bin").c_str()) == INVALID_FILE_ATTRIBUTES) {
+        return 7;
+    }
+    std::atomic<bool> concurrentCacheFailure{false};
+    std::vector<std::thread> cacheWorkers;
+    for (std::uint64_t worker = 0; worker < 4; ++worker) {
+        cacheWorkers.emplace_back([&thumbnailCache, &concurrentCacheFailure, worker]() {
+            for (std::uint64_t index = 0; index < 100; ++index) {
+                const std::uint64_t key = 1000 + worker * 100 + index;
+                const std::string data = "thumbnail-" + std::to_string(key);
+                std::string restored;
+                if (!thumbnailCache.write(key, false, data) ||
+                    !thumbnailCache.read(key, false, restored) || restored != data) {
+                    concurrentCacheFailure.store(true, std::memory_order_relaxed);
+                    return;
+                }
+            }
+        });
+    }
+    for (std::thread& worker : cacheWorkers) worker.join();
+    if (concurrentCacheFailure.load(std::memory_order_relaxed)) return 8;
     const std::wstring tempPath = store.path() + L".tmp";
     std::FILE* tempFile = nullptr;
     _wfopen_s(&tempFile, tempPath.c_str(), L"wb");

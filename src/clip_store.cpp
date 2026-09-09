@@ -865,9 +865,13 @@ bool ClipStore::appendOrUpdate(ClipType type, const std::string& payload, std::u
 
 bool ClipStore::readPayload(std::size_t index, std::string& payload) const {
     if (index >= items_.size()) return false;
-    const ClipItem& item = items_[index];
+    return readPayloadSnapshot(path_, items_[index], payload);
+}
+
+bool ClipStore::readPayloadSnapshot(const std::wstring& path, const ClipItem& item,
+                                    std::string& payload) const {
     std::FILE* file = nullptr;
-    _wfopen_s(&file, path_.c_str(), L"rb");
+    _wfopen_s(&file, path.c_str(), L"rb");
     if (!file) {
         return false;
     }

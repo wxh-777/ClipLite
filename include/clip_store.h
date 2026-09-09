@@ -63,6 +63,8 @@ public:
                         const std::string& source = {}, std::uint64_t expiresAt = 0);
     bool recordUse(std::size_t index, bool promote);
     bool readPayload(std::size_t index, std::string& payload) const;
+    bool readPayloadSnapshot(const std::wstring& path, const ClipItem& item,
+                             std::string& payload) const;
     bool remove(std::size_t index);
     bool togglePinned(std::size_t index);
     bool setCategory(std::size_t index, std::uint32_t category);
