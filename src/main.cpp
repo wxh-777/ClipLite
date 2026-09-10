@@ -286,6 +286,12 @@ struct PopupSourceIcon {
     HICON icon = nullptr;
 };
 
+struct FileAvailability {
+    std::size_t itemIndex = 0;
+    std::uint64_t hash = 0;
+    bool missing = false;
+};
+
 struct AppState {
     HWND hidden = nullptr;
     HWND popup = nullptr;
@@ -402,7 +408,10 @@ struct AppState {
     std::uint64_t searchGeneration = 0;
     Settings settingsData;
     ClipStore store;
+    std::vector<std::size_t> searchCandidates;
     std::vector<std::size_t> visible;
+    std::uint64_t fileAvailabilityRevision = 0;
+    std::vector<FileAvailability> fileAvailability;
     std::vector<PopupImagePreview> imagePreviews;
     std::vector<PopupSourceIcon> sourceIcons;
     std::uint64_t imagePreviewRevision = 0;
@@ -1894,6 +1903,21 @@ void invalidatePopupList(HWND hwnd) {
 
 void invalidateFilterBar(HWND hwnd);
 
+void invalidatePopupStatus(HWND hwnd) {
+    if (!hwnd) return;
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    RECT statusRect{ui(12), ui(81), client.right - ui(12), ui(98)};
+    InvalidateRect(hwnd, &statusRect, FALSE);
+}
+
+void invalidatePopupFilterButton(HWND hwnd) {
+    if (!hwnd) return;
+    RECT buttonRect{ui(kPopupFilterButtonLeft - 2), ui(10),
+                    ui(kPopupFilterButtonRight + 2), ui(48)};
+    InvalidateRect(hwnd, &buttonRect, FALSE);
+}
+
 int popupScrollStride() {
     return ui(kPopupCardHeight + kPopupCardGap);
 }
@@ -2311,13 +2335,16 @@ void applyVisibleCandidates(const std::vector<std::size_t>& candidates,
     }
     invalidatePopupList(g_app->popup);
     invalidateFilterBar(g_app->popup);
+    invalidatePopupStatus(g_app->popup);
+    invalidatePopupFilterButton(g_app->popup);
 }
 
 void refreshVisible(bool preserveScrollPosition = false) {
     if (!g_app->popup) return;
     KillTimer(g_app->popup, kPopupSearchTimer);
     cancelPopupSearch();
-    applyVisibleCandidates(g_app->store.search(g_app->query), preserveScrollPosition);
+    g_app->searchCandidates = g_app->store.search(g_app->query);
+    applyVisibleCandidates(g_app->searchCandidates, preserveScrollPosition);
 }
 
 void startPopupSearch(HWND popup) {
@@ -2345,6 +2372,12 @@ void startPopupSearch(HWND popup) {
     });
 }
 
+// 筛选条件变化时立即重绘，并让后台搜索完成后补齐当前查询结果。
+void refreshVisibleForFilter() {
+    if (!g_app || !g_app->popup) return;
+    applyVisibleCandidates(g_app->searchCandidates);
+}
+
 void cancelStalePopupPreviewWork();
 
 void scrollPopup(int delta) {
@@ -2360,6 +2393,16 @@ void scrollPopup(int delta) {
 
 void notifyPasteFailure() {
     MessageBeep(MB_ICONWARNING);
+}
+
+// 提示文件记录中已经失效的路径，避免用户误以为目标应用没有响应。
+void notifyMissingFilePaste(HWND owner) {
+    MessageBoxW(owner,
+                tr(L"One or more files in this item no longer exist and cannot be pasted.\n"
+                   L"Copy the files again to update the history.",
+                   L"此记录中的一个或多个文件已不存在，无法粘贴。\n请重新复制文件以更新历史记录。"),
+                tr(L"Unable to paste files", L"无法粘贴文件"),
+                MB_OK | MB_ICONWARNING);
 }
 
 void clearPopupImagePreviews() {
@@ -2465,6 +2508,26 @@ bool isImageFilePath(const std::wstring& path) {
     return false;
 }
 
+// 检查文件列表中的每条路径，目录也属于可以粘贴的路径。
+bool fileListHasMissingPath(const std::string& payload) {
+    const std::wstring paths = utf8ToWide(payload);
+    if (paths.empty()) return true;
+    bool foundPath = false;
+    std::size_t start = 0;
+    while (start <= paths.size()) {
+        const std::size_t end = paths.find(L'\n', start);
+        std::wstring candidate = paths.substr(start,
+            end == std::wstring::npos ? std::wstring::npos : end - start);
+        if (!candidate.empty() && candidate.back() == L'\r') candidate.pop_back();
+        if (candidate.empty()) return true;
+        foundPath = true;
+        if (GetFileAttributesW(candidate.c_str()) == INVALID_FILE_ATTRIBUTES) return true;
+        if (end == std::wstring::npos) break;
+        start = end + 1;
+    }
+    return !foundPath;
+}
+
 // 从文件列表载荷中找到一个仍然存在的图片文件路径。
 bool findImageFilePath(const std::string& payload, std::wstring& path) {
     const std::wstring paths = utf8ToWide(payload);
@@ -2485,6 +2548,27 @@ bool findImageFilePath(const std::string& payload, std::wstring& path) {
         start = end + 1;
     }
     return false;
+}
+
+// 缓存当前历史窗口中每个文件项的可用性，避免重绘时反复读取历史文件。
+bool fileItemHasMissingPath(std::size_t itemIndex, const ClipItem& item) {
+    if (!g_app) return true;
+    const std::uint64_t revision = g_app->store.revision();
+    if (g_app->fileAvailabilityRevision != revision) {
+        g_app->fileAvailability.clear();
+        g_app->fileAvailabilityRevision = revision;
+    }
+    const auto cached = std::find_if(g_app->fileAvailability.begin(), g_app->fileAvailability.end(),
+                                     [itemIndex, &item](const FileAvailability& status) {
+        return status.itemIndex == itemIndex && status.hash == item.hash;
+    });
+    if (cached != g_app->fileAvailability.end()) return cached->missing;
+
+    std::string payload;
+    const bool missing = !g_app->store.readPayload(itemIndex, payload) ||
+        fileListHasMissingPath(payload);
+    g_app->fileAvailability.push_back(FileAvailability{itemIndex, item.hash, missing});
+    return missing;
 }
 
 // 从图片文件按历史卡片尺寸生成一次性缩略图位图。
@@ -2997,6 +3081,14 @@ void sendPaste(PasteMode mode = PasteMode::Automatic) {
         notifyPasteFailure();
         return;
     }
+    if (g_app->store.items()[index].type == ClipType::Files && fileListHasMissingPath(payload)) {
+        appendDiagnosticLog("WARN", "paste: selected file item contains missing paths");
+        g_app->fileAvailability.clear();
+        g_app->fileAvailabilityRevision = g_app->store.revision();
+        InvalidateRect(g_app->popup, nullptr, FALSE);
+        notifyMissingFilePaste(g_app->popup);
+        return;
+    }
     const std::uint64_t hash = g_app->store.items()[index].hash;
     if (!setClipboardDataForItem(g_app->store.items()[index], payload, mode)) {
         appendDiagnosticLog("ERROR", "paste: unable to write selected item to clipboard");
@@ -3167,7 +3259,10 @@ void showPopup(bool openedByWinV = false) {
     g_app->popupOpenedByWinV = openedByWinV;
     g_app->popupOpenInputTick = lastInputTick();
     clearPopupImagePreviews();
-    g_app->visible = g_app->store.search({});
+    g_app->fileAvailability.clear();
+    g_app->fileAvailabilityRevision = g_app->store.revision();
+    g_app->searchCandidates = g_app->store.search({});
+    g_app->visible = g_app->searchCandidates;
 
     const int width = ui(kPopupWidth);
     int height = ui(kPopupHeight);
@@ -5142,7 +5237,8 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     int y = ui(kPopupListTop) - scrollRemainder;
     for (int row = firstVisibleRow;
          row < static_cast<int>(g_app->visible.size()); ++row) {
-        const ClipItem& item = g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]];
+        const std::size_t itemIndex = g_app->visible[static_cast<std::size_t>(row)];
+        const ClipItem& item = g_app->store.items()[itemIndex];
         const int height = popupCardHeight(item);
         if (y >= listBottom) break;
         RECT rowRect{ui(16), y, client.right - ui(16), y + height};
@@ -5165,6 +5261,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         }
         const bool image = isImageType(item.type);
         const bool file = item.type == ClipType::Files;
+        const bool missingFiles = file && fileItemHasMissingPath(itemIndex, item);
         const int metadataTop = y + height - ui(24);
         const RECT previewRect{rowRect.left + ui(12), y + ui(12),
                                rowRect.left + ui(84), y + ui(84)};
@@ -5175,10 +5272,20 @@ void paintPopupContent(HWND hwnd, HDC dc) {
             const std::wstring preview = localizedPopupPreview(item);
             SelectObject(dc, previewFont);
             SetTextColor(dc, text);
-            RECT textPreviewRect{rowRect.left + ui(12), y + ui(10), rowRect.right - ui(12),
+            RECT textPreviewRect{rowRect.left + ui(12), y + ui(10),
+                                 rowRect.right - ui(missingFiles ? 144 : 12),
                                  metadataTop - ui(4)};
             DrawTextW(dc, preview.c_str(), -1, &textPreviewRect,
                       DT_LEFT | DT_TOP | DT_WORDBREAK | DT_END_ELLIPSIS);
+        }
+        if (missingFiles) {
+            const RECT missingRect{rowRect.right - ui(132), y + ui(9),
+                                   rowRect.right - ui(28), y + ui(27)};
+            drawMetadataTag(dc, missingRect,
+                            tr(L"File missing", L"文件已不存在"),
+                            settingsThemeColor(RGB(254, 226, 226), RGB(76, 52, 56)),
+                            settingsThemeColor(RGB(252, 165, 165), RGB(130, 77, 83)),
+                            settingsThemeColor(RGB(185, 28, 28), RGB(255, 176, 176)), 3);
         }
         SelectObject(dc, metaFont);
         const wchar_t* kind = automaticTypeLabel(item.type);
@@ -7768,8 +7875,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             startPopupSearch(result->popup);
             return 0;
         }
+        if (g_app->searchWorker.joinable()) g_app->searchWorker.join();
         g_app->searchCancellation.reset();
-        applyVisibleCandidates(result->candidates);
+        g_app->searchCandidates = std::move(result->candidates);
+        applyVisibleCandidates(g_app->searchCandidates);
         return 0;
     }
     if (hwnd == g_app->filterMenuWindow || hwnd == g_app->filterSubmenuWindow) {
@@ -7878,7 +7987,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                     g_app->selected = 0;
                     g_app->scrollOffset = 0;
                     g_app->scrollPosition = 0;
-                    refreshVisible();
+                    refreshVisibleForFilter();
                     InvalidateRect(hwnd, nullptr, FALSE);
                     if (g_app->filterSubmenuWindow) InvalidateRect(g_app->filterSubmenuWindow, nullptr, FALSE);
                 }
@@ -7895,7 +8004,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                     g_app->selected = 0;
                     g_app->scrollOffset = 0;
                     g_app->scrollPosition = 0;
-                    refreshVisible();
+                    refreshVisibleForFilter();
                     InvalidateRect(g_app->filterMenuWindow, nullptr, FALSE);
                     InvalidateRect(hwnd, nullptr, FALSE);
                 }
@@ -8846,7 +8955,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             else if (shortcutMatches(g_app->settingsData.popupClearFilterHotkey,
                                      static_cast<UINT>(wParam))) {
                 resetPopupFilters();
-                refreshVisible();
+                refreshVisibleForFilter();
             }
             else if (wParam == VK_UP) { --g_app->selected; refreshVisible(); }
             else if (wParam == VK_DOWN) { ++g_app->selected; refreshVisible(); }
@@ -9001,7 +9110,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                         applyFilterCommand(automaticFilterCommand(slot));
                         g_app->selected = 0;
                         g_app->scrollOffset = 0;
-                        refreshVisible();
+                        refreshVisibleForFilter();
                         break;
                     }
                 }
