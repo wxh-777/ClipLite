@@ -19,6 +19,7 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 - Search and combine type, time range, content length, source application, and sort filters; pin, delete, clear, and paste history items.
 - Supports a separate original-content preview window; choose automatic preview, hold-key preview, or disabled preview in Settings or the history context menu. Hold-key preview uses `F2` by default.
 - Search focuses the input by default; an optional compatibility mode keeps the original app in the foreground and uses `Ctrl+Space` to enter Chinese IME input.
+- Long settings pages show a scrollbar on the right, with wheel scrolling, page jumps on the track, and a draggable thumb.
 - Paste as plain text or rich text; images are loaded on demand with bounded memory and disk thumbnail caches.
 - Automatic, light, and dark themes with blue, purple, green, and orange accents.
 - English and Simplified Chinese interfaces.

@@ -332,6 +332,7 @@ struct AppState {
     HWND detailPreview = nullptr;
     HWND searchEdit = nullptr;
     HWND settings = nullptr;
+    HWND settingsHeaderOverlay = nullptr;
     HWND support = nullptr;
     HANDLE supportProcess = nullptr;
     DWORD supportProcessId = 0;
@@ -403,6 +404,9 @@ struct AppState {
     int hoveredSettingsThemeMode = -1;
     int hoveredSettingsControl = 0;
     int settingsScrollOffset = 0;
+    bool settingsScrollDragging = false;
+    int settingsScrollDragStartY = 0;
+    int settingsScrollDragStartOffset = 0;
     int settingsControlsTab = -1;
     HWND toggleAnimationControl = nullptr;
     LONGLONG toggleAnimationStartTicks = 0;
@@ -941,15 +945,15 @@ const SettingsLocale kEnglishSettingsLocale{
     L"Custom shortcuts require at least one modifier key.",
     L"Sensitive markers: password, token, api_key, secret, and private keys; detected by content pattern.",
       L"Application    ClipLite", L"Version        1.1.0 x64", L"Storage format  v4",
-    L"Data directory  %LOCALAPPDATA%\\ClipLite", L"Browse", L"Clear history", L"Clear text",
-    L"Clear images", L"Clear files", L"Press shortcut", L"Need modifier", L"One application per line", L"Auto",
+     L"Data directory  %LOCALAPPDATA%\\ClipLite", L"Browse", L"Clear unpinned history", L"Clear unpinned text",
+     L"Clear unpinned images", L"Clear unpinned files", L"Press shortcut", L"Need modifier", L"One application per line", L"Auto",
     L"ClipLite Settings", L"Choose a valid cache directory.", L"Unable to create the cache directory.",
     L"The target directory already contains history. Choose an empty directory.",
     L"Unable to migrate clipboard history.", L"Unable to open the new cache directory.",
     L"Choose a cache directory", L"Unable to change history encryption.", L"history", L"text", L"images",
-    L"files", L"This will permanently remove %zu clipboard records. Continue?",
-    L"This will permanently remove %zu %ls records. Continue?", L"Confirm clear", L"Clear cancelled",
-    L"No %ls records to clear", L"Cleared %zu %ls records", L"Clear failed; history was not changed",
+     L"files", L"This will permanently remove %zu unpinned clipboard records. Pinned records will be kept. Continue?",
+     L"This will permanently remove %zu unpinned %ls records. Pinned records will be kept. Continue?", L"Confirm clear", L"Clear cancelled",
+     L"No unpinned %ls records to clear", L"Cleared %zu unpinned %ls records; pinned records were kept", L"Clear failed; history was not changed",
     L"Confirm retention change", L"Reducing retention limits may permanently remove existing clipboard records. Continue?",
     L"Clipboard history", L"Clear", L"All", L"Pinned", L"Text", L"Images", L"Files", L"Other",
     L"Clipboard", L"No clipboard history", L"Paste", L"Paste as plain text", L"Paste as rich text",
@@ -989,13 +993,13 @@ const SettingsLocale kChineseSettingsLocale{
     L"部分快捷键注册失败，请更换组合键。", L"自定义快捷键至少需要一个修饰键。",
     L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。",
      L"应用名称    ClipLite", L"版本        1.1.0 x64", L"存储格式    v4",
-    L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清空历史", L"清理文本", L"清理图片",
-    L"清理文件", L"按下组合键", L"需要修饰键", L"每行一个应用名称", L"自动", L"ClipLite 设置",
+     L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清理未置顶历史", L"清理未置顶文本", L"清理未置顶图片",
+      L"清理未置顶文件", L"按下组合键", L"需要修饰键", L"每行一个应用名称", L"自动", L"ClipLite 设置",
     L"请选择有效的缓存目录。", L"无法创建缓存目录。", L"目标目录已有历史数据，请选择空目录。",
     L"无法迁移剪贴板历史。", L"无法打开新的缓存目录。", L"选择缓存目录", L"无法更改历史加密设置。",
-    L"历史", L"文本", L"图片", L"文件", L"此操作将永久删除 %zu 条剪贴板记录，是否继续？",
-    L"此操作将永久删除 %zu 条%ls记录，是否继续？", L"确认清理", L"已取消清理",
-    L"没有可清理的%ls记录", L"已清理 %zu 条%ls记录", L"清理失败，历史记录未改变",
+      L"历史", L"文本", L"图片", L"文件", L"此操作将永久删除 %zu 条未置顶剪贴板记录，置顶记录会保留，是否继续？",
+     L"此操作将永久删除 %zu 条未置顶%ls记录，置顶记录会保留，是否继续？", L"确认清理", L"已取消清理",
+     L"没有可清理的未置顶%ls记录", L"已清理 %zu 条未置顶%ls记录，置顶记录已保留", L"清理失败，历史记录未改变",
     L"确认保留策略变更", L"降低保留限制可能永久删除现有剪贴板记录，是否继续？",
     L"剪贴板历史", L"清空", L"全部", L"置顶", L"文本", L"图片", L"文件", L"其他",
     L"剪贴板", L"暂无剪贴板记录", L"粘贴", L"粘贴为纯文本", L"粘贴为富文本",
@@ -1967,6 +1971,9 @@ void invalidateSettingsNav(HWND hwnd, int tab) {
     if (tab < 0 || tab > 4) return;
     RECT rect{ui(8), ui(50 + tab * 38), ui(180), ui(50 + tab * 38 + 38)};
     InvalidateRect(hwnd, &rect, FALSE);
+    if (g_app && hwnd == g_app->settings && g_app->settingsHeaderOverlay) {
+        InvalidateRect(g_app->settingsHeaderOverlay, &rect, FALSE);
+    }
 }
 
 void invalidatePopupList(HWND hwnd) {
@@ -5185,10 +5192,87 @@ int settingsScrollMax(HWND hwnd) {
     return std::max(0, ui(contentHeight) - viewport);
 }
 
+// 判断当前设置页是否需要滚动内容区域。
+bool settingsTabIsScrollable() {
+    return g_app && (g_app->settingsTab == 0 ||
+                     g_app->settingsTab == kSettingsShortcutPage ||
+                     g_app->settingsTab == 2);
+}
+
 int settingsContentY(int logicalY) {
-    const bool scrollable = g_app->settingsTab == 0 ||
-        g_app->settingsTab == kSettingsShortcutPage || g_app->settingsTab == 2;
-    return ui(logicalY) - ui(scrollable ? g_app->settingsScrollOffset : 0);
+    return ui(logicalY) - ui(settingsTabIsScrollable() ? g_app->settingsScrollOffset : 0);
+}
+
+// 计算设置页右侧滚动条的轨道、滑块和最大滚动距离。
+bool settingsScrollbarMetrics(HWND hwnd, int& trackTop, int& trackBottom,
+                              int& thumbTop, int& thumbHeight, int& maxOffset,
+                              int contentHeight = 0) {
+    if (!g_app || hwnd != g_app->settings || !settingsTabIsScrollable()) return false;
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const int viewport = std::max(1, static_cast<int>(client.bottom) - ui(kSettingsHeaderHeight));
+    if (contentHeight <= 0) contentHeight = ui(buildSettingsLayout(hwnd).contentBottom);
+    maxOffset = std::max(0, contentHeight - viewport);
+    if (maxOffset == 0) return false;
+
+    trackTop = ui(kSettingsHeaderHeight + 8);
+    trackBottom = client.bottom - ui(8);
+    const int trackHeight = std::max(1, trackBottom - trackTop);
+    thumbHeight = std::min(trackHeight,
+                           std::max(ui(28), trackHeight * viewport /
+                               std::max(1, contentHeight)));
+    thumbTop = trackTop + (trackHeight - thumbHeight) * g_app->settingsScrollOffset /
+        std::max(1, maxOffset);
+    return true;
+}
+
+// 判断鼠标是否位于设置页滚动条滑块上。
+bool settingsScrollbarThumbAt(HWND hwnd, int x, int y) {
+    if (!g_app || hwnd != g_app->settings) return false;
+    int trackTop = 0;
+    int trackBottom = 0;
+    int thumbTop = 0;
+    int thumbHeight = 0;
+    int maxOffset = 0;
+    if (!settingsScrollbarMetrics(hwnd, trackTop, trackBottom, thumbTop, thumbHeight, maxOffset)) {
+        return false;
+    }
+    (void)trackTop;
+    (void)trackBottom;
+    (void)maxOffset;
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    return x >= client.right - ui(18) && x < client.right - ui(3) &&
+        y >= thumbTop && y < thumbTop + thumbHeight;
+}
+
+// 绘制设置页右侧的抗锯齿滚动条。
+void paintSettingsScrollbar(HWND hwnd, HDC dc, int contentHeight) {
+    if (!g_app) return;
+    int trackTop = 0;
+    int trackBottom = 0;
+    int thumbTop = 0;
+    int thumbHeight = 0;
+    int maxOffset = 0;
+    if (!settingsScrollbarMetrics(hwnd, trackTop, trackBottom, thumbTop, thumbHeight,
+                                  maxOffset, contentHeight)) {
+        return;
+    }
+    (void)maxOffset;
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const bool highContrast = highContrastEnabled();
+    const COLORREF trackColor = highContrast ? GetSysColor(COLOR_SCROLLBAR) :
+        settingsThemeColor(RGB(232, 236, 240), RGB(44, 52, 62));
+    const COLORREF thumbColor = highContrast ? GetSysColor(COLOR_HIGHLIGHT) :
+        (g_app->settingsScrollDragging ? settingsAccentColor() :
+            settingsThemeColor(RGB(167, 178, 188), RGB(111, 123, 137)));
+    const RECT track{client.right - ui(13), trackTop,
+                     client.right - ui(7), trackBottom};
+    const RECT thumb{client.right - ui(15), thumbTop,
+                     client.right - ui(5), thumbTop + thumbHeight};
+    drawGdiRoundedSurface(dc, track, trackColor, trackColor, 3);
+    drawGdiRoundedSurface(dc, thumb, thumbColor, thumbColor, 5);
 }
 
 HFONT createCachedFont(int size, int weight, const wchar_t* face) {
@@ -5534,6 +5618,7 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
     RestoreDC(dc, bodyClip);
+    paintSettingsScrollbar(hwnd, dc, ui(layout.contentBottom));
 
 #ifdef _DEBUG
     {
@@ -6201,7 +6286,7 @@ void refreshSettingsLocalizedControls(HWND hwnd) {
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
-void updateSettingsTabControls(HWND hwnd) {
+void updateSettingsTabControls(HWND hwnd, bool redraw = true) {
     g_app->hoveredSettingsControl = 0;
     if (g_app->shortcutCaptureControl) cancelSettingsShortcutCapture(hwnd);
     g_app->settingsScrollOffset = std::clamp(g_app->settingsScrollOffset, 0, settingsScrollMax(hwnd));
@@ -6243,6 +6328,16 @@ void updateSettingsTabControls(HWND hwnd) {
                               g_app->settingsTab == kSettingsShortcutPage ||
                               g_app->settingsTab == 2)
         ? ui(g_app->settingsScrollOffset) : 0;
+    struct SettingsControlClip {
+        HWND control = nullptr;
+        int top = 0;
+        int width = 0;
+        int height = 0;
+        bool visible = false;
+        bool fixed = false;
+    };
+    std::vector<SettingsControlClip> controlClips;
+    std::vector<HWND> changedControls;
     HDWP defer = BeginDeferWindowPos(static_cast<int>(sizeof(ids) / sizeof(ids[0])));
     auto show = [&, hwnd, client, bodyTop, scrollOffset, tabChanged](int id, int x, int y,
                                                                    int width, int height,
@@ -6253,7 +6348,11 @@ void updateSettingsTabControls(HWND hwnd) {
         GetClassNameW(control, className, static_cast<int>(sizeof(className) / sizeof(className[0])));
         const bool edit = std::wcscmp(className, L"Edit") == 0;
         const int top = ui(y) - (fixed ? 0 : scrollOffset);
-        const bool visible = fixed || (top >= bodyTop && top + ui(height) <= client.bottom);
+        const int scaledWidth = ui(width);
+        const int scaledHeight = ui(height);
+        const bool visible = fixed || (top < client.bottom && top + scaledHeight > bodyTop);
+        controlClips.push_back(SettingsControlClip{control, top, scaledWidth, scaledHeight,
+                                                   visible, fixed});
         RECT current{};
         GetWindowRect(control, &current);
         MapWindowPoints(nullptr, hwnd, reinterpret_cast<POINT*>(&current), 2);
@@ -6261,6 +6360,7 @@ void updateSettingsTabControls(HWND hwnd) {
             current.bottom - current.top != ui(height);
         const bool moved = current.left != ui(x) || current.top != top;
         if (moved || resized || static_cast<bool>(IsWindowVisible(control)) != visible) {
+            changedControls.push_back(control);
             UINT flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOREDRAW;
             if (!moved) flags |= SWP_NOMOVE;
             if (!resized) flags |= SWP_NOSIZE;
@@ -6299,7 +6399,38 @@ void updateSettingsTabControls(HWND hwnd) {
         show(kSettingJoinQqGroup, 520, 378, 150, 30);
     }
     if (defer) EndDeferWindowPos(defer);
-    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+    for (const SettingsControlClip& clip : controlClips) {
+        if (!clip.visible || clip.fixed) {
+            SetWindowRgn(clip.control, nullptr, TRUE);
+            continue;
+        }
+        const int clipTop = std::max(0, bodyTop - clip.top);
+        const int clipBottom = std::min(clip.height,
+                                        static_cast<int>(client.bottom) - clip.top);
+        if (clipTop <= 0 && clipBottom >= clip.height) {
+            SetWindowRgn(clip.control, nullptr, TRUE);
+            continue;
+        }
+        HRGN region = CreateRectRgn(0, clipTop, clip.width, std::max(clipTop, clipBottom));
+        if (region && SetWindowRgn(clip.control, region, TRUE) == 0) DeleteObject(region);
+    }
+    for (HWND control : changedControls) InvalidateRect(control, nullptr, FALSE);
+    if (redraw) InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+// 更新设置页滚动位置，并立即重排可见子控件。
+void setSettingsScrollPosition(HWND hwnd, int position, int maximum = -1) {
+    if (!g_app || !hwnd) return;
+    const int next = std::clamp(position, 0,
+                                maximum >= 0 ? maximum : settingsScrollMax(hwnd));
+    if (next == g_app->settingsScrollOffset) return;
+    g_app->settingsScrollOffset = next;
+    updateSettingsTabControls(hwnd, false);
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const RECT body{ui(kSettingsSidebarWidth), ui(kSettingsHeaderHeight),
+                    client.right, client.bottom};
+    InvalidateRect(hwnd, &body, FALSE);
 }
 
 void appendPasteMenu(HMENU menu, const ClipItem& item) {
@@ -7696,13 +7827,27 @@ const wchar_t* settingsClearActionLabel(int id) {
     }
 }
 
-std::size_t settingsClearActionCount(int id) {
-    if (id == kSettingClear) return g_app->store.activeCount();
+// 判断设置页主动清除操作是否命中某条历史记录。
+bool settingsClearActionMatchesItem(int id, const ClipItem& item) {
+    if (id == kSettingClear) return true;
     const ClipType type = id == kSettingClearText ? ClipType::Text :
         id == kSettingClearImage ? ClipType::Image :
         id == kSettingClearFiles ? ClipType::Files :
         ClipType::Html;
-    return g_app->store.countType(type);
+    return type == ClipType::Text
+        ? (item.type == ClipType::Text || item.type == ClipType::Html)
+        : type == ClipType::Image
+            ? (item.type == ClipType::Image || item.type == ClipType::ImageV5)
+            : item.type == type;
+}
+
+std::size_t settingsClearActionCount(int id) {
+    if (!g_app) return 0;
+    std::size_t count = 0;
+    for (const ClipItem& item : g_app->store.items()) {
+        if (!item.pinned && settingsClearActionMatchesItem(id, item)) ++count;
+    }
+    return count;
 }
 
 bool confirmSettingsClear(HWND hwnd, int id, std::size_t count) {
@@ -7718,43 +7863,13 @@ bool confirmSettingsClear(HWND hwnd, int id, std::size_t count) {
                        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
 }
 
-// 统计批量清除操作将删除的置顶记录数量。
-std::size_t settingsPinnedClearActionCount(int id) {
-    if (!g_app) return 0;
-    std::size_t count = 0;
-    for (const ClipItem& item : g_app->store.items()) {
-        const bool matches = id == kSettingClear ||
-            (id == kSettingClearText && (item.type == ClipType::Text || item.type == ClipType::Html)) ||
-            (id == kSettingClearImage && (item.type == ClipType::Image || item.type == ClipType::ImageV5)) ||
-            (id == kSettingClearFiles && item.type == ClipType::Files);
-        if (matches && item.pinned) ++count;
-    }
-    return count;
-}
-
-// 在批量清除确认后，单独确认置顶记录也会被主动删除。
-bool confirmPinnedSettingsClear(HWND hwnd, int id, std::size_t count) {
-    if (count == 0) return true;
-    wchar_t message[256]{};
-    if (id == kSettingClear) {
-        swprintf_s(message, tr(L"This will also permanently remove %zu pinned records. Continue?",
-                               L"此操作还将永久删除 %zu 条置顶记录，是否继续？"), count);
-    } else {
-        swprintf_s(message, tr(L"This will also permanently remove %zu pinned %ls records. Continue?",
-                               L"此操作还将永久删除 %zu 条置顶%ls记录，是否继续？"),
-                    count, settingsClearActionLabel(id));
-    }
-    return MessageBoxW(hwnd, message, settingsLocale().confirmClearTitle,
-                       MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
-}
-
 bool clearSettingsAction(int id) {
-    if (id == kSettingClear) return g_app->store.clear();
+    if (id == kSettingClear) return g_app->store.clearUnpinned();
     const ClipType type = id == kSettingClearText ? ClipType::Text :
         id == kSettingClearImage ? ClipType::Image :
         id == kSettingClearFiles ? ClipType::Files :
         ClipType::Html;
-    return g_app->store.clearType(type);
+    return g_app->store.clearTypeUnpinned(type);
 }
 
 void openDiagnosticLog(HWND hwnd) {
@@ -8633,6 +8748,29 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
     }
+    if (g_app && hwnd == g_app->settingsHeaderOverlay) {
+        if (message == WM_ERASEBKGND) return 1;
+        if (message == WM_PAINT) {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd, &ps);
+            if (dc && g_app->settings) paintSettingsContent(g_app->settings, dc);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        if (message == WM_MOUSEMOVE || message == WM_MOUSELEAVE ||
+            message == WM_SETCURSOR || message == WM_LBUTTONDOWN ||
+            message == WM_LBUTTONUP || message == WM_MOUSEWHEEL) {
+            const LRESULT result = g_app->settings
+                ? SendMessageW(g_app->settings, message, wParam, lParam)
+                : DefWindowProcW(hwnd, message, wParam, lParam);
+            if (message != WM_SETCURSOR) InvalidateRect(hwnd, nullptr, FALSE);
+            return result;
+        }
+        if (message == WM_NCDESTROY) {
+            g_app->settingsHeaderOverlay = nullptr;
+            return 0;
+        }
+    }
     if (hwnd == g_app->settings && message == WM_DRAWITEM) {
         const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
         if (item && item->CtlType == ODT_BUTTON && isSettingsToggle(GetDlgCtrlID(item->hwndItem))) {
@@ -8695,6 +8833,18 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                     SendMessageW(child, WM_SETFONT,
                                  reinterpret_cast<WPARAM>(g_app->settingsMultilineFont), TRUE);
                 }
+            }
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            g_app->settingsHeaderOverlay = CreateWindowExW(
+                0, L"ClipLiteSettingsHeader", L"",
+                WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+                0, 0, client.right, ui(kSettingsHeaderHeight), hwnd, nullptr,
+                GetModuleHandleW(nullptr), nullptr);
+            if (g_app->settingsHeaderOverlay) {
+                SetWindowPos(g_app->settingsHeaderOverlay, HWND_TOP,
+                             0, 0, client.right, ui(kSettingsHeaderHeight),
+                             SWP_NOACTIVATE | SWP_SHOWWINDOW);
             }
             return 0;
         }
@@ -8874,6 +9024,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         g_app->popupOpenInputTick = 0;
     }
     if (message == WM_DESTROY && hwnd == g_app->settings) {
+        if (g_app->settingsScrollDragging) {
+            g_app->settingsScrollDragging = false;
+            ReleaseCapture();
+        }
         closeSupportProcess();
         if (g_app->languageDropdown) {
             DestroyWindow(g_app->languageDropdown);
@@ -9168,8 +9322,20 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
     if (hwnd == g_app->settings) {
         if (message == WM_SIZE) {
+            if (g_app->settingsScrollDragging) {
+                g_app->settingsScrollDragging = false;
+                ReleaseCapture();
+            }
             g_app->settingsScrollOffset = std::clamp(g_app->settingsScrollOffset,
                                                       0, settingsScrollMax(hwnd));
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            if (g_app->settingsHeaderOverlay) {
+                SetWindowPos(g_app->settingsHeaderOverlay, HWND_TOP,
+                             0, 0, client.right, ui(kSettingsHeaderHeight),
+                             SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                InvalidateRect(g_app->settingsHeaderOverlay, nullptr, FALSE);
+            }
             updateSettingsTabControls(hwnd);
             invalidatePopupList(hwnd);
             return 0;
@@ -9224,18 +9390,39 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == WM_MOUSEMOVE) {
             const int x = GET_X_LPARAM(lParam);
             const int y = GET_Y_LPARAM(lParam);
+            if (g_app->settingsScrollDragging) {
+                int trackTop = 0;
+                int trackBottom = 0;
+                int thumbTop = 0;
+                int thumbHeight = 0;
+                int maxOffset = 0;
+                if (settingsScrollbarMetrics(hwnd, trackTop, trackBottom, thumbTop,
+                                             thumbHeight, maxOffset)) {
+                    const int travel = std::max(1, trackBottom - trackTop - thumbHeight);
+                    const int delta = y - g_app->settingsScrollDragStartY;
+                    setSettingsScrollPosition(hwnd,
+                        g_app->settingsScrollDragStartOffset + delta * maxOffset / travel,
+                        maxOffset);
+                }
+                SetCursor(LoadCursorW(nullptr, IDC_SIZENS));
+                return 0;
+            }
             const int themeMode = settingsThemeModeAtPoint(hwnd, x, y);
+            RECT client{};
+            GetClientRect(hwnd, &client);
             if (themeMode != g_app->hoveredSettingsThemeMode) {
                 g_app->hoveredSettingsThemeMode = themeMode;
-                RECT client{};
-                GetClientRect(hwnd, &client);
                 RECT themeRect{ui(0), ui(10), client.right, ui(48)};
                 InvalidateRect(hwnd, &themeRect, FALSE);
             }
-            const bool interactive = settingsThemeModeAtPoint(hwnd, x, y) >= 0 ||
+            const bool scrollbarHover = settingsTabIsScrollable() &&
+                x >= client.right - ui(18) && x < client.right - ui(3) &&
+                y >= ui(kSettingsHeaderHeight) && settingsScrollbarThumbAt(hwnd, x, y);
+            const bool interactive = scrollbarHover || settingsThemeModeAtPoint(hwnd, x, y) >= 0 ||
                 settingsAccentAtPoint(hwnd, x, y) >= 0 ||
                 (x >= ui(8) && x < ui(180) && y >= ui(50) && y < ui(50 + 5 * 38));
-            SetCursor(LoadCursorW(nullptr, interactive ? IDC_HAND : IDC_ARROW));
+            SetCursor(LoadCursorW(nullptr, scrollbarHover ? IDC_SIZENS :
+                                  (interactive ? IDC_HAND : IDC_ARROW)));
             const int tab = x >= ui(8) && x < ui(180) && y >= ui(50) && y < ui(50 + 5 * 38)
                 ? std::clamp((y - ui(50)) / ui(38), 0, 4) : -1;
             if (tab != g_app->hoveredSettingsTab) {
@@ -9266,20 +9453,11 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == WM_MOUSEWHEEL) {
             POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             ScreenToClient(hwnd, &point);
-            if ((g_app->settingsTab == 0 ||
-                 g_app->settingsTab == kSettingsShortcutPage ||
-                 g_app->settingsTab == 2) &&
+            if (settingsTabIsScrollable() &&
                 point.x >= ui(kSettingsSidebarWidth) &&
                 point.y >= ui(kSettingsHeaderHeight)) {
                 const int direction = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -48 : 48;
-                const int next = std::clamp(g_app->settingsScrollOffset + direction,
-                                            0, settingsScrollMax(hwnd));
-                if (next != g_app->settingsScrollOffset) {
-                    g_app->settingsScrollOffset = next;
-                    updateSettingsTabControls(hwnd);
-                    RedrawWindow(hwnd, nullptr, nullptr,
-                                 RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_NOERASE);
-                }
+                setSettingsScrollPosition(hwnd, g_app->settingsScrollOffset + direction);
                 return 0;
             }
         }
@@ -9302,6 +9480,15 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             POINT point{};
             GetCursorPos(&point);
             ScreenToClient(hwnd, &point);
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            if (g_app->settingsScrollDragging ||
+                (settingsTabIsScrollable() && point.x >= client.right - ui(18) &&
+                 point.x < client.right - ui(3) && point.y >= ui(kSettingsHeaderHeight) &&
+                 settingsScrollbarThumbAt(hwnd, point.x, point.y))) {
+                SetCursor(LoadCursorW(nullptr, IDC_SIZENS));
+                return TRUE;
+            }
             if (settingsThemeModeAtPoint(hwnd, point.x, point.y) >= 0 ||
                 settingsAccentAtPoint(hwnd, point.x, point.y) >= 0) {
                 SetCursor(LoadCursorW(nullptr, IDC_HAND));
@@ -9328,6 +9515,35 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 setSettingsAccent(hwnd, accent);
                 return 0;
             }
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            if (settingsTabIsScrollable() &&
+                x >= client.right - ui(18) && x < client.right - ui(3) &&
+                y >= ui(kSettingsHeaderHeight)) {
+                int trackTop = 0;
+                int trackBottom = 0;
+                int thumbTop = 0;
+                int thumbHeight = 0;
+                int maxOffset = 0;
+                if (!settingsScrollbarMetrics(hwnd, trackTop, trackBottom, thumbTop,
+                                              thumbHeight, maxOffset) ||
+                    y < trackTop || y >= trackBottom) {
+                    return 0;
+                }
+                SetFocus(hwnd);
+                if (y >= thumbTop && y < thumbTop + thumbHeight) {
+                    g_app->settingsScrollDragging = true;
+                    g_app->settingsScrollDragStartY = y;
+                    g_app->settingsScrollDragStartOffset = g_app->settingsScrollOffset;
+                    SetCapture(hwnd);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                } else {
+                    const int page = std::max(1, static_cast<int>(client.bottom) - ui(kSettingsHeaderHeight));
+                    setSettingsScrollPosition(hwnd,
+                        g_app->settingsScrollOffset + (y < thumbTop ? -page : page));
+                }
+                return 0;
+            }
             SetFocus(hwnd);
             if (g_app->languageDropdown) animateLanguageDropdown(hwnd, 0.0f);
             const int toggleId = settingsToggleAtPoint(g_app->settingsTab, x, y);
@@ -9346,6 +9562,12 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
             }
+        }
+        if (message == WM_LBUTTONUP && g_app->settingsScrollDragging) {
+            g_app->settingsScrollDragging = false;
+            ReleaseCapture();
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
         }
         if (message == WM_COMMAND) {
             if (HIWORD(wParam) == EN_CHANGE &&
@@ -9406,11 +9628,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (isSettingsClearAction(actionId)) {
                 const std::size_t count = settingsClearActionCount(actionId);
                 if (!confirmSettingsClear(hwnd, actionId, count)) {
-                    setSettingsActionFeedback(hwnd, settingsLocale().clearCancelled, true);
-                    return 0;
-                }
-                const std::size_t pinnedCount = settingsPinnedClearActionCount(actionId);
-                if (!confirmPinnedSettingsClear(hwnd, actionId, pinnedCount)) {
                     setSettingsActionFeedback(hwnd, settingsLocale().clearCancelled, true);
                     return 0;
                 }
@@ -10057,6 +10274,7 @@ void openSettings() {
     g_app->hoveredSettingsThemeMode = -1;
     g_app->hoveredSettingsControl = 0;
     g_app->settingsScrollOffset = 0;
+    g_app->settingsScrollDragging = false;
     g_app->toggleAnimationControl = nullptr;
     g_app->settingsThemeAnimating = false;
     const int width = ui(kSettingsWidth);
@@ -10066,7 +10284,7 @@ void openSettings() {
         (monitorInfo.rcWork.right - monitorInfo.rcWork.left - width) / 2;
     const int y = monitorInfo.rcWork.top +
         (monitorInfo.rcWork.bottom - monitorInfo.rcWork.top - height) / 2;
-    g_app->settings = CreateWindowExW(WS_EX_APPWINDOW, L"ClipLiteSettings",
+    g_app->settings = CreateWindowExW(WS_EX_APPWINDOW | WS_EX_COMPOSITED, L"ClipLiteSettings",
                                       settingsLocale().windowTitle,
                                        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
                                            WS_MINIMIZEBOX | WS_CLIPCHILDREN,
@@ -10076,6 +10294,9 @@ void openSettings() {
         refreshSettingsFrame(g_app->settings);
         SendMessageW(g_app->settings, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(clipLiteIcon()));
         SendMessageW(g_app->settings, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(clipLiteIcon()));
+        if (g_app->settingsHeaderOverlay) {
+            InvalidateRect(g_app->settingsHeaderOverlay, nullptr, FALSE);
+        }
     }
     ShowWindow(g_app->settings, SW_SHOW);
     UpdateWindow(g_app->settings);
@@ -10238,6 +10459,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     settingsClass.style = 0;
     settingsClass.lpszClassName = L"ClipLiteSettings";
     RegisterClassW(&settingsClass);
+    WNDCLASSW settingsHeaderClass = settingsClass;
+    settingsHeaderClass.lpszClassName = L"ClipLiteSettingsHeader";
+    RegisterClassW(&settingsHeaderClass);
     WNDCLASSW dropdownClass = popupClass;
     dropdownClass.style = CS_HREDRAW | CS_VREDRAW;
     dropdownClass.hbrBackground = nullptr;

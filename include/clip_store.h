@@ -72,6 +72,8 @@ public:
     bool pruneCategory(ClipType type, std::size_t maxItems, std::uint64_t maxBytes);
     bool clear();
     bool clearType(ClipType type);
+    bool clearUnpinned();
+    bool clearTypeUnpinned(ClipType type);
     bool pruneExpired(std::uint64_t timestamp);
 
     std::vector<std::size_t> search(const std::string& query) const;

@@ -332,16 +332,30 @@ int main() {
         !pinnedLimit.append(ClipType::Text, "normal", clipLiteHash("normal"))) return 73;
     if (!pinnedLimit.pruneCategory(ClipType::Text, 1, 1) ||
         pinnedLimit.activeCount() != 1 || !pinnedLimit.items()[0].pinned) return 74;
-    if (!pinnedLimit.clearType(ClipType::Text) || pinnedLimit.activeCount() != 0) return 75;
+    if (!pinnedLimit.append(ClipType::Text, "normal-two", clipLiteHash("normal-two")) ||
+        !pinnedLimit.clearTypeUnpinned(ClipType::Text) ||
+        pinnedLimit.activeCount() != 1 || !pinnedLimit.items()[0].pinned) return 75;
+    if (!pinnedLimit.clearType(ClipType::Text) || pinnedLimit.activeCount() != 0) return 76;
     pinnedLimit.clear();
+
+    ClipStore allUnpinned(10);
+    allUnpinned.open();
+    allUnpinned.clear();
+    if (!allUnpinned.append(ClipType::Text, "pinned-all", clipLiteHash("pinned-all")) ||
+        !allUnpinned.togglePinned(0) ||
+        !allUnpinned.append(ClipType::Text, "normal-all", clipLiteHash("normal-all")) ||
+        !allUnpinned.clearUnpinned() || allUnpinned.activeCount() != 1 ||
+        !allUnpinned.items()[0].pinned) return 77;
+    if (!allUnpinned.clear() || allUnpinned.activeCount() != 0) return 78;
+    allUnpinned.clear();
 
     ClipStore textCategory(10);
     textCategory.open();
     textCategory.clear();
     if (!textCategory.append(ClipType::Text, "plain", clipLiteHash("plain")) ||
-        !textCategory.append(ClipType::Html, "<b>rich</b>", clipLiteHash("<b>rich</b>"))) return 58;
-    if (textCategory.countType(ClipType::Text) != 2) return 59;
-    if (!textCategory.clearType(ClipType::Text) || textCategory.activeCount() != 0) return 60;
+        !textCategory.append(ClipType::Html, "<b>rich</b>", clipLiteHash("<b>rich</b>"))) return 79;
+    if (textCategory.countType(ClipType::Text) != 2) return 80;
+    if (!textCategory.clearType(ClipType::Text) || textCategory.activeCount() != 0) return 81;
 
     ClipStore merged(10);
     merged.open();

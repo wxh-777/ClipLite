@@ -1192,6 +1192,38 @@ bool ClipStore::clearType(ClipType type) {
     return false;
 }
 
+bool ClipStore::clearUnpinned() {
+    const auto oldSize = items_.size();
+    const std::vector<ClipItem> backup = items_;
+    items_.erase(std::remove_if(items_.begin(), items_.end(),
+                                [](const ClipItem& item) {
+                                    return !item.pinned;
+    }), items_.end());
+    if (items_.size() == oldSize) return true;
+    if (rebuildFile()) {
+        ++revision_;
+        return true;
+    }
+    items_ = backup;
+    return false;
+}
+
+bool ClipStore::clearTypeUnpinned(ClipType type) {
+    const auto oldSize = items_.size();
+    const std::vector<ClipItem> backup = items_;
+    items_.erase(std::remove_if(items_.begin(), items_.end(),
+                                [type](const ClipItem& item) {
+                                    return !item.pinned && matchesType(type, item.type);
+    }), items_.end());
+    if (items_.size() == oldSize) return true;
+    if (rebuildFile()) {
+        ++revision_;
+        return true;
+    }
+    items_ = backup;
+    return false;
+}
+
 bool ClipStore::pruneExpired(std::uint64_t timestamp) {
     if (timestamp == 0 || items_.empty()) return true;
     const std::vector<ClipItem> backup = items_;

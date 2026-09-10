@@ -2,9 +2,14 @@
 
 ## Unreleased
 
+- Added a draggable scrollbar to long settings pages, with wheel scrolling and page jumps on the track.
+- Reduced settings-page scroll redraws and repeated layout measurements to minimize flicker and scrolling overhead.
+- Fixed settings controls repeatedly hiding and showing at the viewport edges; controls are now retained and clipped outside the content area.
+- Enabled composited drawing for the settings window so inputs, toggles, and buttons are presented in one frame while scrolling repositions them.
+- Added a fixed header overlay to prevent scrolled content from drawing into the title-bar area.
 - Fixed category storage limits being remapped after restart and saved pending changes from an open settings window during application exit.
 - Fixed category-space and global storage limits not being enforced immediately after new clipboard records were added.
-- Added a second confirmation when bulk, category, or all-history clearing includes pinned records; single-record deletion remains immediate.
+- Storage-management clearing now removes only unpinned records, keeps pinned records, and states this behavior in confirmation and result text.
 - Improved single-record deletion in the history window by avoiding synchronous reprocessing of all history content, reducing UI stalls with large image histories.
 - Fixed a second click at the same delete-button position after a list refresh from incorrectly closing the history window.
 - Fixed the history list jumping back to the top after deleting a record; the current scroll position is now preserved.
