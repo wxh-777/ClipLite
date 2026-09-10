@@ -2,7 +2,7 @@
 
 ClipLite 是一款仅支持 Windows 的原生剪贴板历史工具。它使用 C++17、Win32 API 和 GDI/GDI+ 构建，不依赖 WebView、Electron、WinUI、Qt 或其他大型运行时，重点是低常驻内存、可靠保存剪贴板格式和便携发布。
 
-当前正式版本：**1.1.0**（x64）
+当前正式版本：**1.2.0**（x64）
 
 英文文档：[README.en.md](README.en.md)
 
@@ -17,7 +17,7 @@ ClipLite 从一开始就希望把剪贴板历史做得更克制：程序尽量�
 - 使用 `Alt+V` 打开历史窗口，可选替换 Windows 的 `Win+V`。
 - 捕获并恢复纯文本、HTML、文件列表、DIB 和 DIBV5 图片；文件列表中的图片文件按需显示缩略图。
 - 支持搜索、按类型筛选，以及按时间范围、内容长度、来源应用多选和排序方式组合筛选；支持置顶、删除、清空和自动粘贴。
-- 支持独立原图预览浮窗；可在设置或历史记录右键菜单中选择自动预览、按键预览或关闭预览，按键预览默认使用 `F2`。
+- 支持独立原图预览浮窗；可在设置或历史记录右键菜单中选择自动预览、按键预览或关闭预览，按键预览默认使用 `F2`；长文本支持滚轮滚动，图片支持以鼠标位置为中心缩放和拖拽查看。
 - 搜索默认点击后直接获得输入焦点；可在设置中开启兼容模式，保留原应用前台并使用 `Ctrl+Space` 进入中文输入法。
 - 设置页内容较长时显示右侧滚动条，支持滚轮、轨道分页和鼠标拖动滑块。
 - 支持纯文本粘贴和富文本粘贴，图片按需读取并使用受限的内存与磁盘缩略图缓存；文件记录中的路径失效时会在列表标记并在粘贴前提示。
@@ -31,11 +31,11 @@ ClipLite 从一开始就希望把剪贴板历史做得更克制：程序尽量�
 
 历史窗口（含图片记录）：
 
-![ClipLite 历史窗口](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.1.0/docs/screenshots/history.png)
+![ClipLite 历史窗口](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.0/docs/screenshots/history.png)
 
 设置窗口：
 
-![ClipLite 设置窗口](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.1.0/docs/screenshots/settings.png)
+![ClipLite 设置窗口](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.0/docs/screenshots/settings.png)
 
 ## 性能与体积
 
@@ -80,8 +80,8 @@ ClipLite 更适合希望“复制过的内容方便找回，但程序不要拖�
 
 正式发布包含两种 Windows x64 形式：
 
-- 安装包：`ClipLite-Setup-1.1.0-x64.exe`。支持自定义安装目录、开始菜单/桌面快捷方式和标准卸载。
-- 便携包：`ClipLite-1.1.0-portable-win-x64.zip`。解压后复制整个目录即可使用，数据保存在其中的 `data\\` 目录。
+- 安装包：`ClipLite-Setup-1.2.0-x64.exe`。支持自定义安装目录、开始菜单/桌面快捷方式和标准卸载。
+- 便携包：`ClipLite-1.2.0-portable-win-x64.zip`。解压后复制整个目录即可使用，数据保存在其中的 `data\\` 目录。
 
 便携包中的 `SHA256SUM.txt` 用于校验 `ClipLite.exe`。首次运行前请确认下载来源和文件校验值。
 

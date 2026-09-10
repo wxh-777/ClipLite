@@ -1,7 +1,9 @@
 # Changelog
 
-## Unreleased
+## [1.2.0] - 2026-09-10
 
+- Added drag-to-pan support for enlarged original image previews.
+- Added mouse-wheel scrolling for long text previews, and mouse-position-centered zooming for original images; zooming re-renders the original image instead of enlarging a list thumbnail.
 - Added a draggable scrollbar to long settings pages, with wheel scrolling and page jumps on the track.
 - Reduced settings-page scroll redraws and repeated layout measurements to minimize flicker and scrolling overhead.
 - Fixed settings controls repeatedly hiding and showing at the viewport edges; controls are now retained and clipped outside the content area.
@@ -14,6 +16,9 @@
 - Fixed a second click at the same delete-button position after a list refresh from incorrectly closing the history window.
 - Fixed the history list jumping back to the top after deleting a record; the current scroll position is now preserved.
 - Enlarged the history-list delete icon hover and click target to make it easier to activate.
+- Fixed holding the preview key while previewing the same record again from showing an empty preview window; releasing the key now clears the record state and reloads the content correctly.
+- Added a separate original-content preview popup. Settings and history context menus support automatic preview, hold-key preview, and disabled preview; hold-key preview uses `F2` by default and does not change history layout or single-click paste behavior.
+- Original image previews read DIB/DIBV5 payloads or file images on demand instead of reusing thumbnail-cache entries; expired background results are discarded and released.
 - Improved image-list scrolling by keeping a fixed anti-aliased preview placeholder while thumbnails load instead of switching from `[Image]` text to the rendered thumbnail.
 - Fixed stale image-preview generations filling the queue and preventing current-viewport thumbnails from being scheduled after scrolling.
 - Fixed loading thumbnail entries being evicted at the memory-cache limit before their background result arrived.
@@ -49,8 +54,8 @@
 
 ### Build and Verification
 
-- Unified the application, resources, CMake, installer, package script, and both READMEs on version `1.1.0`.
-- x64 Release build, `ClipLiteStore` CTest, and resource measurement passed; the current Release baseline is a `587.5 KB` executable, `53.03 ms` startup, `13.73 MB` Working Set, `2.50 MB` Private Bytes, GDI `13`, and USER `10`.
+- Unified the application, resources, CMake, installer, package script, and both READMEs on version `1.2.0`.
+- x64 Release build, `ClipLiteStore` CTest, history-window stress test `100/100`, and package generation passed; the current Release baseline is a `658 KB` executable, `287.56 ms` startup, `13.69 MB` Working Set, `2.60 MB` Private Bytes, GDI `13`, and USER `10`.
 
 ## [1.0.5] - 2026-08-26
 

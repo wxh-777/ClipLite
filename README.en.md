@@ -2,7 +2,7 @@
 
 ClipLite is a lightweight native clipboard history manager for Windows. It is built with C++17, the Win32 API, and GDI/GDI+, without WebView, Electron, WinUI, Qt, or another large runtime. The project prioritizes low idle memory usage, reliable clipboard format handling, and portable distribution.
 
-Current release: **1.1.0** (Windows x64)
+Current release: **1.2.0** (Windows x64)
 
 中文文档：[README.md](README.md)
 
@@ -17,7 +17,7 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 - Open clipboard history with `Alt+V`, with an optional `Win+V` replacement mode.
 - Capture and restore plain text, HTML, file lists, DIB, and DIBV5 images; image files in file lists show on-demand thumbnails.
 - Search and combine type, time range, content length, source application, and sort filters; pin, delete, clear, and paste history items.
-- Supports a separate original-content preview window; choose automatic preview, hold-key preview, or disabled preview in Settings or the history context menu. Hold-key preview uses `F2` by default.
+- Supports a separate original-content preview window; choose automatic preview, hold-key preview, or disabled preview in Settings or the history context menu. Hold-key preview uses `F2` by default. Long text scrolls with the mouse wheel, and images zoom around the mouse position and support dragging.
 - Search focuses the input by default; an optional compatibility mode keeps the original app in the foreground and uses `Ctrl+Space` to enter Chinese IME input.
 - Long settings pages show a scrollbar on the right, with wheel scrolling, page jumps on the track, and a draggable thumb.
 - Paste as plain text or rich text; images are loaded on demand with bounded memory and disk thumbnail caches.
@@ -31,11 +31,11 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 
 History window with an image record:
 
-![ClipLite history window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.1.0/docs/screenshots/history.png)
+![ClipLite history window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.0/docs/screenshots/history.png)
 
 Settings window:
 
-![ClipLite settings window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.1.0/docs/screenshots/settings.png)
+![ClipLite settings window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.0/docs/screenshots/settings.png)
 
 ## Performance and Size
 
@@ -80,8 +80,8 @@ Features and versions vary across tools. This table describes product positionin
 
 The Windows x64 release provides:
 
-- Installer: `ClipLite-Setup-1.1.0-x64.exe`, with a selectable installation directory, shortcuts, and standard uninstall support.
-- Portable package: `ClipLite-1.1.0-portable-win-x64.zip`, which can be extracted and moved as a directory. Data is stored in its `data\\` directory.
+- Installer: `ClipLite-Setup-1.2.0-x64.exe`, with a selectable installation directory, shortcuts, and standard uninstall support.
+- Portable package: `ClipLite-1.2.0-portable-win-x64.zip`, which can be extracted and moved as a directory. Data is stored in its `data\\` directory.
 
 Use `SHA256SUM.txt` in the portable package to verify `ClipLite.exe`. Verify the download source before running the application.
 
