@@ -933,11 +933,73 @@ bool ClipStore::rebuildFile() {
     return true;
 }
 
+// 删除单条记录时直接复制未删除的原始记录，避免重新处理大型 payload。
+bool ClipStore::rebuildFileRaw() {
+    const std::wstring tempPath = path_ + L".tmp";
+    std::FILE* input = nullptr;
+    std::FILE* output = nullptr;
+    _wfopen_s(&input, path_.c_str(), L"rb");
+    if (!input) return false;
+    _wfopen_s(&output, tempPath.c_str(), L"wb");
+    if (!output) {
+        std::fclose(input);
+        return false;
+    }
+
+    std::vector<ClipItem> rebuilt;
+    rebuilt.reserve(items_.size());
+    std::uint64_t offset = 0;
+    char buffer[64 * 1024];
+    const auto fail = [&]() {
+        std::fclose(input);
+        std::fclose(output);
+        DeleteFileW(tempPath.c_str());
+        return false;
+    };
+    for (auto iterator = items_.rbegin(); iterator != items_.rend(); ++iterator) {
+        const ClipItem& old = *iterator;
+        const std::uint64_t size = recordBytes(old);
+        if (old.fileOffset > static_cast<std::uint64_t>(std::numeric_limits<__int64>::max()) - size ||
+            offset > static_cast<std::uint64_t>(std::numeric_limits<__int64>::max()) - size ||
+            _fseeki64(input, static_cast<__int64>(old.fileOffset), SEEK_SET) != 0) {
+            return fail();
+        }
+        std::uint64_t remaining = size;
+        while (remaining > 0) {
+            const std::size_t chunkSize = static_cast<std::size_t>(
+                std::min<std::uint64_t>(remaining, sizeof(buffer)));
+            if (std::fread(buffer, 1, chunkSize, input) != chunkSize ||
+                std::fwrite(buffer, 1, chunkSize, output) != chunkSize) {
+                return fail();
+            }
+            remaining -= chunkSize;
+        }
+        ClipItem item = old;
+        item.fileOffset = offset;
+        rebuilt.push_back(std::move(item));
+        offset += size;
+    }
+    const bool inputClosed = std::fclose(input) == 0;
+    input = nullptr;
+    const bool flushed = std::fflush(output) == 0;
+    const bool outputClosed = std::fclose(output) == 0;
+    output = nullptr;
+    if (!inputClosed || !flushed || !outputClosed ||
+        !MoveFileExW(tempPath.c_str(), path_.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(tempPath.c_str());
+        return false;
+    }
+    std::reverse(rebuilt.begin(), rebuilt.end());
+    items_ = std::move(rebuilt);
+    diskBytes_ = offset;
+    return true;
+}
+
 bool ClipStore::remove(std::size_t index) {
     if (index >= items_.size()) return false;
     const std::vector<ClipItem> backup = items_;
     items_.erase(items_.begin() + index);
-    if (rebuildFile()) {
+    if (rebuildFileRaw()) {
         ++revision_;
         return true;
     }

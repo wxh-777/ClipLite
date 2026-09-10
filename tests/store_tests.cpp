@@ -156,6 +156,21 @@ int main() {
     if (!store.setCategory(0, 2) || store.items()[0].category != 2) return 7;
     if (!store.remove(0) || store.activeCount() != 0) return 8;
 
+    ClipStore removeMany(10);
+    removeMany.open();
+    removeMany.clear();
+    if (!removeMany.append(ClipType::Text, "keep-old", clipLiteHash("keep-old")) ||
+        !removeMany.append(ClipType::Image, "remove", clipLiteHash("remove")) ||
+        !removeMany.append(ClipType::Text, "keep-new", clipLiteHash("keep-new")) ||
+        !removeMany.remove(1) || removeMany.activeCount() != 2) return 85;
+    ClipStore removeManyReopened(10);
+    if (!removeManyReopened.open() || removeManyReopened.activeCount() != 2 ||
+        removeManyReopened.countType(ClipType::Image) != 0 ||
+        removeManyReopened.items()[0].preview != "keep-new" ||
+        removeManyReopened.items()[1].preview != "keep-old") return 86;
+    removeManyReopened.clear();
+    removeMany.clear();
+
     ClipStore formats(10);
     formats.open();
     formats.clear();
@@ -305,15 +320,28 @@ int main() {
         !categoryLimited.append(ClipType::Image, "image-one", clipLiteHash("image-one"))) return 55;
     if (!categoryLimited.pruneCategory(ClipType::Text, 1, 0) ||
         categoryLimited.countType(ClipType::Text) != 1 || categoryLimited.countType(ClipType::Image) != 1) return 56;
+    if (!categoryLimited.pruneCategory(ClipType::Image, 0, 1) ||
+        categoryLimited.countType(ClipType::Image) != 0) return 57;
     categoryLimited.clear();
+
+    ClipStore pinnedLimit(10);
+    pinnedLimit.open();
+    pinnedLimit.clear();
+    if (!pinnedLimit.append(ClipType::Text, "pinned", clipLiteHash("pinned")) ||
+        !pinnedLimit.togglePinned(0) ||
+        !pinnedLimit.append(ClipType::Text, "normal", clipLiteHash("normal"))) return 73;
+    if (!pinnedLimit.pruneCategory(ClipType::Text, 1, 1) ||
+        pinnedLimit.activeCount() != 1 || !pinnedLimit.items()[0].pinned) return 74;
+    if (!pinnedLimit.clearType(ClipType::Text) || pinnedLimit.activeCount() != 0) return 75;
+    pinnedLimit.clear();
 
     ClipStore textCategory(10);
     textCategory.open();
     textCategory.clear();
     if (!textCategory.append(ClipType::Text, "plain", clipLiteHash("plain")) ||
-        !textCategory.append(ClipType::Html, "<b>rich</b>", clipLiteHash("<b>rich</b>"))) return 57;
-    if (textCategory.countType(ClipType::Text) != 2) return 58;
-    if (!textCategory.clearType(ClipType::Text) || textCategory.activeCount() != 0) return 59;
+        !textCategory.append(ClipType::Html, "<b>rich</b>", clipLiteHash("<b>rich</b>"))) return 58;
+    if (textCategory.countType(ClipType::Text) != 2) return 59;
+    if (!textCategory.clearType(ClipType::Text) || textCategory.activeCount() != 0) return 60;
 
     ClipStore merged(10);
     merged.open();

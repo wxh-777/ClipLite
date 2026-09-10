@@ -1094,7 +1094,6 @@ std::wstring formatRelativeTime(std::uint64_t timestamp) {
 }
 
 void loadSettings(Settings& settings) {
-    std::array<CategoryLimit, 4> legacyCategoryLimits{};
     std::FILE* file = nullptr;
     _wfopen_s(&file, settingsPath().c_str(), L"rb");
     if (!file) {
@@ -1155,15 +1154,18 @@ void loadSettings(Settings& settings) {
                     settings.categories[static_cast<std::size_t>(i)].pop_back();
                 }
             }
-            const std::string maxPrefix = "categoryMaxItems" + std::to_string(i) + "=";
-            if (std::strncmp(line, maxPrefix.c_str(), maxPrefix.size()) == 0) {
-                legacyCategoryLimits[static_cast<std::size_t>(i)].maxItems =
-                    std::clamp(std::atoi(line + maxPrefix.size()), 0, 100000);
-            }
-            const std::string diskPrefix = "categoryMaxDiskMb" + std::to_string(i) + "=";
-            if (std::strncmp(line, diskPrefix.c_str(), diskPrefix.size()) == 0) {
-                legacyCategoryLimits[static_cast<std::size_t>(i)].maxDiskMb =
-                    std::clamp(std::atoi(line + diskPrefix.size()), 0, 102400);
+            if (i < kStorageCategoryCount) {
+                const std::size_t categoryIndex = static_cast<std::size_t>(i);
+                const std::string maxPrefix = "categoryMaxItems" + std::to_string(i) + "=";
+                if (std::strncmp(line, maxPrefix.c_str(), maxPrefix.size()) == 0) {
+                    settings.categoryLimits[categoryIndex].maxItems =
+                        std::clamp(std::atoi(line + maxPrefix.size()), 0, 100000);
+                }
+                const std::string diskPrefix = "categoryMaxDiskMb" + std::to_string(i) + "=";
+                if (std::strncmp(line, diskPrefix.c_str(), diskPrefix.size()) == 0) {
+                    settings.categoryLimits[categoryIndex].maxDiskMb =
+                        std::clamp(std::atoi(line + diskPrefix.size()), 0, 102400);
+                }
             }
         }
         if (std::strncmp(line, "language=0", 10) == 0) settings.language = 0;
@@ -1205,17 +1207,6 @@ void loadSettings(Settings& settings) {
         readShortcutValue("shortcutPopupPreviewKey=", settings.popupPreviewHotkey.virtualKey);
     }
     std::fclose(file);
-    const auto mergeLimit = [](const CategoryLimit& first, const CategoryLimit& second) {
-        CategoryLimit result;
-        result.maxItems = first.maxItems == 0 || second.maxItems == 0
-            ? 0 : std::min(100000, first.maxItems + second.maxItems);
-        result.maxDiskMb = first.maxDiskMb == 0 || second.maxDiskMb == 0
-            ? 0 : std::min(102400, first.maxDiskMb + second.maxDiskMb);
-        return result;
-    };
-    settings.categoryLimits[0] = mergeLimit(legacyCategoryLimits[0], legacyCategoryLimits[1]);
-    settings.categoryLimits[1] = legacyCategoryLimits[2];
-    settings.categoryLimits[2] = legacyCategoryLimits[3];
     if (settings.themeMode < 0) settings.themeMode = settings.dark ? 2 : 1;
     settings.dark = settings.themeMode == 2 ||
         (settings.themeMode == 0 && systemThemeIsDark());
@@ -3798,6 +3789,30 @@ void closePopup() {
     g_app->filterMenuOpen = false;
     g_app->popupOpenInputTick = 0;
     if (IsWindow(target)) restorePasteTargetFocus(target);
+}
+
+// 删除后重新计算鼠标下的行，避免列表变化后沿用旧的悬停状态。
+void refreshPopupPointerState(HWND hwnd) {
+    if (!g_app || g_app->popup != hwnd) return;
+    POINT point{};
+    GetCursorPos(&point);
+    ScreenToClient(hwnd, &point);
+    SendMessageW(hwnd, WM_MOUSEMOVE, 0,
+                 MAKELPARAM(static_cast<WORD>(point.x), static_cast<WORD>(point.y)));
+}
+
+bool popupCursorInside(HWND hwnd) {
+    if (!hwnd) return false;
+    POINT point{};
+    if (!GetCursorPos(&point)) return false;
+    RECT rect{};
+    return GetWindowRect(hwnd, &rect) != FALSE && PtInRect(&rect, point) != FALSE;
+}
+
+// 使用比图标更大的统一命中区域，降低删除按钮的点击精度要求。
+bool popupDeleteHitAt(const RECT& client, int rowTop, int x, int y) {
+    return x >= client.right - ui(36) && x < client.right - ui(2) &&
+        y >= rowTop + ui(1) && y < rowTop + ui(38);
 }
 
 void runPopupImageScrollBenchmark() {
@@ -7703,6 +7718,36 @@ bool confirmSettingsClear(HWND hwnd, int id, std::size_t count) {
                        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
 }
 
+// 统计批量清除操作将删除的置顶记录数量。
+std::size_t settingsPinnedClearActionCount(int id) {
+    if (!g_app) return 0;
+    std::size_t count = 0;
+    for (const ClipItem& item : g_app->store.items()) {
+        const bool matches = id == kSettingClear ||
+            (id == kSettingClearText && (item.type == ClipType::Text || item.type == ClipType::Html)) ||
+            (id == kSettingClearImage && (item.type == ClipType::Image || item.type == ClipType::ImageV5)) ||
+            (id == kSettingClearFiles && item.type == ClipType::Files);
+        if (matches && item.pinned) ++count;
+    }
+    return count;
+}
+
+// 在批量清除确认后，单独确认置顶记录也会被主动删除。
+bool confirmPinnedSettingsClear(HWND hwnd, int id, std::size_t count) {
+    if (count == 0) return true;
+    wchar_t message[256]{};
+    if (id == kSettingClear) {
+        swprintf_s(message, tr(L"This will also permanently remove %zu pinned records. Continue?",
+                               L"此操作还将永久删除 %zu 条置顶记录，是否继续？"), count);
+    } else {
+        swprintf_s(message, tr(L"This will also permanently remove %zu pinned %ls records. Continue?",
+                               L"此操作还将永久删除 %zu 条置顶%ls记录，是否继续？"),
+                    count, settingsClearActionLabel(id));
+    }
+    return MessageBoxW(hwnd, message, settingsLocale().confirmClearTitle,
+                       MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
+}
+
 bool clearSettingsAction(int id) {
     if (id == kSettingClear) return g_app->store.clear();
     const ClipType type = id == kSettingClearText ? ClipType::Text :
@@ -9050,6 +9095,32 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                             : 0;
                         if (!g_app->store.appendOrUpdate(type, payload, hash, source, expiresAt)) {
                             appendDiagnosticLog("ERROR", "clipboard: unable to append history record");
+                        } else {
+                            const ClipType categoryType = type == ClipType::Files ? ClipType::Files :
+                                (type == ClipType::Image || type == ClipType::ImageV5
+                                     ? ClipType::Image : ClipType::Text);
+                            const int categoryIndex = categoryType == ClipType::Files ? 2 :
+                                (categoryType == ClipType::Image ? 1 : 0);
+                            const CategoryLimit& categoryLimit =
+                                g_app->settingsData.categoryLimits[static_cast<std::size_t>(categoryIndex)];
+                            if ((categoryLimit.maxItems > 0 || categoryLimit.maxDiskMb > 0) &&
+                                !g_app->store.pruneCategory(
+                                    categoryType, static_cast<std::size_t>(categoryLimit.maxItems),
+                                    static_cast<std::uint64_t>(categoryLimit.maxDiskMb) * 1024ULL * 1024ULL)) {
+                                appendDiagnosticLog("WARN", "clipboard: category limit cleanup failed");
+                            }
+                            if (g_app->settingsData.maxDiskMb > 0 ||
+                                g_app->settingsData.retentionDays > 0) {
+                                const std::uint64_t cutoff = g_app->settingsData.retentionDays > 0
+                                    ? nowUnix() - static_cast<std::uint64_t>(
+                                        g_app->settingsData.retentionDays) * 86400ULL : 0;
+                                if (!g_app->store.prune(
+                                        static_cast<std::size_t>(g_app->settingsData.maxItems),
+                                        static_cast<std::uint64_t>(g_app->settingsData.maxDiskMb) *
+                                            1024ULL * 1024ULL, cutoff)) {
+                                    appendDiagnosticLog("WARN", "clipboard: storage limit cleanup failed");
+                                }
+                            }
                         }
                     } else {
                         g_app->ignoredClipboardHash = 0;
@@ -9338,6 +9409,11 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                     setSettingsActionFeedback(hwnd, settingsLocale().clearCancelled, true);
                     return 0;
                 }
+                const std::size_t pinnedCount = settingsPinnedClearActionCount(actionId);
+                if (!confirmPinnedSettingsClear(hwnd, actionId, pinnedCount)) {
+                    setSettingsActionFeedback(hwnd, settingsLocale().clearCancelled, true);
+                    return 0;
+                }
                 if (clearSettingsAction(actionId)) {
                     wchar_t feedback[160]{};
                     if (count == 0) {
@@ -9392,9 +9468,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             const int row = popupRowAt(point.y);
             const int rowTop = row >= 0 ? popupRowTop(row) : -1;
-            const bool deleteHover = row >= 0 && point.x >= client.right - ui(30) &&
-                point.x < client.right - ui(8) && point.y >= rowTop + ui(5) &&
-                point.y < rowTop + ui(30);
+            const bool deleteHover = row >= 0 && popupDeleteHitAt(client, rowTop, point.x, point.y);
             const bool pinHover = row >= 0 && point.x >= client.right - ui(45) &&
                 point.x < client.right - ui(10) && point.y >= rowTop + ui(kPopupCardHeight - 30) &&
                 point.y < rowTop + ui(kPopupCardHeight);
@@ -9472,6 +9546,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const HWND foreground = GetForegroundWindow();
             POINT cursor{};
             GetCursorPos(&cursor);
+            if (popupCursorInside(hwnd)) {
+                SetTimer(hwnd, kPopupDeactivateTimer, kPopupDeactivateDelayMs, nullptr);
+                return 0;
+            }
             if (g_app->popup != hwnd || g_app->popupOpening ||
                  g_app->popupPinned || g_app->popupOpenedByWinV ||
                  g_app->filterMenuOpen ||
@@ -9611,7 +9689,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             else if (shortcutMatches(g_app->settingsData.popupDeleteHotkey,
                                      static_cast<UINT>(wParam)) && !g_app->visible.empty()) {
                 g_app->store.remove(g_app->visible[static_cast<std::size_t>(g_app->selected)]);
-                refreshVisible();
+                refreshVisible(true);
             } else if (shortcutMatches(g_app->settingsData.popupSettingsHotkey,
                                        static_cast<UINT>(wParam))) openSettings();
             return 0;
@@ -9674,8 +9752,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const int row = (filter < 0 && x >= ui(16) && x < client.right - ui(16))
                 ? popupRowAt(y) : -1;
             const int rowTop = row >= 0 ? popupRowTop(row) : -1;
-            const int deleteRow = row >= 0 && x >= client.right - ui(30) &&
-                x < client.right - ui(8) && y >= rowTop + ui(5) && y < rowTop + ui(30)
+            const int deleteRow = row >= 0 && popupDeleteHitAt(client, rowTop, x, y)
                 ? row : -1;
             const int pinRow = row >= 0 && x >= client.right - ui(45) &&
                 x < client.right - ui(10) && y >= rowTop + ui(kPopupCardHeight - 30) &&
@@ -9834,17 +9911,17 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const int row = popupRowAt(clickY);
             if (row >= 0 && row < static_cast<int>(g_app->visible.size())) {
                 const int rowTop = popupRowTop(row);
-                const bool deleteClick = GET_X_LPARAM(lParam) >= client.right - ui(30) &&
-                    GET_X_LPARAM(lParam) < client.right - ui(8) &&
-                    GET_Y_LPARAM(lParam) >= rowTop + ui(5) &&
-                    GET_Y_LPARAM(lParam) < rowTop + ui(30);
+                const bool deleteClick = popupDeleteHitAt(client, rowTop,
+                                                           GET_X_LPARAM(lParam),
+                                                           GET_Y_LPARAM(lParam));
                 const bool pinClick = GET_X_LPARAM(lParam) >= client.right - ui(45) &&
                     GET_X_LPARAM(lParam) < client.right - ui(10) &&
                     GET_Y_LPARAM(lParam) >= rowTop + ui(kPopupCardHeight - 30) &&
                     GET_Y_LPARAM(lParam) < rowTop + ui(kPopupCardHeight);
                 if (deleteClick) {
                     g_app->store.remove(g_app->visible[static_cast<std::size_t>(row)]);
-                    refreshVisible();
+                    refreshVisible(true);
+                    refreshPopupPointerState(hwnd);
                     return 0;
                 }
                 if (pinClick) {
@@ -9893,10 +9970,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                  else if (command == kMenuPaste) sendPaste();
                 else if (command == kMenuPastePlain) sendPaste(PasteMode::PlainText);
                 else if (command == kMenuPasteRich) sendPaste(PasteMode::RichText);
-                else if (command == kMenuDelete) g_app->store.remove(index);
-                else if (command == kMenuFilter) showPopupFilterMenu(hwnd);
-                else if (command != 0) applyFilterCommand(command);
-                refreshVisible();
+                 else if (command == kMenuDelete) g_app->store.remove(index);
+                 else if (command == kMenuFilter) showPopupFilterMenu(hwnd);
+                 else if (command != 0) applyFilterCommand(command);
+                 refreshVisible(command == kMenuDelete);
             } else {
                 HMENU menu = CreatePopupMenu();
                  appendPopupPinMenu(menu);
@@ -10225,6 +10302,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         DispatchMessageW(&message);
     }
     appendDiagnosticLog("INFO", "shutdown: process cleanup started");
+    // 退出消息不会自动触发设置窗口的 WM_CLOSE，先读取控件确保最后修改已落盘。
+    if (app.settings && IsWindow(app.settings)) {
+        app.settingsClosing = true;
+        KillTimer(app.settings, kSettingsSyncTimer);
+        KillTimer(app.settings, kSettingsEncryptionTimer);
+        syncSettingsFromControls(app.settings, true);
+    }
     closeSupportProcess();
     RemoveClipboardFormatListener(app.hidden);
     KillTimer(app.hidden, kExpiryTimer);

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Fixed category storage limits being remapped after restart and saved pending changes from an open settings window during application exit.
+- Fixed category-space and global storage limits not being enforced immediately after new clipboard records were added.
+- Added a second confirmation when bulk, category, or all-history clearing includes pinned records; single-record deletion remains immediate.
+- Improved single-record deletion in the history window by avoiding synchronous reprocessing of all history content, reducing UI stalls with large image histories.
+- Fixed a second click at the same delete-button position after a list refresh from incorrectly closing the history window.
+- Fixed the history list jumping back to the top after deleting a record; the current scroll position is now preserved.
+- Enlarged the history-list delete icon hover and click target to make it easier to activate.
 - Improved image-list scrolling by keeping a fixed anti-aliased preview placeholder while thumbnails load instead of switching from `[Image]` text to the rendered thumbnail.
 - Fixed stale image-preview generations filling the queue and preventing current-viewport thumbnails from being scheduled after scrolling.
 - Fixed loading thumbnail entries being evicted at the memory-cache limit before their background result arrived.

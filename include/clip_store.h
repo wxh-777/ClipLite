@@ -90,6 +90,7 @@ public:
 
 private:
     bool rebuildFile();
+    bool rebuildFileRaw();
     bool writeRecord(std::FILE* file, const ClipItem& item, const std::string& payload) const;
     static std::string makePreview(ClipType type, const std::string& payload);
     static bool containsIgnoreCase(const std::string& text, const std::string& query);
