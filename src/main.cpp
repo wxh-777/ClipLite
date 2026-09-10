@@ -93,6 +93,9 @@ constexpr int kSettingSupportAuthor = 43;
 constexpr int kSettingJoinQqGroup = 44;
 constexpr int kSettingSearchImeCompatibility = 45;
 constexpr int kSettingPromotePastedItem = 46;
+constexpr int kSettingPreviewAutomatic = 47;
+constexpr int kSettingPreviewByKey = 48;
+constexpr int kSettingShortcutPreview = 49;
 constexpr int kSettingShortcutHistory = 50;
 constexpr int kSettingShortcutSettings = 51;
 constexpr int kSettingShortcutPause = 52;
@@ -112,6 +115,9 @@ constexpr int kMenuPasteRich = 104;
 constexpr int kMenuPopupPinned = 105;
 constexpr int kMenuFilter = 106;
 constexpr int kMenuPromotePastedItem = 107;
+constexpr int kMenuPreviewAutomatic = 108;
+constexpr int kMenuPreviewByKey = 109;
+constexpr int kMenuPreviewDisabled = 110;
 constexpr int kFilterAll = 130;
 constexpr int kFilterText = 131;
 constexpr int kFilterFiles = 132;
@@ -138,6 +144,8 @@ constexpr UINT kSupportImageLoadedMessage = WM_APP + 9;
 constexpr UINT kPopupEnterImeMessage = WM_APP + 10;
 constexpr UINT kClipboardCaptureCompleteMessage = WM_APP + 11;
 constexpr UINT kPopupFilePreviewLoadedMessage = WM_APP + 12;
+constexpr UINT kPopupDetailPreviewLoadedMessage = WM_APP + 13;
+constexpr UINT kPopupPreviewKeyMessage = WM_APP + 14;
 constexpr UINT_PTR kExpiryTimer = 3;
 constexpr UINT_PTR kClipboardCaptureTimer = 7;
 constexpr UINT_PTR kSettingsToggleTimer = 4;
@@ -153,6 +161,8 @@ constexpr UINT_PTR kPopupSearchTimer = 13;
 constexpr UINT_PTR kSupportOwnerTimer = 14;
 constexpr UINT_PTR kPasteInputTimer = 15;
 constexpr UINT_PTR kPopupPreviewResumeTimer = 16;
+constexpr UINT_PTR kPopupPreviewHoverTimer = 17;
+constexpr UINT_PTR kPopupPreviewHideTimer = 18;
 constexpr DWORD kSettingsToggleAnimationMs = 160;
 constexpr DWORD kSettingsDropdownAnimationMs = 150;
 constexpr DWORD kSettingsThemeAnimationMs = 180;
@@ -179,6 +189,11 @@ constexpr int kPopupPinRight = 362;
 constexpr int kPopupCloseLeft = 366;
 constexpr int kPopupWidth = 400;
 constexpr int kPopupHeight = 500;
+constexpr int kPopupDetailPreviewWidth = 460;
+constexpr int kPopupDetailPreviewHeight = 340;
+constexpr int kPopupDetailPreviewGap = 8;
+constexpr int kPopupDetailPreviewDelayMs = 180;
+constexpr int kPopupDetailPreviewHideDelayMs = 120;
 constexpr int kFilterMenuWidth = 204;
 constexpr int kFilterMenuRowHeight = 32;
 constexpr int kFilterSubmenuWidth = 190;
@@ -224,6 +239,8 @@ struct Settings {
     bool showStartupNotification = true;
     bool searchImeCompatibility = false;
     bool promotePastedItem = false;
+    bool previewAutomatic = false;
+    bool previewByKey = true;
     bool historyWindowPinned = false;
     bool runAsAdministrator = false;
     bool encryptData = false;
@@ -246,6 +263,7 @@ struct Settings {
     ShortcutBinding popupSettingsHotkey{0, VK_F10};
     ShortcutBinding popupClearFilterHotkey{MOD_CONTROL, '0'};
     ShortcutBinding popupDeleteHotkey{0, VK_DELETE};
+    ShortcutBinding popupPreviewHotkey{0, VK_F2};
     std::array<CategoryLimit, kStorageCategoryCount> categoryLimits{};
 };
 
@@ -263,6 +281,7 @@ struct PopupImagePreview {
 enum class PopupPreviewKind {
     File,
     Dib,
+    Text,
 };
 
 struct PopupPreviewJob {
@@ -277,8 +296,23 @@ struct PopupPreviewJob {
     int height = 0;
     COLORREF background = RGB(255, 255, 255);
     bool encrypted = false;
+    bool detail = false;
     ClipItem item;
     std::wstring historyPath;
+};
+
+struct PopupDetailPreview {
+    HBITMAP bitmap = nullptr;
+    int width = 0;
+    int height = 0;
+    std::wstring text;
+    std::size_t itemIndex = 0;
+    std::uint64_t recordId = 0;
+    std::uint64_t storeRevision = 0;
+    std::uint64_t generation = 0;
+    bool loading = false;
+    bool failed = false;
+    bool held = false;
 };
 
 struct PopupSourceIcon {
@@ -295,6 +329,7 @@ struct FileAvailability {
 struct AppState {
     HWND hidden = nullptr;
     HWND popup = nullptr;
+    HWND detailPreview = nullptr;
     HWND searchEdit = nullptr;
     HWND settings = nullptr;
     HWND support = nullptr;
@@ -400,6 +435,11 @@ struct AppState {
     bool popupSearchInputActive = false;
     bool popupSearchControlDown = false;
     bool popupSuppressImeTriggerSpace = false;
+    bool detailPreviewVisible = false;
+    bool detailPreviewHeld = false;
+    int detailPreviewHoverRow = -1;
+    int detailPreviewPendingRow = -1;
+    PopupDetailPreview detailPreviewState;
     std::shared_ptr<std::atomic<bool>> searchCancellation;
     std::thread searchWorker;
     std::shared_ptr<std::atomic<bool>> clipboardCaptureRunning =
@@ -418,6 +458,8 @@ struct AppState {
     std::uint64_t imagePreviewGeneration = 0;
     std::uint64_t imagePreviewUseClock = 0;
     std::shared_ptr<std::atomic<std::uint64_t>> previewGeneration =
+        std::make_shared<std::atomic<std::uint64_t>>(0);
+    std::shared_ptr<std::atomic<std::uint64_t>> detailPreviewGeneration =
         std::make_shared<std::atomic<std::uint64_t>>(0);
     ThumbnailCache thumbnailCache;
     std::mutex previewMutex;
@@ -505,6 +547,19 @@ struct PopupFilePreviewResult {
     bool success = false;
 };
 
+struct PopupDetailPreviewResult {
+    HWND popup = nullptr;
+    std::uint64_t storeRevision = 0;
+    std::uint64_t generation = 0;
+    std::size_t itemIndex = 0;
+    std::uint64_t recordId = 0;
+    HBITMAP bitmap = nullptr;
+    int width = 0;
+    int height = 0;
+    std::wstring text;
+    bool success = false;
+};
+
 struct PopupImeKeyEvent {
     KBDLLHOOKSTRUCT key{};
     WPARAM hookMessage = 0;
@@ -551,8 +606,14 @@ LRESULT CALLBACK supportWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARA
 HICON clipLiteIcon();
 void clearPopupImagePreviews();
 void clearPopupSourceIcons();
+void hideDetailPreview();
+void requestDetailPreview(int row);
+void scheduleDetailPreview(int row);
+void updateDetailPreviewKeyState(bool down);
 void closeFilterMenu();
 bool filterMenuContainsPoint(POINT point);
+LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+UINT shortcutModifiersFromKeyboard();
 
 int ui(int value) {
     return MulDiv(value, static_cast<int>(g_uiDpi), 96);
@@ -842,6 +903,17 @@ struct SettingsLocale {
     const wchar_t* copiedQqGroup;
     const wchar_t* supportImageLoading;
     const wchar_t* supportImageLoadFailed;
+    const wchar_t* automaticPreview;
+    const wchar_t* keyPreview;
+    const wchar_t* previewMode;
+    const wchar_t* previewDisabled;
+    const wchar_t* previewKey;
+    const wchar_t* previewLoading;
+    const wchar_t* previewLoadFailed;
+    const wchar_t* previewNoSelection;
+    const wchar_t* previewProtected;
+    const wchar_t* previewOriginalImage;
+    const wchar_t* previewContent;
 };
 
 const SettingsLocale kEnglishSettingsLocale{
@@ -891,7 +963,11 @@ const SettingsLocale kEnglishSettingsLocale{
      L"Unable to open the log file.", L"Support the author", L"Join QQ group",
      L"Support ClipLite", L"Thank you for supporting continued development.", L"WeChat Pay",
      L"Alipay", L"ClipLite QQ group", L"Group: 1081580020", L"Copy group number",
-     L"Copied", L"Loading image...", L"Unable to load the support image. Check your network connection."
+     L"Copied", L"Loading image...", L"Unable to load the support image. Check your network connection.",
+     L"Automatic preview", L"Preview while holding a key", L"Preview mode", L"Disable preview",
+     L"Preview key", L"Loading preview...",
+     L"Unable to load the preview.", L"No item selected", L"This item is protected.", L"Original image",
+     L"Content preview"
 };
 
 const SettingsLocale kChineseSettingsLocale{
@@ -931,7 +1007,9 @@ const SettingsLocale kChineseSettingsLocale{
      L"无法创建单实例锁。", L"日志文件        ", L"打开日志文件", L"无法打开日志文件。",
      L"支持作者", L"加入 QQ 群", L"支持 ClipLite", L"感谢你支持项目持续开发。", L"微信支付",
      L"支付宝", L"ClipLite QQ 群", L"群号：1081580020", L"复制群号", L"已复制", L"正在加载图片...",
-     L"无法加载支持图片，请检查网络连接。"
+      L"无法加载支持图片，请检查网络连接。", L"自动预览", L"按住按键预览", L"预览模式", L"关闭预览",
+      L"预览按键",
+      L"正在加载预览...", L"无法加载预览。", L"未选择记录", L"此记录受保护。", L"原图", L"内容预览"
 };
 
 const SettingsLocale& settingsLocale() {
@@ -1043,6 +1121,8 @@ void loadSettings(Settings& settings) {
         if (std::strncmp(line, "showStartupNotification=1", 25) == 0) settings.showStartupNotification = true;
         if (std::strncmp(line, "searchImeCompatibility=1", 24) == 0) settings.searchImeCompatibility = true;
         if (std::strncmp(line, "promotePastedItem=1", 19) == 0) settings.promotePastedItem = true;
+        if (std::strncmp(line, "previewAutomatic=1", 18) == 0) settings.previewAutomatic = true;
+        if (std::strncmp(line, "previewByKey=0", 14) == 0) settings.previewByKey = false;
         if (std::strncmp(line, "historyWindowPinned=1", 21) == 0) settings.historyWindowPinned = true;
         if (std::strncmp(line, "runAsAdministrator=1", 20) == 0) settings.runAsAdministrator = true;
         if (std::strncmp(line, "encryptData=1", 13) == 0) settings.encryptData = true;
@@ -1121,6 +1201,8 @@ void loadSettings(Settings& settings) {
         readShortcutValue("shortcutPopupClearFilterKey=", settings.popupClearFilterHotkey.virtualKey);
         readShortcutValue("shortcutPopupDeleteModifiers=", settings.popupDeleteHotkey.modifiers);
         readShortcutValue("shortcutPopupDeleteKey=", settings.popupDeleteHotkey.virtualKey);
+        readShortcutValue("shortcutPopupPreviewModifiers=", settings.popupPreviewHotkey.modifiers);
+        readShortcutValue("shortcutPopupPreviewKey=", settings.popupPreviewHotkey.virtualKey);
     }
     std::fclose(file);
     const auto mergeLimit = [](const CategoryLimit& first, const CategoryLimit& second) {
@@ -1151,6 +1233,7 @@ void loadSettings(Settings& settings) {
     normalizePopupShortcut(settings.popupSettingsHotkey, ShortcutBinding{0, VK_F10});
     normalizePopupShortcut(settings.popupClearFilterHotkey, ShortcutBinding{MOD_CONTROL, '0'});
     normalizePopupShortcut(settings.popupDeleteHotkey, ShortcutBinding{0, VK_DELETE});
+    normalizePopupShortcut(settings.popupPreviewHotkey, ShortcutBinding{0, VK_F2});
 }
 
 void saveSettings(const Settings& settings) {
@@ -1165,6 +1248,8 @@ void saveSettings(const Settings& settings) {
            << "showStartupNotification=" << (settings.showStartupNotification ? 1 : 0) << "\n"
            << "searchImeCompatibility=" << (settings.searchImeCompatibility ? 1 : 0) << "\n"
            << "promotePastedItem=" << (settings.promotePastedItem ? 1 : 0) << "\n"
+           << "previewAutomatic=" << (settings.previewAutomatic ? 1 : 0) << "\n"
+           << "previewByKey=" << (settings.previewByKey ? 1 : 0) << "\n"
            << "historyWindowPinned=" << (settings.historyWindowPinned ? 1 : 0) << "\n"
            << "runAsAdministrator=" << (settings.runAsAdministrator ? 1 : 0) << "\n"
            << "encryptData=" << (settings.encryptData ? 1 : 0) << "\n"
@@ -1194,7 +1279,9 @@ void saveSettings(const Settings& settings) {
            << "shortcutPopupClearFilterModifiers=" << settings.popupClearFilterHotkey.modifiers << "\n"
            << "shortcutPopupClearFilterKey=" << settings.popupClearFilterHotkey.virtualKey << "\n"
            << "shortcutPopupDeleteModifiers=" << settings.popupDeleteHotkey.modifiers << "\n"
-           << "shortcutPopupDeleteKey=" << settings.popupDeleteHotkey.virtualKey << "\n";
+           << "shortcutPopupDeleteKey=" << settings.popupDeleteHotkey.virtualKey << "\n"
+           << "shortcutPopupPreviewModifiers=" << settings.popupPreviewHotkey.modifiers << "\n"
+           << "shortcutPopupPreviewKey=" << settings.popupPreviewHotkey.virtualKey << "\n";
     for (const std::string& app : settings.ignoredApps) output << "ignoredApp=" << app << "\n";
     for (int i = 0; i < 4; ++i) {
         output << "category" << i << "=" << settings.categories[static_cast<std::size_t>(i)] << "\n";
@@ -2337,6 +2424,8 @@ void applyVisibleCandidates(const std::vector<std::size_t>& candidates,
     invalidateFilterBar(g_app->popup);
     invalidatePopupStatus(g_app->popup);
     invalidatePopupFilterButton(g_app->popup);
+    if (g_app->detailPreviewHeld) requestDetailPreview(g_app->selected);
+    else if (g_app->settingsData.previewAutomatic) scheduleDetailPreview(g_app->hoveredRow);
 }
 
 void refreshVisible(bool preserveScrollPosition = false) {
@@ -2784,6 +2873,33 @@ void postPopupPreviewResult(const PopupPreviewJob& job, HBITMAP bitmap,
     }
 }
 
+// 将详情预览后台结果安全地投递回主线程。
+void postPopupDetailPreviewResult(const PopupPreviewJob& job, HBITMAP bitmap,
+                                  int width, int height, std::wstring text, bool success) {
+    bool stopping = false;
+    if (g_app) {
+        std::lock_guard<std::mutex> lock(g_app->previewMutex);
+        stopping = g_app->previewWorkerStop;
+    }
+    if (!g_app || !g_app->hidden || stopping) {
+        if (bitmap) DeleteObject(bitmap);
+        return;
+    }
+    try {
+        auto result = std::make_unique<PopupDetailPreviewResult>(
+            PopupDetailPreviewResult{job.popup, job.storeRevision, job.generation, job.itemIndex,
+                                     job.item.recordId, bitmap, width, height, std::move(text), success});
+        if (!PostMessageW(g_app->hidden, kPopupDetailPreviewLoadedMessage,
+                          reinterpret_cast<WPARAM>(result.get()), 0)) {
+            if (result->bitmap) DeleteObject(result->bitmap);
+            return;
+        }
+        result.release();
+    } catch (...) {
+        if (bitmap) DeleteObject(bitmap);
+    }
+}
+
 void previewWorkerLoop(AppState* app) {
     std::size_t writesSincePrune = 0;
     while (true) {
@@ -2797,8 +2913,15 @@ void previewWorkerLoop(AppState* app) {
             job = std::move(app->previewJobs.front());
             app->previewJobs.pop_front();
         }
-        if (app->previewGeneration->load(std::memory_order_acquire) != job.generation) {
-            postPopupPreviewResult(job, nullptr, 0, 0, false);
+        const std::uint64_t currentGeneration = job.detail
+            ? app->detailPreviewGeneration->load(std::memory_order_acquire)
+            : app->previewGeneration->load(std::memory_order_acquire);
+        if (currentGeneration != job.generation) {
+            if (job.detail) {
+                postPopupDetailPreviewResult(job, nullptr, 0, 0, {}, false);
+            } else {
+                postPopupPreviewResult(job, nullptr, 0, 0, false);
+            }
             continue;
         }
 
@@ -2806,7 +2929,28 @@ void previewWorkerLoop(AppState* app) {
         int width = 0;
         int height = 0;
         std::string encoded;
-        bool success = app->thumbnailCache.read(job.cacheKey, job.encrypted, encoded) &&
+        bool success = false;
+        std::wstring text;
+        if (job.detail) {
+            std::string payload;
+            success = app->store.readPayloadSnapshot(job.historyPath, job.item, payload);
+            if (success && job.kind == PopupPreviewKind::Dib) {
+                success = createDibImagePreview(payload, job.width, job.height, bitmap, width, height);
+            } else if (success && job.kind == PopupPreviewKind::File) {
+                success = createFileImagePreview(job.filePath, job.width, job.height, job.background,
+                                                 bitmap, width, height);
+            } else if (success) {
+                text = job.item.type == ClipType::Html ? utf8ToWide(job.item.preview) : utf8ToWide(payload);
+                constexpr std::size_t kDetailTextLimit = 128u * 1024u;
+                if (text.size() > kDetailTextLimit) {
+                    text.resize(kDetailTextLimit);
+                    text += L"\n...";
+                }
+            }
+            postPopupDetailPreviewResult(job, bitmap, width, height, std::move(text), success);
+            continue;
+        }
+        success = app->thumbnailCache.read(job.cacheKey, job.encrypted, encoded) &&
             decodePngToBitmap(encoded, job.background, bitmap, width, height);
         if (!success) {
             if (bitmap) DeleteObject(bitmap);
@@ -2845,6 +2989,330 @@ bool startPreviewWorker() {
     } catch (...) {
         return false;
     }
+}
+
+// 判断鼠标是否位于独立预览窗口内。
+bool detailPreviewContainsPoint(POINT point) {
+    if (!g_app || !g_app->detailPreview || !IsWindowVisible(g_app->detailPreview)) return false;
+    RECT rect{};
+    GetWindowRect(g_app->detailPreview, &rect);
+    return PtInRect(&rect, point) != FALSE;
+}
+
+// 释放当前详情预览位图。
+void clearDetailPreviewBitmap() {
+    if (!g_app) return;
+    if (g_app->detailPreviewState.bitmap) DeleteObject(g_app->detailPreviewState.bitmap);
+    g_app->detailPreviewState.bitmap = nullptr;
+    g_app->detailPreviewState.width = 0;
+    g_app->detailPreviewState.height = 0;
+}
+
+// 取消排队中的详情预览任务并推进任务代次。
+void cancelDetailPreviewWork() {
+    if (!g_app) return;
+    const std::uint64_t generation =
+        g_app->detailPreviewGeneration->fetch_add(1, std::memory_order_acq_rel) + 1;
+    (void)generation;
+    std::lock_guard<std::mutex> lock(g_app->previewMutex);
+    g_app->previewJobs.erase(
+        std::remove_if(g_app->previewJobs.begin(), g_app->previewJobs.end(),
+                       [](const PopupPreviewJob& job) { return job.detail; }),
+        g_app->previewJobs.end());
+}
+
+// 隐藏详情预览并释放当前内容。
+void hideDetailPreview() {
+    if (!g_app) return;
+    KillTimer(g_app->popup, kPopupPreviewHoverTimer);
+    KillTimer(g_app->popup, kPopupPreviewHideTimer);
+    g_app->detailPreviewVisible = false;
+    g_app->detailPreviewHeld = false;
+    g_app->detailPreviewPendingRow = -1;
+    g_app->detailPreviewHoverRow = -1;
+    cancelDetailPreviewWork();
+    clearDetailPreviewBitmap();
+    g_app->detailPreviewState.text.clear();
+    g_app->detailPreviewState.itemIndex = 0;
+    g_app->detailPreviewState.recordId = 0;
+    g_app->detailPreviewState.storeRevision = 0;
+    g_app->detailPreviewState.generation = 0;
+    g_app->detailPreviewState.loading = false;
+    g_app->detailPreviewState.failed = false;
+    if (g_app->detailPreview) ShowWindow(g_app->detailPreview, SW_HIDE);
+}
+
+// 销毁详情预览窗口及其资源。
+void destroyDetailPreview() {
+    if (!g_app) return;
+    hideDetailPreview();
+    if (g_app->detailPreview) {
+        DestroyWindow(g_app->detailPreview);
+        g_app->detailPreview = nullptr;
+    }
+}
+
+// 按需创建不抢焦点的详情预览窗口。
+bool ensureDetailPreviewWindow() {
+    if (!g_app || !g_app->popup) return false;
+    if (g_app->detailPreview && IsWindow(g_app->detailPreview)) return true;
+    g_app->detailPreview = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+        L"ClipLitePreview", settingsLocale().previewOriginalImage,
+        WS_POPUP | WS_CLIPCHILDREN, 0, 0, ui(kPopupDetailPreviewWidth),
+        ui(kPopupDetailPreviewHeight), g_app->popup, nullptr,
+        GetModuleHandleW(nullptr), nullptr);
+    if (g_app->detailPreview) {
+        const int width = ui(kPopupDetailPreviewWidth);
+        const int height = ui(kPopupDetailPreviewHeight);
+        HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, ui(16), ui(16));
+        if (region && SetWindowRgn(g_app->detailPreview, region, TRUE) == 0) {
+            DeleteObject(region);
+        }
+        constexpr DWORD kDwmWindowCornerPreference = 33;
+        constexpr DWORD kDwmCornerRound = 2;
+        DwmSetWindowAttribute(g_app->detailPreview, kDwmWindowCornerPreference,
+                              &kDwmCornerRound, sizeof(kDwmCornerRound));
+    }
+    return g_app->detailPreview != nullptr;
+}
+
+// 根据历史窗口和当前记录位置放置详情预览窗口。
+void positionDetailPreview(int row) {
+    if (!g_app || !g_app->popup || !g_app->detailPreview) return;
+    RECT popupRect{};
+    GetWindowRect(g_app->popup, &popupRect);
+    const int width = ui(kPopupDetailPreviewWidth);
+    const int height = ui(kPopupDetailPreviewHeight);
+    RECT rowRect{};
+    const int rowTop = popupRowTop(row);
+    rowRect.top = popupRect.top + (rowTop >= 0 ? rowTop : ui(kPopupListTop));
+    rowRect.bottom = rowRect.top + ui(kPopupCardHeight);
+    HMONITOR monitor = MonitorFromWindow(g_app->popup, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{sizeof(info)};
+    GetMonitorInfoW(monitor, &info);
+    int x = popupRect.right + ui(kPopupDetailPreviewGap);
+    int y = rowRect.top;
+    if (x + width > info.rcWork.right) {
+        const int aboveY = popupRect.top - ui(kPopupDetailPreviewGap) - height;
+        const int belowY = popupRect.bottom + ui(kPopupDetailPreviewGap);
+        if (aboveY >= info.rcWork.top) {
+            x = popupRect.right - width;
+            y = aboveY;
+        } else if (belowY + height <= info.rcWork.bottom) {
+            x = popupRect.right - width;
+            y = belowY;
+        } else {
+            x = popupRect.left - ui(kPopupDetailPreviewGap) - width;
+        }
+    }
+    HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, ui(16), ui(16));
+    if (region && SetWindowRgn(g_app->detailPreview, region, TRUE) == 0) DeleteObject(region);
+    x = std::clamp(x, static_cast<int>(info.rcWork.left),
+                   static_cast<int>(info.rcWork.right) - width);
+    y = std::clamp(y, static_cast<int>(info.rcWork.top),
+                   static_cast<int>(info.rcWork.bottom) - height);
+    SetWindowPos(g_app->detailPreview, HWND_TOPMOST, x, y, width, height,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+}
+
+// 为指定历史记录请求一次原始内容预览。
+void requestDetailPreview(int row) {
+    if (!g_app || !g_app->popup || row < 0 ||
+        row >= static_cast<int>(g_app->visible.size())) {
+        hideDetailPreview();
+        return;
+    }
+    if (!ensureDetailPreviewWindow()) return;
+    const std::size_t itemIndex = g_app->visible[static_cast<std::size_t>(row)];
+    if (itemIndex >= g_app->store.items().size()) {
+        hideDetailPreview();
+        return;
+    }
+    const ClipItem& item = g_app->store.items()[itemIndex];
+    if (g_app->detailPreviewState.recordId == item.recordId &&
+        g_app->detailPreviewState.storeRevision == g_app->store.revision() &&
+        !g_app->detailPreviewState.failed &&
+        (g_app->detailPreviewState.loading || g_app->detailPreviewState.bitmap ||
+         !g_app->detailPreviewState.text.empty())) {
+        g_app->detailPreviewVisible = true;
+        positionDetailPreview(row);
+        InvalidateRect(g_app->detailPreview, nullptr, FALSE);
+        return;
+    }
+
+    cancelDetailPreviewWork();
+    clearDetailPreviewBitmap();
+    g_app->detailPreviewState.text.clear();
+    g_app->detailPreviewState.itemIndex = itemIndex;
+    g_app->detailPreviewState.recordId = item.recordId;
+    g_app->detailPreviewState.storeRevision = g_app->store.revision();
+    g_app->detailPreviewState.generation =
+        g_app->detailPreviewGeneration->load(std::memory_order_acquire);
+    g_app->detailPreviewState.loading = true;
+    g_app->detailPreviewState.failed = false;
+    g_app->detailPreviewVisible = true;
+    positionDetailPreview(row);
+    InvalidateRect(g_app->detailPreview, nullptr, FALSE);
+
+    PopupPreviewJob job;
+    job.popup = g_app->popup;
+    job.storeRevision = g_app->store.revision();
+    job.generation = g_app->detailPreviewState.generation;
+    job.itemIndex = itemIndex;
+    job.item = item;
+    job.historyPath = g_app->store.path();
+    job.width = ui(kPopupDetailPreviewWidth - 32);
+    job.height = ui(kPopupDetailPreviewHeight - 78);
+    job.background = settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
+    job.encrypted = item.encrypted;
+    job.detail = true;
+    if (isImageType(item.type)) {
+        job.kind = PopupPreviewKind::Dib;
+    } else if (item.type == ClipType::Files) {
+        std::string payload;
+        std::wstring imagePath;
+        if (g_app->store.readPayload(itemIndex, payload) && findImageFilePath(payload, imagePath)) {
+            job.kind = PopupPreviewKind::File;
+            job.filePath = std::move(imagePath);
+        } else {
+            job.kind = PopupPreviewKind::Text;
+        }
+    } else {
+        job.kind = PopupPreviewKind::Text;
+    }
+    if (!startPreviewWorker()) {
+        g_app->detailPreviewState.loading = false;
+        g_app->detailPreviewState.failed = true;
+        InvalidateRect(g_app->detailPreview, nullptr, FALSE);
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_app->previewMutex);
+        g_app->previewJobs.erase(
+            std::remove_if(g_app->previewJobs.begin(), g_app->previewJobs.end(),
+                           [](const PopupPreviewJob& queued) { return queued.detail; }),
+            g_app->previewJobs.end());
+        if (g_app->previewJobs.size() >= 12) {
+            g_app->detailPreviewState.loading = false;
+            g_app->detailPreviewState.failed = true;
+            InvalidateRect(g_app->detailPreview, nullptr, FALSE);
+            return;
+        }
+        g_app->previewJobs.push_back(std::move(job));
+    }
+    g_app->previewCondition.notify_one();
+}
+
+// 延迟处理自动预览，避免鼠标快速经过列表时频繁读取原图。
+void scheduleDetailPreview(int row) {
+    if (!g_app || !g_app->popup || !g_app->settingsData.previewAutomatic) return;
+    g_app->detailPreviewPendingRow = row;
+    KillTimer(g_app->popup, kPopupPreviewHideTimer);
+    KillTimer(g_app->popup, kPopupPreviewHoverTimer);
+    if (row < 0) {
+        SetTimer(g_app->popup, kPopupPreviewHideTimer, kPopupDetailPreviewHideDelayMs, nullptr);
+        return;
+    }
+    SetTimer(g_app->popup, kPopupPreviewHoverTimer, kPopupDetailPreviewDelayMs, nullptr);
+}
+
+// 处理按住预览键的开始和结束。
+void updateDetailPreviewKeyState(bool down) {
+    if (!g_app || !g_app->settingsData.previewByKey) return;
+    if (down) {
+        if (g_app->detailPreviewHeld) return;
+        g_app->detailPreviewHeld = true;
+        const int row = g_app->hoveredRow >= 0 ? g_app->hoveredRow : g_app->selected;
+        requestDetailPreview(row);
+    } else {
+        g_app->detailPreviewHeld = false;
+        if (!g_app->settingsData.previewAutomatic) hideDetailPreview();
+    }
+}
+
+// 使用双缓冲绘制独立详情预览窗口。
+void paintDetailPreview(HWND hwnd, HDC dc) {
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const int width = client.right;
+    const int height = client.bottom;
+    HDC buffer = CreateCompatibleDC(dc);
+    HBITMAP bitmap = buffer ? CreateCompatibleBitmap(dc, width, height) : nullptr;
+    if (!buffer || !bitmap) {
+        if (bitmap) DeleteObject(bitmap);
+        if (buffer) DeleteDC(buffer);
+        return;
+    }
+    HGDIOBJ previous = SelectObject(buffer, bitmap);
+    const COLORREF background = settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
+    const COLORREF contentBackground = settingsThemeColor(RGB(248, 250, 252), RGB(37, 44, 54));
+    const COLORREF border = settingsThemeColor(RGB(200, 211, 222), RGB(74, 88, 104));
+    const COLORREF divider = settingsThemeColor(RGB(226, 232, 240), RGB(52, 62, 75));
+    const COLORREF text = settingsThemeColor(RGB(30, 41, 59), RGB(226, 232, 240));
+    const COLORREF secondary = settingsThemeColor(RGB(95, 113, 131), RGB(143, 161, 179));
+    HBRUSH backgroundBrush = CreateSolidBrush(background);
+    FillRect(buffer, &client, backgroundBrush);
+    DeleteObject(backgroundBrush);
+    drawGdiRoundedSurface(buffer, RECT{1, 1, width - 1, height - 1}, background, border, 8);
+    SetBkMode(buffer, TRANSPARENT);
+
+    const ClipItem* item = nullptr;
+    if (g_app->detailPreviewState.recordId != 0 &&
+        g_app->detailPreviewState.itemIndex < g_app->store.items().size()) {
+        const ClipItem& candidate = g_app->store.items()[g_app->detailPreviewState.itemIndex];
+        if (candidate.recordId == g_app->detailPreviewState.recordId) item = &candidate;
+    }
+    const std::wstring title = item && isImageType(item->type)
+        ? std::wstring(settingsLocale().previewOriginalImage)
+        : std::wstring(settingsLocale().previewContent);
+    std::wstring meta;
+    if (item) {
+        meta = std::wstring(automaticTypeLabel(item->type)) + L"  ·  " +
+            formatByteSize(item->contentSize);
+    }
+    SelectObject(buffer, g_app->popupTitleFont);
+    SetTextColor(buffer, text);
+    RECT titleRect{ui(16), ui(10), width / 2, ui(34)};
+    DrawTextW(buffer, title.c_str(), -1, &titleRect,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    SelectObject(buffer, g_app->popupMetaFont);
+    SetTextColor(buffer, secondary);
+    RECT metaRect{width / 2, ui(10), width - ui(16), ui(34)};
+    DrawTextW(buffer, meta.c_str(), -1, &metaRect,
+              DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    drawGdiLine(buffer, ui(16), ui(48), width - ui(16), ui(48), divider, 1.0f);
+    RECT content{ui(16), ui(62), width - ui(16), height - ui(16)};
+    HBRUSH contentBrush = CreateSolidBrush(contentBackground);
+    FillRect(buffer, &content, contentBrush);
+    DeleteObject(contentBrush);
+    if (g_app->detailPreviewState.loading) {
+        DrawTextW(buffer, settingsLocale().previewLoading, -1, &content,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    } else if (g_app->detailPreviewState.failed) {
+        DrawTextW(buffer, settingsLocale().previewLoadFailed, -1, &content,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    } else if (g_app->detailPreviewState.bitmap) {
+        HDC source = CreateCompatibleDC(buffer);
+        if (source) {
+            HGDIOBJ oldBitmap = SelectObject(source, g_app->detailPreviewState.bitmap);
+            const int left = content.left + (content.right - content.left - g_app->detailPreviewState.width) / 2;
+            const int top = content.top + (content.bottom - content.top - g_app->detailPreviewState.height) / 2;
+            BitBlt(buffer, left, top, g_app->detailPreviewState.width,
+                   g_app->detailPreviewState.height, source, 0, 0, SRCCOPY);
+            SelectObject(source, oldBitmap);
+            DeleteDC(source);
+        }
+    } else {
+        SelectObject(buffer, g_app->popupPreviewFont);
+        SetTextColor(buffer, text);
+        DrawTextW(buffer, g_app->detailPreviewState.text.c_str(), -1, &content,
+                  DT_LEFT | DT_TOP | DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+    BitBlt(dc, 0, 0, width, height, buffer, 0, 0, SRCCOPY);
+    SelectObject(buffer, previous);
+    DeleteObject(bitmap);
+    DeleteDC(buffer);
 }
 
 // 将文件缩略图任务加入有界后台队列，避免快速滚动创建大量线程。
@@ -3299,6 +3767,7 @@ void showPopup(bool openedByWinV = false) {
 void closePopup() {
     cancelPopupSearch();
     closeFilterMenu();
+    destroyDetailPreview();
     clearPopupSourceIcons();
     const HWND target = g_app->targetWindow;
     if (g_app->popupMouseHook) {
@@ -3313,6 +3782,8 @@ void closePopup() {
         KillTimer(g_app->popup, kPopupOpenGuardTimer);
         KillTimer(g_app->popup, kPopupDeactivateTimer);
         KillTimer(g_app->popup, kPopupPreviewResumeTimer);
+        KillTimer(g_app->popup, kPopupPreviewHoverTimer);
+        KillTimer(g_app->popup, kPopupPreviewHideTimer);
         DestroyWindow(g_app->popup);
     }
     g_app->popup = nullptr;
@@ -3467,7 +3938,7 @@ LRESULT CALLBACK popupMouseProc(int code, WPARAM wParam, LPARAM lParam) {
         const auto* mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
         RECT popupRect{};
         GetWindowRect(g_app->popup, &popupRect);
-        if (!PtInRect(&popupRect, mouse->pt)) {
+        if (!PtInRect(&popupRect, mouse->pt) && !detailPreviewContainsPoint(mouse->pt)) {
             if (g_app->filterMenuOpen && filterMenuContainsPoint(mouse->pt)) {
                 return CallNextHookEx(nullptr, code, wParam, lParam);
             }
@@ -3602,6 +4073,13 @@ void updatePopupSearchKeyboardState(const KBDLLHOOKSTRUCT& key, bool keyDown) {
     SetKeyboardState(state);
 }
 
+// 判断低级键盘钩子事件是否属于预览按键。
+bool popupPreviewKeyMatches(const KBDLLHOOKSTRUCT& key, bool keyUp) {
+    if (!g_app || !g_app->settingsData.previewByKey ||
+        key.vkCode != g_app->settingsData.popupPreviewHotkey.virtualKey) return false;
+    return keyUp || shortcutModifiersFromKeyboard() == g_app->settingsData.popupPreviewHotkey.modifiers;
+}
+
 LPARAM popupKeyMessageLParam(const KBDLLHOOKSTRUCT& key, bool keyUp) {
     LPARAM value = 1L | (static_cast<LPARAM>(key.scanCode & 0xff) << 16);
     if ((key.flags & LLKHF_EXTENDED) != 0) value |= 1L << 24;
@@ -3631,6 +4109,11 @@ LRESULT CALLBACK popupKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
         const bool injected = (key->flags & LLKHF_INJECTED) != 0;
         const bool popupHasNoSystemFocus = GetForegroundWindow() != g_app->popup;
         const bool searchHasFocus = popupSearchHasFocus();
+        if (!injected && (keyDown || keyUp) && !searchHasFocus &&
+            popupPreviewKeyMatches(*key, keyUp)) {
+            PostMessageW(g_app->hidden, kPopupPreviewKeyMessage, 0, keyDown ? 1 : 0);
+            return 1;
+        }
         if (!injected && searchHasFocus && (keyDown || keyUp)) {
             if (key->vkCode == VK_LCONTROL || key->vkCode == VK_RCONTROL) {
                 g_app->popupSearchControlDown = keyDown;
@@ -4568,7 +5051,11 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
             makeSettingsRow(hwnd, settingsLocale().searchInputCompatibility,
                             {kSettingSearchImeCompatibility}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().promotePastedItem,
-                            {kSettingPromotePastedItem}, {36}, {20}, contentWidth)
+                             {kSettingPromotePastedItem}, {36}, {20}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().automaticPreview,
+                             {kSettingPreviewAutomatic}, {36}, {20}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().keyPreview,
+                             {kSettingPreviewByKey}, {36}, {20}, contentWidth)
         });
     } else if (g_app->settingsTab == kSettingsShortcutPage) {
         makeCard(settingsLocale().importantSystemShortcut, {
@@ -4597,7 +5084,9 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
             makeSettingsRow(hwnd, settingsLocale().clearHistoryFilter,
                             {kSettingShortcutClearFilter}, {150}, {30}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().deleteSelectedRecord,
-                            {kSettingShortcutDelete}, {150}, {30}, contentWidth)
+                             {kSettingShortcutDelete}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().previewKey,
+                             {kSettingShortcutPreview}, {150}, {30}, contentWidth)
         });
         makeCard(settingsLocale().registrationStatus, {}, 48);
     } else if (g_app->settingsTab == 2) {
@@ -5384,10 +5873,11 @@ void setSettingsLanguageSelection(HWND hwnd, int selection);
 void configureSettingsEdit(HWND hwnd);
 
 bool isSettingsShortcut(int id) {
-    return id >= kSettingShortcutHistory && id <= kSettingShortcutDelete;
+    return id >= kSettingShortcutPreview && id <= kSettingShortcutDelete;
 }
 
 ShortcutBinding* settingsShortcutBinding(Settings& settings, int id) {
+    if (id == kSettingShortcutPreview) return &settings.popupPreviewHotkey;
     if (id == kSettingShortcutHistory) return &settings.historyHotkey;
     if (id == kSettingShortcutSettings) return &settings.settingsHotkey;
     if (id == kSettingShortcutPause) return &settings.pauseHotkey;
@@ -5438,7 +5928,7 @@ std::wstring formatShortcut(const ShortcutBinding& binding) {
 
 void refreshSettingsShortcutControls(HWND hwnd) {
     if (!hwnd) return;
-    const int ids[] = {kSettingShortcutHistory, kSettingShortcutSettings, kSettingShortcutPause,
+    const int ids[] = {kSettingShortcutPreview, kSettingShortcutHistory, kSettingShortcutSettings, kSettingShortcutPause,
                        kSettingShortcutPaste, kSettingShortcutPastePlain, kSettingShortcutPasteRich,
                        kSettingShortcutClosePopup, kSettingShortcutPopupSettings,
                        kSettingShortcutClearFilter, kSettingShortcutDelete};
@@ -5494,7 +5984,7 @@ void captureSettingsShortcut(HWND hwnd, HWND control, UINT virtualKey) {
     if (isShortcutModifierKey(virtualKey)) return;
     const UINT modifiers = shortcutModifiersFromKeyboard();
     const int id = GetDlgCtrlID(control);
-    const bool modifierless = id == kSettingShortcutPaste || id == kSettingShortcutClosePopup ||
+    const bool modifierless = id == kSettingShortcutPreview || id == kSettingShortcutPaste || id == kSettingShortcutClosePopup ||
         id == kSettingShortcutPopupSettings || id == kSettingShortcutDelete;
     if (modifiers == 0 && !modifierless) {
         SetWindowTextW(control, settingsLocale().needModifier);
@@ -5543,7 +6033,10 @@ void createSettingsControlsModern(HWND hwnd) {
                  g_app->settingsData.searchImeCompatibility);
     createToggle(kSettingPromotePastedItem, 640, 474,
                  g_app->settingsData.promotePastedItem);
+    createToggle(kSettingPreviewAutomatic, 640, 509, g_app->settingsData.previewAutomatic);
+    createToggle(kSettingPreviewByKey, 640, 544, g_app->settingsData.previewByKey);
     createToggle(kSettingEncrypt, 640, 116, g_app->settingsData.encryptData);
+    createShortcut(kSettingShortcutPreview, 550, g_app->settingsData.popupPreviewHotkey);
     createShortcut(kSettingShortcutHistory, 110, g_app->settingsData.historyHotkey);
     createShortcut(kSettingShortcutSettings, 154, g_app->settingsData.settingsHotkey);
     createShortcut(kSettingShortcutPause, 198, g_app->settingsData.pauseHotkey);
@@ -5702,15 +6195,16 @@ void updateSettingsTabControls(HWND hwnd) {
         KillTimer(hwnd, kSettingsDropdownTimer);
     }
     const int ids[] = {kSettingDark, kSettingWinV, kSettingLanguage, kSettingPause,
-                         kSettingStartup, kSettingStartupSettings, kSettingStartupNotification,
-                         kSettingRunAsAdministrator, kSettingSearchImeCompatibility,
+                          kSettingStartup, kSettingStartupSettings, kSettingStartupNotification,
+                          kSettingRunAsAdministrator, kSettingSearchImeCompatibility,
+                          kSettingPreviewAutomatic, kSettingPreviewByKey,
                          kSettingPromotePastedItem, kSettingEncrypt, kSettingMaxItems,
                         kSettingRetentionDays, kSettingMaxDiskMb, kSettingMaxContentMb,
                         kSettingDataDirectory, kSettingBrowseDataDirectory,
                           kSettingIgnoredApps, kSettingSensitiveExpiry, kSettingClear,
                              kSettingClearText, kSettingClearImage, kSettingClearFiles,
-                             kSettingOpenLog, kSettingSupportAuthor, kSettingJoinQqGroup,
-                            kSettingShortcutHistory,
+                              kSettingOpenLog, kSettingSupportAuthor, kSettingJoinQqGroup,
+                             kSettingShortcutPreview, kSettingShortcutHistory,
                          kSettingShortcutSettings, kSettingShortcutPause,
                          kSettingShortcutPaste, kSettingShortcutPastePlain,
                          kSettingShortcutPasteRich, kSettingShortcutClosePopup,
@@ -6297,6 +6791,40 @@ void appendPopupPromotePastedItemMenu(HMENU menu) {
                 kMenuPromotePastedItem, settingsLocale().promotePastedItem);
 }
 
+// 统一应用历史窗口右键菜单和设置页的预览开关。
+void setPopupPreviewOptions(bool automatic, bool byKey) {
+    if (!g_app) return;
+    g_app->settingsData.previewAutomatic = automatic;
+    g_app->settingsData.previewByKey = byKey;
+    if (g_app->settings) {
+        setSettingsToggleValue(GetDlgItem(g_app->settings, kSettingPreviewAutomatic), automatic);
+        setSettingsToggleValue(GetDlgItem(g_app->settings, kSettingPreviewByKey), byKey);
+        InvalidateRect(g_app->settings, nullptr, FALSE);
+    }
+    if (!automatic && !byKey) hideDetailPreview();
+    else if (!automatic && !g_app->detailPreviewHeld) hideDetailPreview();
+    else if (automatic) scheduleDetailPreview(g_app->hoveredRow);
+    saveSettings(g_app->settingsData);
+}
+
+// 向历史窗口右键菜单添加预览模式选项。
+void appendPopupPreviewMenu(HMENU menu) {
+    if (!menu || !g_app) return;
+    HMENU preview = CreatePopupMenu();
+    if (!preview) return;
+    AppendMenuW(preview, MF_STRING | (g_app->settingsData.previewAutomatic ? MF_CHECKED : 0),
+                kMenuPreviewAutomatic, settingsLocale().automaticPreview);
+    wchar_t keyLabel[128]{};
+    swprintf_s(keyLabel, L"%ls (%ls)", settingsLocale().keyPreview,
+               formatShortcut(g_app->settingsData.popupPreviewHotkey).c_str());
+    AppendMenuW(preview, MF_STRING | (g_app->settingsData.previewByKey ? MF_CHECKED : 0),
+                kMenuPreviewByKey, keyLabel);
+    AppendMenuW(preview, MF_STRING | (!g_app->settingsData.previewAutomatic &&
+                                      !g_app->settingsData.previewByKey ? MF_CHECKED : 0),
+                kMenuPreviewDisabled, settingsLocale().previewDisabled);
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(preview), settingsLocale().previewMode);
+}
+
 void togglePopupPromotePastedItem() {
     if (!g_app) return;
     g_app->settingsData.promotePastedItem = !g_app->settingsData.promotePastedItem;
@@ -6341,7 +6869,7 @@ bool isSettingsToggle(int id) {
            id == kSettingStartup || id == kSettingStartupSettings ||
            id == kSettingStartupNotification || id == kSettingRunAsAdministrator ||
            id == kSettingSearchImeCompatibility || id == kSettingPromotePastedItem ||
-           id == kSettingEncrypt;
+           id == kSettingPreviewAutomatic || id == kSettingPreviewByKey || id == kSettingEncrypt;
 }
 
 int settingsToggleAtPoint(int tab, int x, int y) {
@@ -6615,6 +7143,8 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     HWND runAsAdministrator = GetDlgItem(hwnd, kSettingRunAsAdministrator);
     HWND searchImeCompatibility = GetDlgItem(hwnd, kSettingSearchImeCompatibility);
     HWND promotePastedItem = GetDlgItem(hwnd, kSettingPromotePastedItem);
+    HWND previewAutomatic = GetDlgItem(hwnd, kSettingPreviewAutomatic);
+    HWND previewByKey = GetDlgItem(hwnd, kSettingPreviewByKey);
     HWND encrypt = GetDlgItem(hwnd, kSettingEncrypt);
     HWND categoryMax[kStorageCategoryCount]{};
     HWND categoryDisk[kStorageCategoryCount]{};
@@ -6625,7 +7155,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     if (!win || !dark || !language || !pause || !maxItems || !retentionDays || !maxDiskMb ||
         !maxContentMb || !dataDirectory || !ignoredApps || !sensitiveExpiry || !startup ||
         !startupSettings || !startupNotification || !runAsAdministrator ||
-        !searchImeCompatibility || !promotePastedItem || !encrypt) {
+        !searchImeCompatibility || !promotePastedItem || !previewAutomatic || !previewByKey || !encrypt) {
         return false;
     }
     for (int i = 0; i < kStorageCategoryCount; ++i) {
@@ -6642,6 +7172,8 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     next.runAsAdministrator = settingsToggleValue(runAsAdministrator);
     next.searchImeCompatibility = settingsToggleValue(searchImeCompatibility);
     next.promotePastedItem = settingsToggleValue(promotePastedItem);
+    next.previewAutomatic = settingsToggleValue(previewAutomatic);
+    next.previewByKey = settingsToggleValue(previewByKey);
     next.language = settingsLanguageSelection(language);
     next.language = next.language <= 0 ? -1 : next.language - 1;
 
@@ -6752,6 +7284,10 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     const bool searchImeCompatibilityChanged =
         next.searchImeCompatibility != previous.searchImeCompatibility;
     const bool promotePastedItemChanged = next.promotePastedItem != previous.promotePastedItem;
+    const bool previewChanged = next.previewAutomatic != previous.previewAutomatic ||
+        next.previewByKey != previous.previewByKey ||
+        next.popupPreviewHotkey.modifiers != previous.popupPreviewHotkey.modifiers ||
+        next.popupPreviewHotkey.virtualKey != previous.popupPreviewHotkey.virtualKey;
     const bool maxItemsChanged = next.maxItems != previous.maxItems;
     const bool retentionChanged = next.retentionDays != previous.retentionDays;
     const bool maxDiskChanged = next.maxDiskMb != previous.maxDiskMb;
@@ -6765,7 +7301,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
         next.encryptData != previous.encryptData || next.language != previous.language ||
         dataDirectoryChanged ||
         next.sensitiveExpiryHours != previous.sensitiveExpiryHours || searchImeCompatibilityChanged ||
-        promotePastedItemChanged ||
+        promotePastedItemChanged || previewChanged ||
         next.ignoredApps != previous.ignoredApps;
     if (!changed) return true;
 
@@ -6786,6 +7322,15 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     }
     if (startupChanged) updateStartupRegistration(g_app->settingsData.startWithWindows);
     if (winVChanged) registerHotkeys();
+    if (previewChanged && g_app->popup) {
+        if ((!g_app->settingsData.previewAutomatic && !g_app->settingsData.previewByKey) ||
+            (!g_app->settingsData.previewAutomatic && !g_app->detailPreviewHeld)) {
+            hideDetailPreview();
+        } else if (g_app->settingsData.previewAutomatic) {
+            scheduleDetailPreview(g_app->hoveredRow);
+        }
+        InvalidateRect(g_app->popup, nullptr, FALSE);
+    }
     if (languageChanged) {
         g_app->settingsActionFeedback.clear();
         refreshSettingsLocalizedControls(hwnd);
@@ -8252,6 +8797,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
     if (message == WM_DESTROY && hwnd == g_app->popup) {
         cancelPopupSearch();
+        if (g_app->detailPreview) DestroyWindow(g_app->detailPreview);
+        g_app->detailPreview = nullptr;
+        clearDetailPreviewBitmap();
         clearPopupImagePreviews();
         clearPopupSourceIcons();
         if (g_app->popupFont) DeleteObject(g_app->popupFont);
@@ -8263,6 +8811,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         KillTimer(hwnd, kPopupOpenGuardTimer);
         KillTimer(hwnd, kPopupDeactivateTimer);
         KillTimer(hwnd, kPopupPreviewResumeTimer);
+        KillTimer(hwnd, kPopupPreviewHoverTimer);
+        KillTimer(hwnd, kPopupPreviewHideTimer);
         if (g_app->popupMouseHook) {
             UnhookWindowsHookEx(g_app->popupMouseHook);
             g_app->popupMouseHook = nullptr;
@@ -8382,6 +8932,36 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             invalidatePopupList(g_app->popup);
             return 0;
         }
+        if (message == kPopupDetailPreviewLoadedMessage) {
+            std::unique_ptr<PopupDetailPreviewResult> result(
+                reinterpret_cast<PopupDetailPreviewResult*>(wParam));
+            if (!result) return 0;
+            const bool stale = !g_app->popup || result->popup != g_app->popup ||
+                result->storeRevision != g_app->store.revision() ||
+                result->generation != g_app->detailPreviewGeneration->load(std::memory_order_acquire) ||
+                result->recordId != g_app->detailPreviewState.recordId;
+            if (stale) {
+                if (result->bitmap) DeleteObject(result->bitmap);
+                return 0;
+            }
+            clearDetailPreviewBitmap();
+            g_app->detailPreviewState.loading = false;
+            g_app->detailPreviewState.failed = !result->success;
+            g_app->detailPreviewState.text = std::move(result->text);
+            if (result->success && result->bitmap) {
+                g_app->detailPreviewState.bitmap = result->bitmap;
+                g_app->detailPreviewState.width = result->width;
+                g_app->detailPreviewState.height = result->height;
+            } else if (result->bitmap) {
+                DeleteObject(result->bitmap);
+            }
+            if (g_app->detailPreview) InvalidateRect(g_app->detailPreview, nullptr, FALSE);
+            return 0;
+        }
+        if (message == kPopupPreviewKeyMessage) {
+            updateDetailPreviewKeyState(lParam != 0);
+            return 0;
+        }
         if (message == kPopupKeyboardMessage && g_app->popup) {
             PostMessageW(g_app->popup, WM_KEYDOWN, wParam, 0);
             return 0;
@@ -8486,6 +9066,35 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
     }
 
+    if (hwnd == g_app->detailPreview) {
+        if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+        if (message == WM_ERASEBKGND) return 1;
+        if (message == WM_MOUSEMOVE) {
+            KillTimer(g_app->popup, kPopupPreviewHideTimer);
+            TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};
+            TrackMouseEvent(&tracking);
+            return 0;
+        }
+        if (message == WM_MOUSELEAVE) {
+            if (!g_app->detailPreviewHeld && g_app->popup &&
+                g_app->settingsData.previewAutomatic) {
+                SetTimer(g_app->popup, kPopupPreviewHideTimer,
+                         kPopupDetailPreviewHideDelayMs, nullptr);
+            }
+            return 0;
+        }
+        if (message == WM_PAINT) {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd, &ps);
+            paintDetailPreview(hwnd, dc);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        if (message == WM_NCDESTROY) {
+            g_app->detailPreview = nullptr;
+            return 0;
+        }
+    }
     if (hwnd == g_app->settings) {
         if (message == WM_SIZE) {
             g_app->settingsScrollOffset = std::clamp(g_app->settingsScrollOffset,
@@ -8861,11 +9470,14 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == WM_TIMER && wParam == kPopupDeactivateTimer) {
             KillTimer(hwnd, kPopupDeactivateTimer);
             const HWND foreground = GetForegroundWindow();
+            POINT cursor{};
+            GetCursorPos(&cursor);
             if (g_app->popup != hwnd || g_app->popupOpening ||
-                g_app->popupPinned || g_app->popupOpenedByWinV ||
-                g_app->filterMenuOpen ||
-                g_app->filterDragging || g_app->scrollDragging ||
-                foreground == hwnd) {
+                 g_app->popupPinned || g_app->popupOpenedByWinV ||
+                 g_app->filterMenuOpen ||
+                 g_app->filterDragging || g_app->scrollDragging ||
+                 detailPreviewContainsPoint(cursor) ||
+                 foreground == hwnd) {
                 return 0;
             }
             if (popupSearchHasFocus()) {
@@ -8887,6 +9499,18 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             g_app->fastImagePreview = false;
             preloadPopupImageScreens(hwnd);
             invalidatePopupList(hwnd);
+            return 0;
+        }
+        if (message == WM_TIMER && wParam == kPopupPreviewHoverTimer) {
+            KillTimer(hwnd, kPopupPreviewHoverTimer);
+            if (g_app->popup == hwnd && g_app->settingsData.previewAutomatic) {
+                requestDetailPreview(g_app->detailPreviewPendingRow);
+            }
+            return 0;
+        }
+        if (message == WM_TIMER && wParam == kPopupPreviewHideTimer) {
+            KillTimer(hwnd, kPopupPreviewHideTimer);
+            if (!g_app->detailPreviewHeld) hideDetailPreview();
             return 0;
         }
         if (message == WM_TIMER && wParam == kPopupOpenGuardTimer) {
@@ -8935,6 +9559,17 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             cancelPopupSearch();
             KillTimer(hwnd, kPopupSearchTimer);
             SetTimer(hwnd, kPopupSearchTimer, kPopupSearchDelayMs, nullptr);
+            return 0;
+        }
+        if (message == WM_KEYUP && g_app->settingsData.previewByKey &&
+            static_cast<UINT>(wParam) == g_app->settingsData.popupPreviewHotkey.virtualKey) {
+            updateDetailPreviewKeyState(false);
+            return 0;
+        }
+        if (message == WM_KEYDOWN && g_app->settingsData.previewByKey &&
+            static_cast<UINT>(wParam) == g_app->settingsData.popupPreviewHotkey.virtualKey &&
+            shortcutMatches(g_app->settingsData.popupPreviewHotkey, static_cast<UINT>(wParam))) {
+            updateDetailPreviewKeyState(true);
             return 0;
         }
         if (message == WM_KEYDOWN) {
@@ -9061,7 +9696,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 headerButton = 9;
             }
             const int nextFilter = filter >= 0 ? filter : headerButton;
-            if (row != g_app->hoveredRow || nextFilter != g_app->hoveredFilter ||
+             if (row != g_app->hoveredRow || nextFilter != g_app->hoveredFilter ||
                 deleteRow != g_app->hoveredDeleteRow || pinRow != g_app->hoveredPinRow ||
                 headerHover != g_app->hoveredHeader) {
                 const int previousRow = g_app->hoveredRow;
@@ -9072,13 +9707,17 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 g_app->hoveredDeleteRow = deleteRow;
                 g_app->hoveredPinRow = pinRow;
                 g_app->hoveredHeader = headerHover;
-                invalidatePopupHover(hwnd, previousRow, previousFilter, previousHeader);
-                invalidatePopupHover(hwnd, row, nextFilter, headerHover);
-            }
+                 invalidatePopupHover(hwnd, previousRow, previousFilter, previousHeader);
+                 invalidatePopupHover(hwnd, row, nextFilter, headerHover);
+                 if (row != previousRow) {
+                     if (g_app->detailPreviewHeld) requestDetailPreview(row);
+                     else scheduleDetailPreview(row);
+                 }
+             }
             return 0;
         }
         if (message == WM_MOUSELEAVE) {
-            if (g_app->hoveredRow != -1 || g_app->hoveredFilter != -1 ||
+             if (g_app->hoveredRow != -1 || g_app->hoveredFilter != -1 ||
                 g_app->hoveredDeleteRow != -1 || g_app->hoveredPinRow != -1 || g_app->hoveredHeader) {
                 const int previousRow = g_app->hoveredRow;
                 const int previousFilter = g_app->hoveredFilter;
@@ -9088,8 +9727,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 g_app->hoveredDeleteRow = -1;
                 g_app->hoveredPinRow = -1;
                 g_app->hoveredHeader = false;
-                invalidatePopupHover(hwnd, previousRow, previousFilter, previousHeader);
-            }
+                 invalidatePopupHover(hwnd, previousRow, previousFilter, previousHeader);
+                 if (!g_app->detailPreviewHeld) scheduleDetailPreview(-1);
+             }
             return 0;
         }
         if (message == WM_LBUTTONUP && g_app->scrollDragging) {
@@ -9229,9 +9869,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 g_app->selected = row;
                 HMENU menu = CreatePopupMenu();
                 const ClipItem& item = g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]];
-                appendPasteMenu(menu, item);
-                appendPopupPinMenu(menu);
-                appendPopupPromotePastedItemMenu(menu);
+                 appendPasteMenu(menu, item);
+                 appendPopupPinMenu(menu);
+                 appendPopupPromotePastedItemMenu(menu);
+                 appendPopupPreviewMenu(menu);
                 AppendMenuW(menu, MF_STRING, kMenuDelete, settingsLocale().popupDelete);
                 appendFilterMenu(menu);
                 POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
@@ -9243,9 +9884,12 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 DestroyMenu(menu);
                 const std::size_t index = g_app->visible[static_cast<std::size_t>(g_app->selected)];
                  if (command == kMenuPopupPinned) setPopupPinned(!g_app->popupPinned);
-                 else if (command == kMenuPromotePastedItem) {
-                     togglePopupPromotePastedItem();
-                 }
+                  else if (command == kMenuPromotePastedItem) {
+                      togglePopupPromotePastedItem();
+                  }
+                  else if (command == kMenuPreviewAutomatic) setPopupPreviewOptions(true, false);
+                  else if (command == kMenuPreviewByKey) setPopupPreviewOptions(false, true);
+                  else if (command == kMenuPreviewDisabled) setPopupPreviewOptions(false, false);
                  else if (command == kMenuPaste) sendPaste();
                 else if (command == kMenuPastePlain) sendPaste(PasteMode::PlainText);
                 else if (command == kMenuPasteRich) sendPaste(PasteMode::RichText);
@@ -9255,8 +9899,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 refreshVisible();
             } else {
                 HMENU menu = CreatePopupMenu();
-                appendPopupPinMenu(menu);
-                appendPopupPromotePastedItemMenu(menu);
+                 appendPopupPinMenu(menu);
+                 appendPopupPromotePastedItemMenu(menu);
+                 appendPopupPreviewMenu(menu);
                 appendFilterMenu(menu);
                 POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
                 ClientToScreen(hwnd, &point);
@@ -9270,6 +9915,12 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 } else if (command == kMenuPromotePastedItem) {
                     togglePopupPromotePastedItem();
                     refreshVisible();
+                } else if (command == kMenuPreviewAutomatic) {
+                    setPopupPreviewOptions(true, false);
+                } else if (command == kMenuPreviewByKey) {
+                    setPopupPreviewOptions(false, true);
+                } else if (command == kMenuPreviewDisabled) {
+                    setPopupPreviewOptions(false, false);
                 } else if (command == kMenuFilter) {
                     showPopupFilterMenu(hwnd);
                 } else {
@@ -9515,6 +10166,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     dropdownClass.hbrBackground = nullptr;
     dropdownClass.lpszClassName = L"ClipLiteDropdown";
     RegisterClassW(&dropdownClass);
+    WNDCLASSW previewClass = popupClass;
+    previewClass.style = CS_HREDRAW | CS_VREDRAW;
+    previewClass.hbrBackground = nullptr;
+    previewClass.lpszClassName = L"ClipLitePreview";
+    RegisterClassW(&previewClass);
     WNDCLASSW supportClass = popupClass;
     supportClass.style = CS_HREDRAW | CS_VREDRAW;
     supportClass.lpfnWndProc = supportWindowProc;

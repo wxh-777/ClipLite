@@ -17,6 +17,7 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 - Open clipboard history with `Alt+V`, with an optional `Win+V` replacement mode.
 - Capture and restore plain text, HTML, file lists, DIB, and DIBV5 images; image files in file lists show on-demand thumbnails.
 - Search and combine type, time range, content length, source application, and sort filters; pin, delete, clear, and paste history items.
+- Supports a separate original-content preview window; choose automatic preview, hold-key preview, or disabled preview in Settings or the history context menu. Hold-key preview uses `F2` by default.
 - Search focuses the input by default; an optional compatibility mode keeps the original app in the foreground and uses `Ctrl+Space` to enter Chinese IME input.
 - Paste as plain text or rich text; images are loaded on demand with bounded memory and disk thumbnail caches.
 - Automatic, light, and dark themes with blue, purple, green, and orange accents.
@@ -93,6 +94,7 @@ Use `SHA256SUM.txt` in the portable package to verify `ClipLite.exe`. Verify the
 - `Esc`: Close the history window.
 - `F10`: Open settings.
 - `Ctrl+0`: Clear the history filter.
+- `F2`: Hold to preview the current history item when hold-key preview is enabled.
 
 History, settings, and monitoring shortcuts can be changed in Settings. `Win+V` replacement depends on Windows, the current integrity level, and shortcut conflicts. `Alt+V` remains available when registration fails.
 Settings descriptions automatically reserve enough space for multiple lines.
