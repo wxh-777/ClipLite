@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.2.1] - 2026-09-11
+
+- Improved long-text detail previews by limiting oversized payload conversion in the background, reducing stalls while opening, scrolling, and repainting.
+- Added a native scrollbar to text previews while preserving line breaks, spaces, tabs, and blank lines; the text area no longer provides selection, copying, or a caret.
+- Fixed the preview popup being mistaken for an outside hover and closing when the pointer entered the detail text area.
+
+### Build and Verification
+
+- The `1.2.1` x64 Release build, `ClipLiteStore` CTest, portable package, and Inno Setup installer generation passed.
+
 ## [1.2.0] - 2026-09-10
 
 - Added drag-to-pan support for enlarged original image previews.

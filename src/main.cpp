@@ -5,6 +5,7 @@
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <gdiplus.h>
+#include <richedit.h>
 #include <winhttp.h>
 
 #include "clip_store.h"
@@ -329,7 +330,6 @@ struct PopupDetailPreview {
     int sourceHeight = 0;
     std::string imagePayload;
     std::shared_ptr<Gdiplus::Image> imageSource;
-    int textScrollOffset = 0;
 };
 
 struct PopupSourceIcon {
@@ -347,6 +347,7 @@ struct AppState {
     HWND hidden = nullptr;
     HWND popup = nullptr;
     HWND detailPreview = nullptr;
+    HWND detailPreviewTextEdit = nullptr;
     HWND searchEdit = nullptr;
     HWND settings = nullptr;
     HWND settingsHeaderOverlay = nullptr;
@@ -370,6 +371,7 @@ struct AppState {
     HBRUSH settingsBackgroundBrush = nullptr;
     HBRUSH settingsCardBrush = nullptr;
     HBRUSH settingsInputBrush = nullptr;
+    HMODULE richEditModule = nullptr;
     ULONG_PTR gdiplusToken = 0;
     HHOOK keyboardHook = nullptr;
     HHOOK popupKeyboardHook = nullptr;
@@ -641,6 +643,12 @@ void clearPopupSourceIcons();
 void hideDetailPreview();
 void requestDetailPreview(int row);
 void scheduleDetailPreview(int row);
+LRESULT CALLBACK detailPreviewTextEditSubclass(HWND hwnd, UINT message, WPARAM wParam,
+                                               LPARAM lParam, UINT_PTR subclassId,
+                                               DWORD_PTR refData);
+void positionDetailPreviewTextEdit(bool show);
+void refreshDetailPreviewTextEditAppearance();
+void updateDetailPreviewTextEdit();
 void updateDetailPreviewKeyState(bool down);
 void closeFilterMenu();
 bool filterMenuContainsPoint(POINT point);
@@ -972,7 +980,7 @@ const SettingsLocale kEnglishSettingsLocale{
     L"Some shortcuts could not be registered. Choose different combinations.",
     L"Custom shortcuts require at least one modifier key.",
     L"Sensitive markers: password, token, api_key, secret, and private keys; detected by content pattern.",
-      L"Application    ClipLite", L"Version        1.2.0 x64", L"Storage format  v4",
+      L"Application    ClipLite", L"Version        1.2.1 x64", L"Storage format  v4",
      L"Data directory  %LOCALAPPDATA%\\ClipLite", L"Browse", L"Clear unpinned history", L"Clear unpinned text",
      L"Clear unpinned images", L"Clear unpinned files", L"Press shortcut", L"Need modifier", L"One application per line", L"Auto",
     L"ClipLite Settings", L"Choose a valid cache directory.", L"Unable to create the cache directory.",
@@ -1020,7 +1028,7 @@ const SettingsLocale kChineseSettingsLocale{
     L"当前 %zu 条 \xB7 %ls", L"设置为 0 表示不限；置顶记录不会被自动清理。",
     L"部分快捷键注册失败，请更换组合键。", L"自定义快捷键至少需要一个修饰键。",
     L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。",
-      L"应用名称    ClipLite", L"版本        1.2.0 x64", L"存储格式    v4",
+      L"应用名称    ClipLite", L"版本        1.2.1 x64", L"存储格式    v4",
      L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清理未置顶历史", L"清理未置顶文本", L"清理未置顶图片",
       L"清理未置顶文件", L"按下组合键", L"需要修饰键", L"每行一个应用名称", L"自动", L"ClipLite 设置",
     L"请选择有效的缓存目录。", L"无法创建缓存目录。", L"目标目录已有历史数据，请选择空目录。",
@@ -1400,6 +1408,30 @@ std::wstring utf8ToWide(const std::string& value) {
     MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
                         static_cast<int>(value.size()), result.data(), count);
     return result;
+}
+
+// 截取不超过指定字节数的完整 UTF-8 前缀，避免预览转换整个超大载荷。
+std::string utf8PreviewPrefix(const std::string& value, std::size_t maxBytes) {
+    const std::size_t length = std::min(value.size(), maxBytes);
+    std::size_t end = 0;
+    while (end < length) {
+        const unsigned char lead = static_cast<unsigned char>(value[end]);
+        const std::size_t sequenceSize = lead <= 0x7F ? 1 :
+            (lead >= 0xC2 && lead <= 0xDF ? 2 :
+             (lead >= 0xE0 && lead <= 0xEF ? 3 :
+              (lead >= 0xF0 && lead <= 0xF4 ? 4 : 0)));
+        if (sequenceSize == 0 || sequenceSize > length - end) break;
+        bool valid = true;
+        for (std::size_t index = 1; index < sequenceSize; ++index) {
+            if ((static_cast<unsigned char>(value[end + index]) & 0xC0) != 0x80) {
+                valid = false;
+                break;
+            }
+        }
+        if (!valid) break;
+        end += sequenceSize;
+    }
+    return value.substr(0, end);
 }
 
 std::string wideToUtf8(const wchar_t* value, std::size_t length) {
@@ -3114,16 +3146,18 @@ void previewWorkerLoop(AppState* app) {
                     createFileImageView(*imageSource, job.width, job.height, job.zoom, job.panX, job.panY,
                                               job.background, bitmap, width, height, sourceWidth, sourceHeight);
             } else if (success) {
-                text = job.item.type == ClipType::Html ? utf8ToWide(job.item.preview) : utf8ToWide(payload);
                 constexpr std::size_t kDetailTextLimit = 128u * 1024u;
+                const std::string source = job.item.type == ClipType::Html
+                    ? job.item.preview : utf8PreviewPrefix(payload, kDetailTextLimit * 4);
+                text = utf8ToWide(source);
                 if (text.size() > kDetailTextLimit) {
                     text.resize(kDetailTextLimit);
                     text += L"\n...";
                 }
             }
             postPopupDetailPreviewResult(job, bitmap, width, height, sourceWidth, sourceHeight,
-                                         std::move(imagePayload), std::move(imageSource),
-                                         std::move(text), success);
+                                          std::move(imagePayload), std::move(imageSource),
+                                          std::move(text), success);
             continue;
         }
         success = app->thumbnailCache.read(job.cacheKey, job.encrypted, encoded) &&
@@ -3229,7 +3263,7 @@ void hideDetailPreview() {
     g_app->detailPreviewState.sourceHeight = 0;
     g_app->detailPreviewState.imagePayload.clear();
     g_app->detailPreviewState.imageSource.reset();
-    g_app->detailPreviewState.textScrollOffset = 0;
+    if (g_app->detailPreviewTextEdit) ShowWindow(g_app->detailPreviewTextEdit, SW_HIDE);
     if (g_app->detailPreview) ShowWindow(g_app->detailPreview, SW_HIDE);
 }
 
@@ -3240,6 +3274,11 @@ void destroyDetailPreview() {
     if (g_app->detailPreview) {
         DestroyWindow(g_app->detailPreview);
         g_app->detailPreview = nullptr;
+    }
+    g_app->detailPreviewTextEdit = nullptr;
+    if (g_app->richEditModule) {
+        FreeLibrary(g_app->richEditModule);
+        g_app->richEditModule = nullptr;
     }
 }
 
@@ -3259,6 +3298,27 @@ bool ensureDetailPreviewWindow() {
         HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, ui(16), ui(16));
         if (region && SetWindowRgn(g_app->detailPreview, region, TRUE) == 0) {
             DeleteObject(region);
+        }
+        g_app->richEditModule = LoadLibraryW(L"Msftedit.dll");
+        if (g_app->richEditModule) {
+            g_app->detailPreviewTextEdit = CreateWindowExW(
+                0, MSFTEDIT_CLASS, L"",
+                WS_CHILD | WS_VSCROLL |
+                    ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
+                ui(16), ui(62), ui(kPopupDetailPreviewWidth - 32),
+                ui(kPopupDetailPreviewHeight - 78), g_app->detailPreview, nullptr,
+                GetModuleHandleW(nullptr), nullptr);
+            if (g_app->detailPreviewTextEdit) {
+                SetWindowSubclass(g_app->detailPreviewTextEdit,
+                                  detailPreviewTextEditSubclass, 1, 0);
+                SendMessageW(g_app->detailPreviewTextEdit, WM_SETFONT,
+                             reinterpret_cast<WPARAM>(g_app->popupPreviewFont), TRUE);
+                SendMessageW(g_app->detailPreviewTextEdit, EM_EXLIMITTEXT, 0,
+                             static_cast<LPARAM>(128u * 1024u));
+                SendMessageW(g_app->detailPreviewTextEdit, EM_SETBKGNDCOLOR, 0,
+                             settingsThemeColor(RGB(248, 250, 252), RGB(37, 44, 54)));
+                ShowWindow(g_app->detailPreviewTextEdit, SW_HIDE);
+            }
         }
         constexpr DWORD kDwmWindowCornerPreference = 33;
         constexpr DWORD kDwmCornerRound = 2;
@@ -3305,6 +3365,9 @@ void positionDetailPreview(int row) {
                    static_cast<int>(info.rcWork.bottom) - height);
     SetWindowPos(g_app->detailPreview, HWND_TOPMOST, x, y, width, height,
                  SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    const bool showText = !g_app->detailPreviewState.loading &&
+        !g_app->detailPreviewState.failed && !g_app->detailPreviewState.bitmap;
+    positionDetailPreviewTextEdit(showText);
 }
 
 // 为指定历史记录请求一次原始内容预览。
@@ -3324,9 +3387,7 @@ void requestDetailPreview(int row) {
     const bool sameRecord = g_app->detailPreviewState.recordId == item.recordId &&
         g_app->detailPreviewState.storeRevision == g_app->store.revision() &&
         !g_app->detailPreviewState.failed;
-    if (sameRecord &&
-        (g_app->detailPreviewState.loading || g_app->detailPreviewState.bitmap ||
-         !g_app->detailPreviewState.text.empty())) {
+    if (sameRecord) {
         g_app->detailPreviewVisible = true;
         positionDetailPreview(row);
         InvalidateRect(g_app->detailPreview, nullptr, FALSE);
@@ -3344,7 +3405,6 @@ void requestDetailPreview(int row) {
         g_app->detailPreviewState.sourceHeight = 0;
         g_app->detailPreviewState.imagePayload.clear();
         g_app->detailPreviewState.imageSource.reset();
-        g_app->detailPreviewState.textScrollOffset = 0;
     }
     cancelDetailPreviewWork();
     clearDetailPreviewBitmap();
@@ -3358,6 +3418,7 @@ void requestDetailPreview(int row) {
     g_app->detailPreviewState.failed = false;
     g_app->detailPreviewVisible = true;
     positionDetailPreview(row);
+    updateDetailPreviewTextEdit();
     InvalidateRect(g_app->detailPreview, nullptr, FALSE);
 
     PopupPreviewJob job;
@@ -3392,6 +3453,7 @@ void requestDetailPreview(int row) {
     if (!startPreviewWorker()) {
         g_app->detailPreviewState.loading = false;
         g_app->detailPreviewState.failed = true;
+        updateDetailPreviewTextEdit();
         InvalidateRect(g_app->detailPreview, nullptr, FALSE);
         return;
     }
@@ -3404,6 +3466,7 @@ void requestDetailPreview(int row) {
         if (g_app->previewJobs.size() >= 12) {
             g_app->detailPreviewState.loading = false;
             g_app->detailPreviewState.failed = true;
+            updateDetailPreviewTextEdit();
             InvalidateRect(g_app->detailPreview, nullptr, FALSE);
             return;
         }
@@ -3446,20 +3509,74 @@ RECT detailPreviewContentRect(HWND hwnd) {
     return RECT{ui(16), ui(62), client.right - ui(16), client.bottom - ui(16)};
 }
 
-// 计算长文本在当前视口中的最大滚动距离。
-int detailTextScrollMax(HWND hwnd) {
-    if (!g_app || !hwnd || g_app->detailPreviewState.text.empty()) return 0;
-    const RECT content = detailPreviewContentRect(hwnd);
-    HDC dc = GetDC(hwnd);
-    if (!dc) return 0;
-    HGDIOBJ previous = SelectObject(dc, g_app->popupPreviewFont);
-    RECT measured{0, 0, content.right - content.left, 0};
-    DrawTextW(dc, g_app->detailPreviewState.text.c_str(), -1, &measured,
-              DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
-    SelectObject(dc, previous);
-    ReleaseDC(hwnd, dc);
-    return std::max(0, static_cast<int>(measured.bottom) -
-                        static_cast<int>(content.bottom - content.top));
+// 预览文本只作为滚动内容展示，屏蔽文本选中、右键菜单和复制操作。
+LRESULT CALLBACK detailPreviewTextEditSubclass(HWND hwnd, UINT message, WPARAM wParam,
+                                               LPARAM lParam, UINT_PTR subclassId,
+                                               DWORD_PTR refData) {
+    (void)lParam;
+    (void)refData;
+    if (message == WM_LBUTTONDOWN || message == WM_LBUTTONDBLCLK ||
+        message == WM_RBUTTONDOWN || message == WM_MBUTTONDOWN ||
+        (message == WM_MOUSEMOVE && (wParam & MK_LBUTTON) != 0)) {
+        return 0;
+    }
+    if (message == WM_CONTEXTMENU) return 0;
+    if (message == WM_KEYDOWN &&
+        (GetKeyState(VK_CONTROL) & 0x8000) != 0 &&
+        (wParam == 'A' || wParam == 'C' || wParam == 'X')) {
+        return 0;
+    }
+    if (message == WM_SETFOCUS) {
+        const LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
+        HideCaret(hwnd);
+        return result;
+    }
+    if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, detailPreviewTextEditSubclass, subclassId);
+    }
+    return DefSubclassProc(hwnd, message, wParam, lParam);
+}
+
+// 更新文本控件的主题颜色和字体，不改动用户当前选区。
+void refreshDetailPreviewTextEditAppearance() {
+    if (!g_app || !g_app->detailPreviewTextEdit) return;
+    const COLORREF background = settingsThemeColor(RGB(248, 250, 252), RGB(37, 44, 54));
+    const COLORREF text = settingsThemeColor(RGB(30, 41, 59), RGB(226, 232, 240));
+    SendMessageW(g_app->detailPreviewTextEdit, WM_SETFONT,
+                 reinterpret_cast<WPARAM>(g_app->popupPreviewFont), TRUE);
+    SendMessageW(g_app->detailPreviewTextEdit, EM_SETBKGNDCOLOR, 0, background);
+    CHARFORMAT2W format{sizeof(format)};
+    format.dwMask = CFM_COLOR;
+    format.crTextColor = text;
+    SendMessageW(g_app->detailPreviewTextEdit, EM_SETCHARFORMAT, SCF_ALL,
+                 reinterpret_cast<LPARAM>(&format));
+}
+
+// 调整文本控件位置，并按当前详情状态显示或隐藏。
+void positionDetailPreviewTextEdit(bool show) {
+    if (!g_app || !g_app->detailPreview || !g_app->detailPreviewTextEdit) return;
+    const RECT content = detailPreviewContentRect(g_app->detailPreview);
+    SetWindowPos(g_app->detailPreviewTextEdit, nullptr, content.left, content.top,
+                 content.right - content.left, content.bottom - content.top,
+                 SWP_NOACTIVATE | SWP_NOZORDER |
+                     (show ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+}
+
+// 写入详情文本并重置原生滚动位置。
+void updateDetailPreviewTextEdit() {
+    if (!g_app || !g_app->detailPreviewTextEdit) return;
+    refreshDetailPreviewTextEditAppearance();
+    const bool show = !g_app->detailPreviewState.loading &&
+        !g_app->detailPreviewState.failed && !g_app->detailPreviewState.bitmap;
+    if (!show) {
+        positionDetailPreviewTextEdit(false);
+        return;
+    }
+    SetWindowTextW(g_app->detailPreviewTextEdit, g_app->detailPreviewState.text.c_str());
+    refreshDetailPreviewTextEditAppearance();
+    SendMessageW(g_app->detailPreviewTextEdit, EM_SETSEL, 0, 0);
+    SendMessageW(g_app->detailPreviewTextEdit, EM_SCROLL, SB_TOP, 0);
+    positionDetailPreviewTextEdit(true);
 }
 
 // 计算图片适应内容视口时的基础比例。
@@ -3670,18 +3787,13 @@ void paintDetailPreview(HWND hwnd, HDC dc) {
     } else if (g_app->detailPreviewState.failed) {
         DrawTextW(buffer, settingsLocale().previewLoadFailed, -1, &content,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    } else {
+    } else if (!g_app->detailPreviewTextEdit) {
         SelectObject(buffer, g_app->popupPreviewFont);
         SetTextColor(buffer, text);
-        const int scrollMax = detailTextScrollMax(hwnd);
-        g_app->detailPreviewState.textScrollOffset = std::clamp(
-            g_app->detailPreviewState.textScrollOffset, 0, scrollMax);
-        RECT textRect{content.left, content.top - g_app->detailPreviewState.textScrollOffset,
-                      content.right, content.bottom - g_app->detailPreviewState.textScrollOffset + scrollMax};
         const int clip = SaveDC(buffer);
         IntersectClipRect(buffer, content.left, content.top, content.right, content.bottom);
-        DrawTextW(buffer, g_app->detailPreviewState.text.c_str(), -1, &textRect,
-                  DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+        DrawTextW(buffer, g_app->detailPreviewState.text.c_str(), -1, &content,
+                  DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX | DT_EXPANDTABS);
         RestoreDC(buffer, clip);
     }
     BitBlt(dc, 0, 0, width, height, buffer, 0, 0, SRCCOPY);
@@ -9369,8 +9481,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
     if (message == WM_DESTROY && hwnd == g_app->popup) {
         cancelPopupSearch();
-        if (g_app->detailPreview) DestroyWindow(g_app->detailPreview);
-        g_app->detailPreview = nullptr;
+        destroyDetailPreview();
         clearDetailPreviewBitmap();
         clearPopupImagePreviews();
         clearPopupSourceIcons();
@@ -9539,9 +9650,11 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                     !renderDetailPreviewImage() && g_app->detailPreviewState.bitmap) {
                     g_app->detailPreviewState.failed = true;
                 }
+                updateDetailPreviewTextEdit();
             } else {
                 g_app->detailPreviewState.failed = true;
                 g_app->detailPreviewState.text.clear();
+                updateDetailPreviewTextEdit();
             }
             if (!result->success && result->bitmap) {
                 DeleteObject(result->bitmap);
@@ -9722,13 +9835,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                         UpdateWindow(hwnd);
                     }
                 }
-            } else if (!g_app->detailPreviewState.text.empty()) {
-                const int step = std::max(ui(32), std::abs(delta) / WHEEL_DELTA * ui(48));
-                g_app->detailPreviewState.textScrollOffset = std::clamp(
-                    g_app->detailPreviewState.textScrollOffset -
-                        (delta > 0 ? step : -step),
-                    0, detailTextScrollMax(hwnd));
-                InvalidateRect(hwnd, nullptr, FALSE);
             }
             return 0;
         }
@@ -9756,6 +9862,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == WM_MOUSELEAVE) {
+            POINT cursor{};
+            GetCursorPos(&cursor);
+            if (detailPreviewContainsPoint(cursor)) return 0;
             if (!g_app->detailPreviewHeld && g_app->popup &&
                 g_app->settingsData.previewAutomatic) {
                 SetTimer(g_app->popup, kPopupPreviewHideTimer,
@@ -9900,6 +10009,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             refreshSettingsBrushes();
             refreshPopupBrush();
+            refreshDetailPreviewTextEditAppearance();
             invalidateThemeWindow(hwnd);
             invalidateThemeWindow(g_app->popup);
             invalidateThemeWindow(g_app->languageDropdown);
@@ -10260,7 +10370,13 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         if (message == WM_TIMER && wParam == kPopupPreviewHideTimer) {
             KillTimer(hwnd, kPopupPreviewHideTimer);
-            if (!g_app->detailPreviewHeld) hideDetailPreview();
+            POINT cursor{};
+            GetCursorPos(&cursor);
+            if (!g_app->detailPreviewHeld && !detailPreviewContainsPoint(cursor)) {
+                hideDetailPreview();
+            } else if (!g_app->detailPreviewHeld) {
+                SetTimer(hwnd, kPopupPreviewHideTimer, kPopupDetailPreviewHideDelayMs, nullptr);
+            }
             return 0;
         }
         if (message == WM_TIMER && wParam == kPopupOpenGuardTimer) {
