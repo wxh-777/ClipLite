@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added internal shortcut conflict detection and detailed registration status. Duplicate combinations are rejected before saving and marked in Settings; system-wide shortcuts occupied by Windows or another application identify the affected action and restore its default combination when available, otherwise prompting for a different shortcut.
+
 ## [1.2.2] - 2026-09-14
 
 - Moved clipboard history archiving, capacity cleanup, and pre-paste payload reads to a serialized storage worker so large images, encrypted content, and disk rebuilds do not block the UI message flow.

@@ -97,7 +97,7 @@ Use `SHA256SUM.txt` in the portable package to verify `ClipLite.exe`. Verify the
 - `Ctrl+0`: Clear the history filter.
 - `F2`: Hold to preview the current history item when hold-key preview is enabled.
 
-History, settings, and monitoring shortcuts can be changed in Settings. `Win+V` replacement depends on Windows, the current integrity level, and shortcut conflicts. `Alt+V` remains available when registration fails.
+History, settings, and monitoring shortcuts can be changed in Settings. The registration status shows whether ClipLite shortcuts conflict internally, and duplicate combinations are rejected. If a system-wide shortcut is occupied by Windows or another application, Settings identifies the affected action and restores its default combination when available; otherwise it asks you to choose another shortcut. `Win+V` replacement also depends on the current integrity level; while it is enabled, the history shortcut cannot also be set to `Win+V`.
 Settings descriptions automatically reserve enough space for multiple lines.
 
 The General settings section includes a "Move pasted item to top" setting. When enabled, history is ordered by recent use activity; when disabled, it is ordered by recent copy time. Each record also stores a stable ID, first-captured time, millisecond copy time, last-used time, copy count, use count, and logical content length for sorting and filters.

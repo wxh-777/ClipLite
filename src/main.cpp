@@ -451,6 +451,8 @@ struct AppState {
     bool settingsActionFeedbackSuccess = true;
     HWND shortcutCaptureControl = nullptr;
     bool shortcutRegistrationWarning = false;
+    std::wstring shortcutRegistrationDetail;
+    std::wstring shortcutConflictFeedback;
     int filterType = 0;
     bool pinnedOnly = false;
     int filterTimeRange = 0;
@@ -676,6 +678,16 @@ void closeFilterMenu();
 bool filterMenuContainsPoint(POINT point);
 LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 UINT shortcutModifiersFromKeyboard();
+const wchar_t* shortcutActionLabel(int id);
+std::wstring formatShortcut(const ShortcutBinding& binding);
+struct ShortcutConflict {
+    int firstId = -1;
+    int secondId = -1;
+};
+ShortcutConflict findShortcutConflict(const Settings& settings, int targetId = -1);
+std::wstring shortcutConflictText(const Settings& settings, const ShortcutConflict& conflict);
+bool shortcutBindingsEqual(const ShortcutBinding& first, const ShortcutBinding& second);
+std::wstring shortcutStatusText();
 
 int ui(int value) {
     return MulDiv(value, static_cast<int>(g_uiDpi), 96);
@@ -872,6 +884,9 @@ struct SettingsLocale {
     const wchar_t* space;
     const wchar_t* currentCategoryFormat;
     const wchar_t* categoryNote;
+    const wchar_t* shortcutNoConflicts;
+    const wchar_t* shortcutConflictFormat;
+    const wchar_t* shortcutRegistrationFormat;
     const wchar_t* shortcutRegistrationWarning;
     const wchar_t* shortcutModifierRequirement;
     const wchar_t* privacyNote;
@@ -996,10 +1011,13 @@ const SettingsLocale kEnglishSettingsLocale{
     L"Sensitive content expiry (hours, 0 = off)", L"Protection scope", L"About ClipLite",
     L"General", L"Shortcuts", L"Storage", L"Privacy", L"About ClipLite", L"General settings",
     L"Shortcuts", L"Storage", L"Privacy", L"About ClipLite", L"Auto-saved",
-    L"Total history: %zu records, %ls", L"Pinned", L"Records", L"Space",
-    L"Current %zu \xB7 %ls",
-    L"Set to 0 for unlimited. Pinned records are not removed automatically.",
-    L"Some shortcuts could not be registered. Choose different combinations.",
+     L"Total history: %zu records, %ls", L"Pinned", L"Records", L"Space",
+     L"Current %zu \xB7 %ls",
+     L"Set to 0 for unlimited. Pinned records are not removed automatically.",
+     L"No shortcut conflicts detected.",
+     L"Conflict: \"%ls\" and \"%ls\" both use %ls. Choose a different shortcut.",
+     L"Unable to register \"%ls\" (%ls). It may be used by another application or Windows; restored to %ls.",
+     L"Some shortcuts could not be registered. Choose different combinations.",
     L"Custom shortcuts require at least one modifier key.",
     L"Sensitive markers: password, token, api_key, secret, and private keys; detected by content pattern.",
       L"Application    ClipLite", L"Version        1.2.2 x64", L"Storage format  v4",
@@ -1046,9 +1064,12 @@ const SettingsLocale kChineseSettingsLocale{
     L"忽略应用（每行一个来源名称）", L"敏感内容过期时间（小时，0 = 关闭）", L"保护范围",
     L"关于 ClipLite", L"通用", L"快捷键", L"存储管理", L"安全与隐私", L"关于 ClipLite",
     L"通用设置", L"快捷键", L"存储管理", L"安全与隐私", L"关于 ClipLite", L"已自动保存",
-    L"当前历史总计：%zu 条记录，%ls", L"置顶", L"记录", L"空间",
-    L"当前 %zu 条 \xB7 %ls", L"设置为 0 表示不限；置顶记录不会被自动清理。",
-    L"部分快捷键注册失败，请更换组合键。", L"自定义快捷键至少需要一个修饰键。",
+     L"当前历史总计：%zu 条记录，%ls", L"置顶", L"记录", L"空间",
+     L"当前 %zu 条 \xB7 %ls", L"设置为 0 表示不限；置顶记录不会被自动清理。",
+     L"未检测到快捷键冲突。",
+     L"快捷键冲突：“%ls”和“%ls”使用了相同组合键 %ls，请更换其中一项。",
+     L"无法注册“%ls”（%ls），可能已被其他程序或 Windows 占用，已恢复为 %ls。",
+     L"部分快捷键注册失败，请更换组合键。", L"自定义快捷键至少需要一个修饰键。",
     L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。",
       L"应用名称    ClipLite", L"版本        1.2.2 x64", L"存储格式    v4",
      L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清理未置顶历史", L"清理未置顶文本", L"清理未置顶图片",
@@ -2086,6 +2107,14 @@ void invalidatePopupHover(HWND hwnd, int row, int filter, bool header) {
 void invalidateSettingsNav(HWND hwnd, int tab) {
     if (tab < 0 || tab > 4) return;
     RECT rect{ui(8), ui(50 + tab * 38), ui(180), ui(50 + tab * 38 + 38)};
+    InvalidateRect(hwnd, &rect, FALSE);
+    if (g_app && hwnd == g_app->settings && g_app->settingsHeaderOverlay) {
+        InvalidateRect(g_app->settingsHeaderOverlay, &rect, FALSE);
+    }
+}
+
+void invalidateSettingsHeader(HWND hwnd, const RECT& rect) {
+    if (!hwnd) return;
     InvalidateRect(hwnd, &rect, FALSE);
     if (g_app && hwnd == g_app->settings && g_app->settingsHeaderOverlay) {
         InvalidateRect(g_app->settingsHeaderOverlay, &rect, FALSE);
@@ -5376,13 +5405,38 @@ void registerHotkeys() {
         g_app->keyboardHook = nullptr;
     }
     g_app->shortcutRegistrationWarning = false;
+    g_app->shortcutRegistrationDetail.clear();
     auto registerWithFallback = [&](int id, ShortcutBinding& binding,
                                      const ShortcutBinding& fallback) {
         if (registerConfiguredHotkey(id, binding)) return;
         appendDiagnosticLog("WARN", "hotkey: configured shortcut registration failed");
         g_app->shortcutRegistrationWarning = true;
+        const std::wstring configuredText = formatShortcut(binding);
+        const std::wstring fallbackText = formatShortcut(fallback);
+        const bool fallbackIsSame = shortcutBindingsEqual(binding, fallback);
+        if (fallbackIsSame) {
+            wchar_t detail[512]{};
+            swprintf_s(detail, tr(L"Unable to register \"%ls\" (%ls). It may be used by another application or Windows; choose a different shortcut.",
+                                  L"无法注册“%ls”（%ls），可能已被其他程序或 Windows 占用，请更换快捷键。"),
+                       shortcutActionLabel(id), configuredText.c_str());
+            if (g_app->shortcutRegistrationDetail.empty()) g_app->shortcutRegistrationDetail = detail;
+            return;
+        }
         binding = fallback;
-        registerConfiguredHotkey(id, binding);
+        if (registerConfiguredHotkey(id, binding)) {
+            if (g_app->shortcutRegistrationDetail.empty()) {
+                wchar_t detail[512]{};
+                swprintf_s(detail, settingsLocale().shortcutRegistrationFormat,
+                           shortcutActionLabel(id), configuredText.c_str(), fallbackText.c_str());
+                g_app->shortcutRegistrationDetail = detail;
+            }
+        } else if (g_app->shortcutRegistrationDetail.empty()) {
+            wchar_t detail[512]{};
+            swprintf_s(detail, tr(L"Unable to register \"%ls\" (%ls). The default \"%ls\" is also unavailable; choose a different shortcut.",
+                                  L"无法注册“%ls”（%ls），默认组合键“%ls”也不可用，请更换快捷键。"),
+                       shortcutActionLabel(id), configuredText.c_str(), fallbackText.c_str());
+            g_app->shortcutRegistrationDetail = detail;
+        }
     };
     registerWithFallback(kHotkeyAltV, g_app->settingsData.historyHotkey,
                          ShortcutBinding{MOD_ALT, 'V'});
@@ -5656,6 +5710,7 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
                              {kSettingPreviewByKey}, {36}, {20}, contentWidth)
         });
     } else if (g_app->settingsTab == kSettingsShortcutPage) {
+        makeCard(settingsLocale().registrationStatus, {}, 72);
         makeCard(settingsLocale().importantSystemShortcut, {
             makeSettingsRow(hwnd, settingsLocale().forceReplaceWinV,
                             {kSettingWinV}, {36}, {20}, contentWidth)
@@ -5683,10 +5738,9 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
                             {kSettingShortcutClearFilter}, {150}, {30}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().deleteSelectedRecord,
                              {kSettingShortcutDelete}, {150}, {30}, contentWidth),
-            makeSettingsRow(hwnd, settingsLocale().previewKey,
+             makeSettingsRow(hwnd, settingsLocale().previewKey,
                              {kSettingShortcutPreview}, {150}, {30}, contentWidth)
         });
-        makeCard(settingsLocale().registrationStatus, {}, 48);
     } else if (g_app->settingsTab == 2) {
         makeCard(settingsLocale().dataRetention, {
             makeSettingsRow(hwnd, settingsLocale().maximumRecords,
@@ -6154,14 +6208,18 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
         }
     } else if (g_app->settingsTab == kSettingsShortcutPage && !layout.cards.empty()) {
         SelectObject(dc, bodyFont);
-        SetTextColor(dc, secondary);
-        const SettingsCardLayout& card = layout.cards.back();
-        RECT description{contentLeft + ui(14), settingsContentY(card.bottom - 38), contentRight - ui(14),
+        const SettingsCardLayout& card = layout.cards.front();
+        const ShortcutConflict conflict = findShortcutConflict(g_app->settingsData);
+        const std::wstring status = shortcutStatusText();
+        const bool warning = !g_app->shortcutConflictFeedback.empty() ||
+            conflict.firstId >= 0 || g_app->shortcutRegistrationWarning;
+        SetTextColor(dc, warning
+                         ? settingsThemeColor(RGB(185, 28, 28), RGB(248, 160, 160))
+                         : secondary);
+        RECT description{contentLeft + ui(14), settingsContentY(card.bottom - 58), contentRight - ui(14),
                          settingsContentY(card.bottom - 12)};
-        DrawTextW(dc, g_app->shortcutRegistrationWarning
-                      ? settingsLocale().shortcutRegistrationWarning
-                      : settingsLocale().shortcutModifierRequirement,
-                  -1, &description, DT_LEFT | DT_WORDBREAK);
+        DrawTextW(dc, status.c_str(), -1, &description,
+                  DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
     } else if (g_app->settingsTab == 3 && layout.cards.size() >= 2) {
         SelectObject(dc, bodyFont);
         SetTextColor(dc, secondary);
@@ -6552,7 +6610,7 @@ bool isSettingsShortcut(int id) {
     return id >= kSettingShortcutPreview && id <= kSettingShortcutDelete;
 }
 
-ShortcutBinding* settingsShortcutBinding(Settings& settings, int id) {
+const ShortcutBinding* settingsShortcutBinding(const Settings& settings, int id) {
     if (id == kSettingShortcutPreview) return &settings.popupPreviewHotkey;
     if (id == kSettingShortcutHistory) return &settings.historyHotkey;
     if (id == kSettingShortcutSettings) return &settings.settingsHotkey;
@@ -6565,6 +6623,82 @@ ShortcutBinding* settingsShortcutBinding(Settings& settings, int id) {
     if (id == kSettingShortcutClearFilter) return &settings.popupClearFilterHotkey;
     if (id == kSettingShortcutDelete) return &settings.popupDeleteHotkey;
     return nullptr;
+}
+
+ShortcutBinding* settingsShortcutBinding(Settings& settings, int id) {
+    return const_cast<ShortcutBinding*>(settingsShortcutBinding(
+        static_cast<const Settings&>(settings), id));
+}
+
+const wchar_t* shortcutActionLabel(int id) {
+    switch (id) {
+    case kSettingWinV: return settingsLocale().forceReplaceWinV;
+    case kHotkeyAltV: return settingsLocale().openClipboardHistory;
+    case kHotkeySettings: return settingsLocale().openSettings;
+    case kHotkeyPause: return settingsLocale().pauseResumeMonitoring;
+    case kSettingShortcutPreview: return settingsLocale().previewKey;
+    case kSettingShortcutHistory: return settingsLocale().openClipboardHistory;
+    case kSettingShortcutSettings: return settingsLocale().openSettings;
+    case kSettingShortcutPause: return settingsLocale().pauseResumeMonitoring;
+    case kSettingShortcutPaste: return settingsLocale().pasteSelectedItem;
+    case kSettingShortcutPastePlain: return settingsLocale().pastePlainText;
+    case kSettingShortcutPasteRich: return settingsLocale().pasteRichText;
+    case kSettingShortcutClosePopup: return settingsLocale().closeHistoryWindow;
+    case kSettingShortcutPopupSettings: return settingsLocale().openSettingsInHistory;
+    case kSettingShortcutClearFilter: return settingsLocale().clearHistoryFilter;
+    case kSettingShortcutDelete: return settingsLocale().deleteSelectedRecord;
+    default: return L"Shortcut";
+    }
+}
+
+const ShortcutBinding* shortcutBindingForConflict(const Settings& settings, int id) {
+    if (id == kSettingWinV) {
+        static const ShortcutBinding winV{MOD_WIN, 'V'};
+        return &winV;
+    }
+    return settingsShortcutBinding(settings, id);
+}
+
+const std::array<int, 11>& shortcutSettingIds() {
+    static const std::array<int, 11> ids = {
+        kSettingShortcutPreview, kSettingShortcutHistory, kSettingShortcutSettings,
+        kSettingShortcutPause, kSettingShortcutPaste, kSettingShortcutPastePlain,
+        kSettingShortcutPasteRich, kSettingShortcutClosePopup,
+        kSettingShortcutPopupSettings, kSettingShortcutClearFilter, kSettingShortcutDelete
+    };
+    return ids;
+}
+
+bool shortcutBindingsEqual(const ShortcutBinding& first, const ShortcutBinding& second) {
+    return first.modifiers == second.modifiers && first.virtualKey == second.virtualKey;
+}
+
+ShortcutConflict findShortcutConflict(const Settings& settings, int targetId) {
+    std::vector<int> ids(shortcutSettingIds().begin(), shortcutSettingIds().end());
+    if (settings.winV) ids.push_back(kSettingWinV);
+    if (targetId >= 0) {
+        const ShortcutBinding* target = shortcutBindingForConflict(settings, targetId);
+        if (!target) return {};
+        for (const int id : ids) {
+            if (id == targetId) continue;
+            const ShortcutBinding* binding = shortcutBindingForConflict(settings, id);
+            if (binding && shortcutBindingsEqual(*target, *binding)) {
+                return {targetId, id};
+            }
+        }
+        return {};
+    }
+    for (std::size_t firstIndex = 0; firstIndex < ids.size(); ++firstIndex) {
+        const ShortcutBinding* first = shortcutBindingForConflict(settings, ids[firstIndex]);
+        if (!first) continue;
+        for (std::size_t secondIndex = firstIndex + 1; secondIndex < ids.size(); ++secondIndex) {
+            const ShortcutBinding* second = shortcutBindingForConflict(settings, ids[secondIndex]);
+            if (second && shortcutBindingsEqual(*first, *second)) {
+                return {ids[firstIndex], ids[secondIndex]};
+            }
+        }
+    }
+    return {};
 }
 
 std::wstring shortcutKeyName(UINT virtualKey) {
@@ -6600,6 +6734,32 @@ std::wstring formatShortcut(const ShortcutBinding& binding) {
     if (binding.modifiers & MOD_WIN) result += L"Win + ";
     result += shortcutKeyName(binding.virtualKey);
     return result;
+}
+
+std::wstring shortcutConflictText(const Settings& settings, const ShortcutConflict& conflict) {
+    if (conflict.firstId < 0 || conflict.secondId < 0) return {};
+    const ShortcutBinding* first = shortcutBindingForConflict(settings, conflict.firstId);
+    if (!first) return {};
+    wchar_t message[512]{};
+    const std::wstring shortcut = formatShortcut(*first);
+    swprintf_s(message, settingsLocale().shortcutConflictFormat,
+               shortcutActionLabel(conflict.firstId), shortcutActionLabel(conflict.secondId),
+               shortcut.c_str());
+    return message;
+}
+
+std::wstring shortcutConflictText(const ShortcutConflict& conflict) {
+    return g_app ? shortcutConflictText(g_app->settingsData, conflict) : std::wstring{};
+}
+
+std::wstring shortcutStatusText() {
+    if (!g_app) return {};
+    if (!g_app->shortcutConflictFeedback.empty()) return g_app->shortcutConflictFeedback;
+    const ShortcutConflict conflict = findShortcutConflict(g_app->settingsData);
+    if (conflict.firstId >= 0) return shortcutConflictText(conflict);
+    if (!g_app->shortcutRegistrationDetail.empty()) return g_app->shortcutRegistrationDetail;
+    if (g_app->shortcutRegistrationWarning) return settingsLocale().shortcutRegistrationWarning;
+    return settingsLocale().shortcutNoConflicts;
 }
 
 void refreshSettingsShortcutControls(HWND hwnd) {
@@ -6668,8 +6828,24 @@ void captureSettingsShortcut(HWND hwnd, HWND control, UINT virtualKey) {
     }
     ShortcutBinding* binding = settingsShortcutBinding(g_app->settingsData, GetDlgCtrlID(control));
     if (!binding) return;
+    Settings candidateSettings = g_app->settingsData;
+    ShortcutBinding* candidate = settingsShortcutBinding(candidateSettings, id);
+    if (!candidate) return;
+    candidate->modifiers = modifiers;
+    candidate->virtualKey = virtualKey;
+    const ShortcutConflict conflict = findShortcutConflict(candidateSettings, id);
+    if (conflict.firstId >= 0) {
+        const std::wstring message = shortcutConflictText(candidateSettings, conflict);
+        g_app->shortcutConflictFeedback = message;
+        g_app->shortcutCaptureControl = nullptr;
+        refreshSettingsShortcutControls(hwnd);
+        setSettingsActionFeedback(hwnd, message, false);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
+    }
     binding->modifiers = modifiers;
     binding->virtualKey = virtualKey;
+    g_app->shortcutConflictFeedback.clear();
     g_app->shortcutCaptureControl = nullptr;
     registerHotkeys();
     refreshSettingsShortcutControls(hwnd);
@@ -7963,6 +8139,14 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     }
 
     const Settings& previous = g_app->settingsData;
+    const ShortcutConflict shortcutConflict = findShortcutConflict(next);
+    if (shortcutConflict.firstId >= 0 && next.winV != previous.winV) {
+        const std::wstring message = shortcutConflictText(next, shortcutConflict);
+        g_app->shortcutConflictFeedback = message;
+        setSettingsToggleValue(win, previous.winV);
+        setSettingsActionFeedback(hwnd, message, false);
+        return false;
+    }
     if (settingsWouldPruneExisting(previous, next) &&
         MessageBoxW(hwnd, settingsLocale().pruneConfirmationMessage,
                     settingsLocale().pruneConfirmationTitle,
@@ -8027,6 +8211,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
         next.ignoredApps != previous.ignoredApps;
     if (!changed) return true;
 
+    g_app->shortcutConflictFeedback.clear();
     g_app->settingsData = std::move(next);
     if (promotePastedItemChanged) {
         g_app->store.setSortByLastUsed(g_app->settingsData.promotePastedItem);
@@ -8055,6 +8240,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     }
     if (languageChanged) {
         g_app->settingsActionFeedback.clear();
+        g_app->shortcutConflictFeedback.clear();
         refreshSettingsLocalizedControls(hwnd);
         updateSettingsTabControls(hwnd);
     }
@@ -8513,20 +8699,24 @@ void drawSettingsButton(const DRAWITEMSTRUCT& item) {
 }
 
 void drawSettingsShortcut(const DRAWITEMSTRUCT& item) {
+    const int id = GetDlgCtrlID(item.hwndItem);
     const bool capturing = g_app->shortcutCaptureControl == item.hwndItem;
     const bool focused = (item.itemState & ODS_FOCUS) != 0 || GetFocus() == item.hwndItem;
-    const bool hovered = g_app->hoveredSettingsControl == GetDlgCtrlID(item.hwndItem);
+    const bool hovered = g_app->hoveredSettingsControl == id;
+    const bool conflicted = findShortcutConflict(g_app->settingsData, id).firstId >= 0;
     const COLORREF background = settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
     const COLORREF border = highContrastEnabled() ? GetSysColor(COLOR_WINDOWTEXT) :
-        (capturing || focused ? settingsAccentColor() :
+        (conflicted ? settingsThemeColor(RGB(220, 38, 38), RGB(248, 113, 113)) :
+         (capturing || focused ? settingsAccentColor() :
          hovered ? settingsAccentColor() :
-                   settingsThemeColor(RGB(200, 211, 222), RGB(74, 88, 104)));
+                   settingsThemeColor(RGB(200, 211, 222), RGB(74, 88, 104))));
     drawGdiRoundedSurface(item.hDC, item.rcItem, background, border, 6);
     wchar_t label[128]{};
     GetWindowTextW(item.hwndItem, label, static_cast<int>(sizeof(label) / sizeof(label[0])));
     SetBkMode(item.hDC, TRANSPARENT);
-    SetTextColor(item.hDC, capturing ? settingsAccentColor() :
-                                    settingsThemeColor(settingsAccentColor(), RGB(238, 241, 245)));
+    SetTextColor(item.hDC, conflicted ? settingsThemeColor(RGB(185, 28, 28), RGB(248, 160, 160)) :
+                 (capturing ? settingsAccentColor() :
+                              settingsThemeColor(settingsAccentColor(), RGB(238, 241, 245))));
     DrawTextW(item.hDC, label, -1, const_cast<RECT*>(&item.rcItem),
               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 }
@@ -9355,7 +9545,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const LRESULT result = g_app->settings
                 ? SendMessageW(g_app->settings, message, wParam, lParam)
                 : DefWindowProcW(hwnd, message, wParam, lParam);
-            if (message != WM_SETCURSOR) InvalidateRect(hwnd, nullptr, FALSE);
             return result;
         }
         if (message == WM_NCDESTROY) {
@@ -10085,7 +10274,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (themeMode != g_app->hoveredSettingsThemeMode) {
                 g_app->hoveredSettingsThemeMode = themeMode;
                 RECT themeRect{ui(0), ui(10), client.right, ui(48)};
-                InvalidateRect(hwnd, &themeRect, FALSE);
+                invalidateSettingsHeader(hwnd, themeRect);
             }
             const bool scrollbarHover = settingsTabIsScrollable() &&
                 x >= client.right - ui(18) && x < client.right - ui(3) &&
@@ -10140,7 +10329,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 RECT client{};
                 GetClientRect(hwnd, &client);
                 RECT themeRect{ui(0), ui(10), client.right, ui(48)};
-                InvalidateRect(hwnd, &themeRect, FALSE);
+                invalidateSettingsHeader(hwnd, themeRect);
             }
             if (g_app->hoveredSettingsTab != -1) {
                 const int previousTab = g_app->hoveredSettingsTab;
