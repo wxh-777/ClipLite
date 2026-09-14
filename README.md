@@ -2,7 +2,7 @@
 
 ClipLite 是一款仅支持 Windows 的原生剪贴板历史工具。它使用 C++17、Win32 API 和 GDI/GDI+ 构建，不依赖 WebView、Electron、WinUI、Qt 或其他大型运行时，重点是低常驻内存、可靠保存剪贴板格式和便携发布。
 
-当前正式版本：**1.2.1**（x64）
+当前正式版本：**1.2.2**（x64）
 
 英文文档：[README.en.md](README.en.md)
 
@@ -25,23 +25,23 @@ ClipLite 从一开始就希望把剪贴板历史做得更克制：程序尽量�
 - 支持英文和简体中文界面。
 - 支持最大记录数、磁盘空间、保留天数、单条内容大小和暂停监听设置。
 - 支持按来源应用忽略内容、敏感文本自动过期和 Windows DPAPI 用户级加密。
-- 支持普通安装模式和便携模式，不创建常驻工作线程，不在内存中保存完整历史正文。
+- 支持普通安装模式和便携模式；剪贴板归档、历史内容读取和使用统计通过短任务工作线程处理，不在内存中保存完整历史正文。
 
 ## 界面预览
 
 历史窗口（含图片记录）：
 
-![ClipLite 历史窗口](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.1/docs/screenshots/history.png)
+![ClipLite 历史窗口](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.2/docs/screenshots/history.png)
 
 设置窗口：
 
-![ClipLite 设置窗口](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.1/docs/screenshots/settings.png)
+![ClipLite 设置窗口](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.2/docs/screenshots/settings.png)
 
 ## 性能与体积
 
 ClipLite 专注于“常驻但不打扰”：相比常见剪贴板工具，占用更少内存，适合长期在后台运行，也不需要额外运行时。
 
-剪贴板格式捕获在后台执行。部分应用复制后需要延迟提供 HTML、文本或图片格式时，不会阻塞 ClipLite 的历史窗口、粘贴和全局快捷键响应。
+剪贴板格式捕获、历史归档和历史粘贴前的内容读取在后台执行。部分应用复制后需要延迟提供 HTML、文本或图片格式时，不会因为磁盘写入或解密阻塞 ClipLite 的历史窗口、粘贴和全局快捷键响应。
 
 - 后台运行时，本机 Release 测量的 Private Bytes 约为 `2.5 MB`。
 - 主程序约 `587.5 KB`，比一张普通手机照片还小。
@@ -80,8 +80,8 @@ ClipLite 更适合希望“复制过的内容方便找回，但程序不要拖�
 
 正式发布包含两种 Windows x64 形式：
 
-- 安装包：`ClipLite-Setup-1.2.1-x64.exe`。支持自定义安装目录、开始菜单/桌面快捷方式和标准卸载。
-- 便携包：`ClipLite-1.2.1-portable-win-x64.zip`。解压后复制整个目录即可使用，数据保存在其中的 `data\\` 目录。
+- 安装包：`ClipLite-Setup-1.2.2-x64.exe`。支持自定义安装目录、开始菜单/桌面快捷方式和标准卸载。
+- 便携包：`ClipLite-1.2.2-portable-win-x64.zip`。解压后复制整个目录即可使用，数据保存在其中的 `data\\` 目录。
 
 便携包中的 `SHA256SUM.txt` 用于校验 `ClipLite.exe`。首次运行前请确认下载来源和文件校验值。
 

@@ -2,7 +2,7 @@
 
 ClipLite is a lightweight native clipboard history manager for Windows. It is built with C++17, the Win32 API, and GDI/GDI+, without WebView, Electron, WinUI, Qt, or another large runtime. The project prioritizes low idle memory usage, reliable clipboard format handling, and portable distribution.
 
-Current release: **1.2.1** (Windows x64)
+Current release: **1.2.2** (Windows x64)
 
 中文文档：[README.md](README.md)
 
@@ -25,23 +25,23 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 - English and Simplified Chinese interfaces.
 - Limits for record count, disk usage, retention period, item size, and monitoring pause.
 - Source application filtering, sensitive text expiry, and optional Windows DPAPI user encryption.
-- Installer and portable distribution modes with no resident worker thread and no full history payload kept in memory.
+- Installer and portable distribution modes; clipboard archiving, history reads, and usage statistics run through short-lived worker tasks without keeping the full history payload in memory.
 
 ## Screenshots
 
 History window with an image record:
 
-![ClipLite history window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.1/docs/screenshots/history.png)
+![ClipLite history window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.2/docs/screenshots/history.png)
 
 Settings window:
 
-![ClipLite settings window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.1/docs/screenshots/settings.png)
+![ClipLite settings window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.2/docs/screenshots/settings.png)
 
 ## Performance and Size
 
 ClipLite is designed to stay quietly in the tray. It uses less memory than many clipboard history tools, making it suitable for long-running background use without requiring a separate runtime.
 
-Clipboard format capture runs in the background. When an application delays providing HTML, text, or image formats after copying, ClipLite keeps its history window, paste flow, and global shortcuts responsive.
+Clipboard capture, history archiving, and pre-paste history reads run in the background. When an application delays providing HTML, text, or image formats after copying, disk writes and decryption do not block ClipLite's history window, paste flow, or global shortcuts.
 
 - A local Release measurement showed about `2.5 MB` of Private Bytes while idle.
 - The main executable is about `587.5 KB`, smaller than an ordinary phone photo.
@@ -80,8 +80,8 @@ Features and versions vary across tools. This table describes product positionin
 
 The Windows x64 release provides:
 
-- Installer: `ClipLite-Setup-1.2.1-x64.exe`, with a selectable installation directory, shortcuts, and standard uninstall support.
-- Portable package: `ClipLite-1.2.1-portable-win-x64.zip`, which can be extracted and moved as a directory. Data is stored in its `data\\` directory.
+- Installer: `ClipLite-Setup-1.2.2-x64.exe`, with a selectable installation directory, shortcuts, and standard uninstall support.
+- Portable package: `ClipLite-1.2.2-portable-win-x64.zip`, which can be extracted and moved as a directory. Data is stored in its `data\\` directory.
 
 Use `SHA256SUM.txt` in the portable package to verify `ClipLite.exe`. Verify the download source before running the application.
 

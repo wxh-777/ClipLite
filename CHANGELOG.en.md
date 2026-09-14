@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.2.2] - 2026-09-14
+
+- Moved clipboard history archiving, capacity cleanup, and pre-paste payload reads to a serialized storage worker so large images, encrypted content, and disk rebuilds do not block the UI message flow.
+- Fixed clipboard capture shutdown handling and added orderly worker cleanup, joining, and synchronized ClipStore access.
+
+### Build and Verification
+
+- The `1.2.2` x64 Release build, `ClipLiteStore` CTest, window lifecycle stress test, and release package generation passed.
+
 ## [1.2.1] - 2026-09-11
 
 - Improved long-text detail previews by limiting oversized payload conversion in the background, reducing stalls while opening, scrolling, and repainting.

@@ -21,6 +21,7 @@
 #include <cwchar>
 #include <cstdlib>
 #include <deque>
+#include <functional>
 #include <initializer_list>
 #include <limits>
 #include <memory>
@@ -148,6 +149,8 @@ constexpr UINT kClipboardCaptureCompleteMessage = WM_APP + 11;
 constexpr UINT kPopupFilePreviewLoadedMessage = WM_APP + 12;
 constexpr UINT kPopupDetailPreviewLoadedMessage = WM_APP + 13;
 constexpr UINT kPopupPreviewKeyMessage = WM_APP + 14;
+constexpr UINT kStoreChangedMessage = WM_APP + 15;
+constexpr UINT kPastePayloadLoadedMessage = WM_APP + 16;
 constexpr UINT_PTR kExpiryTimer = 3;
 constexpr UINT_PTR kClipboardCaptureTimer = 7;
 constexpr UINT_PTR kSettingsToggleTimer = 4;
@@ -471,6 +474,7 @@ struct AppState {
     std::thread searchWorker;
     std::shared_ptr<std::atomic<bool>> clipboardCaptureRunning =
         std::make_shared<std::atomic<bool>>(false);
+    std::thread clipboardCaptureWorker;
     bool clipboardCapturePending = false;
     std::uint64_t searchGeneration = 0;
     Settings settingsData;
@@ -494,11 +498,18 @@ struct AppState {
     std::deque<PopupPreviewJob> previewJobs;
     std::thread previewWorker;
     bool previewWorkerStop = false;
+    std::recursive_mutex storeMutex;
+    std::mutex storeQueueMutex;
+    std::condition_variable storeCondition;
+    std::deque<std::function<void()>> storeJobs;
+    std::thread storeWorker;
+    bool storeWorkerStop = false;
     int benchmarkExitCode = 0;
     std::uint64_t ignoredClipboardHash = 0;
     std::uint64_t ignoredClipboardTextHash = 0;
     ULONGLONG ignoredClipboardUntil = 0;
     bool pasteInputPending = false;
+    bool pasteLoadPending = false;
     HWND pasteTarget = nullptr;
     bool pasteKeepPopup = false;
     ULONGLONG pasteInputDeadline = 0;
@@ -561,6 +572,17 @@ struct ClipboardCaptureResult {
     std::string payload;
     std::string source;
     bool captured = false;
+};
+
+struct PastePayloadResult {
+    HWND popup = nullptr;
+    std::size_t itemIndex = 0;
+    ClipItem item;
+    std::string payload;
+    HWND target = nullptr;
+    bool keepPopup = false;
+    PasteMode mode = PasteMode::Automatic;
+    bool success = false;
 };
 
 struct PopupFilePreviewResult {
@@ -980,7 +1002,7 @@ const SettingsLocale kEnglishSettingsLocale{
     L"Some shortcuts could not be registered. Choose different combinations.",
     L"Custom shortcuts require at least one modifier key.",
     L"Sensitive markers: password, token, api_key, secret, and private keys; detected by content pattern.",
-      L"Application    ClipLite", L"Version        1.2.1 x64", L"Storage format  v4",
+      L"Application    ClipLite", L"Version        1.2.2 x64", L"Storage format  v4",
      L"Data directory  %LOCALAPPDATA%\\ClipLite", L"Browse", L"Clear unpinned history", L"Clear unpinned text",
      L"Clear unpinned images", L"Clear unpinned files", L"Press shortcut", L"Need modifier", L"One application per line", L"Auto",
     L"ClipLite Settings", L"Choose a valid cache directory.", L"Unable to create the cache directory.",
@@ -1028,7 +1050,7 @@ const SettingsLocale kChineseSettingsLocale{
     L"当前 %zu 条 \xB7 %ls", L"设置为 0 表示不限；置顶记录不会被自动清理。",
     L"部分快捷键注册失败，请更换组合键。", L"自定义快捷键至少需要一个修饰键。",
     L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。",
-      L"应用名称    ClipLite", L"版本        1.2.1 x64", L"存储格式    v4",
+      L"应用名称    ClipLite", L"版本        1.2.2 x64", L"存储格式    v4",
      L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清理未置顶历史", L"清理未置顶文本", L"清理未置顶图片",
       L"清理未置顶文件", L"按下组合键", L"需要修饰键", L"每行一个应用名称", L"自动", L"ClipLite 设置",
     L"请选择有效的缓存目录。", L"无法创建缓存目录。", L"目标目录已有历史数据，请选择空目录。",
@@ -1731,14 +1753,48 @@ bool captureClipboard(HWND owner, ClipType& type, std::string& payload, std::str
     return false;
 }
 
+// 串行执行所有历史存储任务，避免 ClipStore 的索引和磁盘文件被并发访问。
+void storageWorkerLoop(AppState* app) {
+    while (true) {
+        std::function<void()> job;
+        {
+            std::unique_lock<std::mutex> lock(app->storeQueueMutex);
+            app->storeCondition.wait(lock, [app] {
+                return app->storeWorkerStop || !app->storeJobs.empty();
+            });
+            if (app->storeWorkerStop && app->storeJobs.empty()) return;
+            job = std::move(app->storeJobs.front());
+            app->storeJobs.pop_front();
+        }
+        std::lock_guard<std::recursive_mutex> lock(app->storeMutex);
+        job();
+    }
+}
+
+bool enqueueStorageJob(std::function<void()> job, bool urgent = false) {
+    if (!g_app || !job) return false;
+    {
+        std::lock_guard<std::mutex> lock(g_app->storeQueueMutex);
+        if (g_app->storeWorkerStop || !g_app->storeWorker.joinable()) return false;
+        if (urgent) g_app->storeJobs.push_front(std::move(job));
+        else g_app->storeJobs.push_back(std::move(job));
+    }
+    g_app->storeCondition.notify_one();
+    return true;
+}
+
+// 捕获线程只读取系统剪贴板，线程对象由 AppState 持有并在完成或退出时 join。
 void startClipboardCapture() {
     if (!g_app || g_app->settingsData.pauseMonitoring || !g_app->hidden) return;
     const std::shared_ptr<std::atomic<bool>> running = g_app->clipboardCaptureRunning;
     if (running->exchange(true, std::memory_order_acq_rel)) return;
     g_app->clipboardCapturePending = false;
+    if (g_app->clipboardCaptureWorker.joinable()) {
+        g_app->clipboardCaptureWorker.join();
+    }
     const HWND hidden = g_app->hidden;
     try {
-        std::thread([hidden, running] {
+        g_app->clipboardCaptureWorker = std::thread([hidden, running] {
             auto result = std::make_unique<ClipboardCaptureResult>();
             result->captured = captureClipboard(hidden, result->type, result->payload,
                                                 result->source);
@@ -1748,7 +1804,7 @@ void startClipboardCapture() {
                 delete raw;
             }
             running->store(false, std::memory_order_release);
-        }).detach();
+        });
     } catch (...) {
         running->store(false, std::memory_order_release);
     }
@@ -4027,16 +4083,44 @@ bool pasteModifiersPressed() {
 }
 
 void sendPaste(PasteMode mode = PasteMode::Automatic) {
-    if (!g_app->popup || g_app->visible.empty() || g_app->pasteInputPending) return;
+    if (!g_app->popup || g_app->visible.empty() || g_app->pasteInputPending ||
+        g_app->pasteLoadPending) return;
     const int selected = std::clamp(g_app->selected, 0, static_cast<int>(g_app->visible.size()) - 1);
     const std::size_t index = g_app->visible[static_cast<std::size_t>(selected)];
-    std::string payload;
-    if (!g_app->store.readPayload(index, payload)) {
+    if (index >= g_app->store.items().size()) return;
+    const ClipItem item = g_app->store.items()[index];
+    const std::wstring historyPath = g_app->store.path();
+    const HWND popup = g_app->popup;
+    const HWND target = g_app->targetWindow;
+    const bool keepPopup = g_app->popupPinned;
+    g_app->pasteLoadPending = true;
+    if (!enqueueStorageJob([popup, index, item, historyPath, target, keepPopup, mode] {
+        auto* result = new PastePayloadResult;
+        result->popup = popup;
+        result->itemIndex = index;
+        result->item = item;
+        result->target = target;
+        result->keepPopup = keepPopup;
+        result->mode = mode;
+        result->success = g_app->store.readPayloadSnapshot(historyPath, item, result->payload);
+        if (!PostMessageW(g_app->hidden, kPastePayloadLoadedMessage,
+                          reinterpret_cast<WPARAM>(result), 0)) {
+            delete result;
+        }
+    }, true)) {
+        g_app->pasteLoadPending = false;
+    }
+}
+
+// 读取完成后回到 UI 线程执行剪贴板、焦点和输入注入等窗口操作。
+void completePaste(PastePayloadResult& result) {
+    g_app->pasteLoadPending = false;
+    if (!result.success) {
         appendDiagnosticLog("ERROR", "paste: unable to read selected history payload");
         notifyPasteFailure();
         return;
     }
-    if (g_app->store.items()[index].type == ClipType::Files && fileListHasMissingPath(payload)) {
+    if (result.item.type == ClipType::Files && fileListHasMissingPath(result.payload)) {
         appendDiagnosticLog("WARN", "paste: selected file item contains missing paths");
         g_app->fileAvailability.clear();
         g_app->fileAvailabilityRevision = g_app->store.revision();
@@ -4044,20 +4128,23 @@ void sendPaste(PasteMode mode = PasteMode::Automatic) {
         notifyMissingFilePaste(g_app->popup);
         return;
     }
-    const std::uint64_t hash = g_app->store.items()[index].hash;
-    if (!setClipboardDataForItem(g_app->store.items()[index], payload, mode)) {
+    const std::uint64_t hash = result.item.hash;
+    if (!setClipboardDataForItem(result.item, result.payload, result.mode)) {
         appendDiagnosticLog("ERROR", "paste: unable to write selected item to clipboard");
         notifyPasteFailure();
         return;
     }
     g_app->ignoredClipboardHash = hash;
-    g_app->ignoredClipboardTextHash = clipboardDedupHash(g_app->store.items()[index].type, payload);
+    g_app->ignoredClipboardTextHash = clipboardDedupHash(result.item.type, result.payload);
     g_app->ignoredClipboardUntil = GetTickCount64() + 750;
-    if (!g_app->store.recordUse(index, g_app->settingsData.promotePastedItem)) {
-        appendDiagnosticLog("WARN", "paste: unable to persist usage metadata");
-    }
-    HWND target = g_app->targetWindow;
-    const bool keepPopup = g_app->popupPinned;
+    const bool promote = g_app->settingsData.promotePastedItem;
+    enqueueStorageJob([index = result.itemIndex, promote] {
+        if (!g_app->store.recordUse(index, promote)) {
+            appendDiagnosticLog("WARN", "paste: unable to persist usage metadata");
+        }
+    });
+    HWND target = result.target;
+    const bool keepPopup = result.keepPopup;
     g_app->popupImeMode = false;
     g_app->popupSearchInputActive = false;
     g_app->popupSearchControlDown = false;
@@ -9058,6 +9145,9 @@ void subclassSettingsControls(HWND hwnd) {
 }
 
 LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (!g_app) return DefWindowProcW(hwnd, message, wParam, lParam);
+    // UI 线程读取索引时与存储 worker 共用这把锁，避免快照之外的旧 UI 路径产生竞态。
+    std::lock_guard<std::recursive_mutex> storeLock(g_app->storeMutex);
     if (message == kPopupSearchCompleteMessage) {
         std::unique_ptr<PopupSearchResult> result(
             reinterpret_cast<PopupSearchResult*>(wParam));
@@ -9073,6 +9163,19 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         g_app->searchCancellation.reset();
         g_app->searchCandidates = std::move(result->candidates);
         applyVisibleCandidates(g_app->searchCandidates);
+        return 0;
+    }
+    if (message == kStoreChangedMessage) {
+        if (g_app->popup) refreshVisible(true);
+        return 0;
+    }
+    if (message == kPastePayloadLoadedMessage) {
+        std::unique_ptr<PastePayloadResult> result(
+            reinterpret_cast<PastePayloadResult*>(wParam));
+        if (!result || !g_app->pasteLoadPending) return 0;
+        g_app->pasteLoadPending = false;
+        if (g_app->popup != result->popup) return 0;
+        completePaste(*result);
         return 0;
     }
     if (hwnd == g_app->filterMenuWindow || hwnd == g_app->filterSubmenuWindow) {
@@ -9737,10 +9840,13 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == kClipboardCaptureCompleteMessage) {
             std::unique_ptr<ClipboardCaptureResult> result(
                 reinterpret_cast<ClipboardCaptureResult*>(wParam));
+            if (g_app->clipboardCaptureWorker.joinable()) {
+                g_app->clipboardCaptureWorker.join();
+            }
             if (result && result->captured && !g_app->settingsData.pauseMonitoring) {
                 const ClipType type = result->type;
-                const std::string& payload = result->payload;
-                const std::string& source = result->source;
+                const std::string payload = std::move(result->payload);
+                const std::string source = std::move(result->source);
                 const std::size_t maxPayload = static_cast<std::size_t>(g_app->settingsData.maxContentMb) * 1024u * 1024u;
                 if (payload.size() <= maxPayload && !isIgnoredClipboardSource(source)) {
                     const auto hash = clipboardDedupHash(type, payload);
@@ -9752,34 +9858,36 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                             containsSensitiveMarker(type, payload)
                             ? nowUnix() + static_cast<std::uint64_t>(g_app->settingsData.sensitiveExpiryHours) * 3600ULL
                             : 0;
-                        if (!g_app->store.appendOrUpdate(type, payload, hash, source, expiresAt)) {
-                            appendDiagnosticLog("ERROR", "clipboard: unable to append history record");
-                        } else {
-                            const ClipType categoryType = type == ClipType::Files ? ClipType::Files :
-                                (type == ClipType::Image || type == ClipType::ImageV5
-                                     ? ClipType::Image : ClipType::Text);
-                            const int categoryIndex = categoryType == ClipType::Files ? 2 :
-                                (categoryType == ClipType::Image ? 1 : 0);
-                            const CategoryLimit& categoryLimit =
-                                g_app->settingsData.categoryLimits[static_cast<std::size_t>(categoryIndex)];
-                            if ((categoryLimit.maxItems > 0 || categoryLimit.maxDiskMb > 0) &&
-                                !g_app->store.pruneCategory(
-                                    categoryType, static_cast<std::size_t>(categoryLimit.maxItems),
-                                    static_cast<std::uint64_t>(categoryLimit.maxDiskMb) * 1024ULL * 1024ULL)) {
-                                appendDiagnosticLog("WARN", "clipboard: category limit cleanup failed");
-                            }
-                            if (g_app->settingsData.maxDiskMb > 0 ||
-                                g_app->settingsData.retentionDays > 0) {
-                                const std::uint64_t cutoff = g_app->settingsData.retentionDays > 0
-                                    ? nowUnix() - static_cast<std::uint64_t>(
-                                        g_app->settingsData.retentionDays) * 86400ULL : 0;
-                                if (!g_app->store.prune(
-                                        static_cast<std::size_t>(g_app->settingsData.maxItems),
-                                        static_cast<std::uint64_t>(g_app->settingsData.maxDiskMb) *
-                                            1024ULL * 1024ULL, cutoff)) {
-                                    appendDiagnosticLog("WARN", "clipboard: storage limit cleanup failed");
+                        const CategoryLimit limits = g_app->settingsData.categoryLimits[
+                            static_cast<std::size_t>(type == ClipType::Files ? 2 :
+                                (type == ClipType::Image || type == ClipType::ImageV5 ? 1 : 0))];
+                        const std::size_t maxItems = static_cast<std::size_t>(g_app->settingsData.maxItems);
+                        const std::uint64_t maxDiskBytes = static_cast<std::uint64_t>(g_app->settingsData.maxDiskMb) *
+                            1024ULL * 1024ULL;
+                        const std::uint64_t cutoff = g_app->settingsData.retentionDays > 0
+                            ? nowUnix() - static_cast<std::uint64_t>(g_app->settingsData.retentionDays) * 86400ULL : 0;
+                        const ClipType categoryType = type == ClipType::Files ? ClipType::Files :
+                            (type == ClipType::Image || type == ClipType::ImageV5 ? ClipType::Image : ClipType::Text);
+                        if (!enqueueStorageJob([type, payload, hash, source, expiresAt, categoryType,
+                                                limits, maxItems, maxDiskBytes, cutoff] {
+                            if (!g_app->store.appendOrUpdate(type, payload, hash, source, expiresAt)) {
+                                appendDiagnosticLog("ERROR", "clipboard: unable to append history record");
+                            } else {
+                                if ((limits.maxItems > 0 || limits.maxDiskMb > 0) &&
+                                    !g_app->store.pruneCategory(categoryType,
+                                        static_cast<std::size_t>(limits.maxItems),
+                                        static_cast<std::uint64_t>(limits.maxDiskMb) * 1024ULL * 1024ULL)) {
+                                    appendDiagnosticLog("WARN", "clipboard: category limit cleanup failed");
+                                }
+                                if (maxDiskBytes > 0 || cutoff > 0) {
+                                    if (!g_app->store.prune(maxItems, maxDiskBytes, cutoff)) {
+                                        appendDiagnosticLog("WARN", "clipboard: storage limit cleanup failed");
+                                    }
                                 }
                             }
+                            PostMessageW(g_app->hidden, kStoreChangedMessage, 0, 0);
+                        })) {
+                            appendDiagnosticLog("WARN", "clipboard: storage worker unavailable");
                         }
                     } else {
                         g_app->ignoredClipboardHash = 0;
@@ -11062,6 +11170,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         CloseHandle(mutex);
         return 1;
     }
+    try {
+        app.storeWorker = std::thread(storageWorkerLoop, &app);
+    } catch (...) {
+        appendDiagnosticLog("ERROR", "startup: storage worker creation failed");
+        DestroyWindow(app.hidden);
+        ReleaseMutex(mutex);
+        CloseHandle(mutex);
+        return 1;
+    }
     Gdiplus::GdiplusStartupInput gdiplusInput;
     if (Gdiplus::GdiplusStartup(&app.gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
         app.gdiplusToken = 0;
@@ -11071,6 +11188,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         appendDiagnosticLog("ERROR", "startup: clipboard listener registration failed", GetLastError());
         showStartupFailure(settingsLocale().unableMonitorClipboard);
         DestroyWindow(app.hidden);
+        {
+            std::lock_guard<std::mutex> lock(app.storeQueueMutex);
+            app.storeWorkerStop = true;
+            app.storeJobs.clear();
+        }
+        app.storeCondition.notify_all();
+        if (app.storeWorker.joinable()) app.storeWorker.join();
         if (app.gdiplusToken != 0) Gdiplus::GdiplusShutdown(app.gdiplusToken);
         ReleaseMutex(mutex);
         CloseHandle(mutex);
@@ -11120,6 +11244,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     }
     app.previewCondition.notify_all();
     if (app.previewWorker.joinable()) app.previewWorker.join();
+    if (app.clipboardCaptureWorker.joinable()) app.clipboardCaptureWorker.join();
+    {
+        std::lock_guard<std::mutex> lock(app.storeQueueMutex);
+        app.storeWorkerStop = true;
+        app.storeJobs.clear();
+    }
+    app.storeCondition.notify_all();
+    if (app.storeWorker.joinable()) app.storeWorker.join();
     if (app.gdiplusToken != 0) Gdiplus::GdiplusShutdown(app.gdiplusToken);
     ReleaseMutex(mutex);
     CloseHandle(mutex);
