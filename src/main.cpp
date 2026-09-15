@@ -179,8 +179,8 @@ constexpr UINT kSettingsEncryptionDebounceMs = 800;
 constexpr UINT kSettingsActionFeedbackMs = 2400;
 constexpr UINT kPopupSearchDelayMs = 90;
 constexpr UINT kPopupPreviewResumeMs = 50;
-constexpr UINT kPopupScrollAnimationMs = 160;
-constexpr int kPopupWheelScrollStep = 72;
+constexpr UINT kPopupScrollAnimationMs = 110;
+constexpr int kPopupWheelScrollStep = 96;
 constexpr UINT kPasteInputRetryMs = 4;
 constexpr UINT kPasteInputTimeoutMs = 500;
 constexpr UINT kTrayId = 1;
@@ -350,6 +350,15 @@ struct FileAvailability {
     bool missing = false;
 };
 
+struct PopupSurfaceCache {
+    HBITMAP bitmap = nullptr;
+    int width = 0;
+    int height = 0;
+    COLORREF fill = 0;
+    COLORREF border = 0;
+    int radius = 0;
+};
+
 struct AppState {
     HWND hidden = nullptr;
     HWND taskbarWindow = nullptr;
@@ -400,6 +409,7 @@ struct AppState {
     int scrollTargetPosition = 0;
     float scrollAnimationFromPosition = 0.0f;
     LONGLONG scrollAnimationStartTicks = 0;
+    float wheelScrollRemainder = 0.0f;
     int filterScrollOffset = 0;
     bool filterDragging = false;
     int filterDragStartX = 0;
@@ -495,6 +505,7 @@ struct AppState {
     std::uint64_t fileAvailabilityRevision = 0;
     std::vector<FileAvailability> fileAvailability;
     std::vector<PopupImagePreview> imagePreviews;
+    std::vector<PopupSurfaceCache> popupSurfaceCache;
     std::vector<PopupSourceIcon> sourceIcons;
     std::uint64_t imagePreviewRevision = 0;
     std::uint64_t imagePreviewGeneration = 0;
@@ -672,6 +683,7 @@ void openSupportWindow(bool qqGroup);
 LRESULT CALLBACK supportWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 HICON clipLiteIcon();
 void clearPopupImagePreviews();
+void clearPopupSurfaceCache();
 void clearPopupSourceIcons();
 void hideDetailPreview();
 void requestDetailPreview(int row);
@@ -2272,6 +2284,50 @@ void drawGdiRoundedSurface(HDC dc, const RECT& rect, COLORREF fill, COLORREF bor
     graphics.DrawPath(&pen, &path);
 }
 
+// 缓存重复使用的卡片表面，滚动时避免反复创建 GDI+ 路径和画刷。
+bool drawCachedPopupSurface(HDC dc, const RECT& rect, COLORREF fill,
+                            COLORREF border, int radius) {
+    if (!g_app || !dc || rect.right <= rect.left || rect.bottom <= rect.top) return false;
+    const int width = rect.right - rect.left;
+    const int height = rect.bottom - rect.top;
+    auto cached = std::find_if(g_app->popupSurfaceCache.begin(),
+                               g_app->popupSurfaceCache.end(),
+                               [width, height, fill, border, radius](
+                                   const PopupSurfaceCache& entry) {
+        return entry.width == width && entry.height == height && entry.fill == fill &&
+            entry.border == border && entry.radius == radius;
+    });
+    if (cached == g_app->popupSurfaceCache.end()) {
+        HDC source = CreateCompatibleDC(dc);
+        HBITMAP bitmap = source ? CreateCompatibleBitmap(dc, width, height) : nullptr;
+        if (!source || !bitmap) {
+            if (bitmap) DeleteObject(bitmap);
+            if (source) DeleteDC(source);
+            return false;
+        }
+        HGDIOBJ previous = SelectObject(source, bitmap);
+        const COLORREF background = settingsThemeColor(RGB(242, 244, 247), RGB(38, 42, 48));
+        HBRUSH backgroundBrush = CreateSolidBrush(background);
+        RECT surfaceRect{0, 0, width, height};
+        FillRect(source, &surfaceRect, backgroundBrush);
+        DeleteObject(backgroundBrush);
+        drawGdiRoundedSurface(source, RECT{0, 0, width, height}, fill, border, radius);
+        SelectObject(source, previous);
+        DeleteDC(source);
+        g_app->popupSurfaceCache.push_back(
+            PopupSurfaceCache{bitmap, width, height, fill, border, radius});
+        cached = std::prev(g_app->popupSurfaceCache.end());
+    }
+    HDC source = CreateCompatibleDC(dc);
+    if (!source) return false;
+    HGDIOBJ previous = SelectObject(source, cached->bitmap);
+    const bool drawn = BitBlt(dc, rect.left, rect.top, width, height,
+                              source, 0, 0, SRCCOPY) != FALSE;
+    SelectObject(source, previous);
+    DeleteDC(source);
+    return drawn;
+}
+
 void drawPinIcon(HDC dc, int right, int centerY, COLORREF color, bool filled = false) {
     if (!g_app || g_app->gdiplusToken == 0) return;
     Gdiplus::Graphics graphics(dc);
@@ -2640,15 +2696,18 @@ void cancelStalePopupPreviewWork();
 
 void scrollPopup(int delta) {
     if (!g_app->popup || g_app->visible.empty()) return;
-    if (!g_app->scrollAnimating) g_app->scrollTargetPosition = g_app->scrollPosition;
-    g_app->scrollTargetPosition = std::clamp(g_app->scrollTargetPosition + delta,
+    const bool wasAnimating = g_app->scrollAnimating;
+    if (!wasAnimating) g_app->scrollTargetPosition = g_app->scrollPosition;
+    const int previousTarget = g_app->scrollTargetPosition;
+    g_app->scrollTargetPosition = std::clamp(previousTarget + delta,
                                              0, popupMaxScrollPixels());
+    if (g_app->scrollTargetPosition == g_app->scrollPosition) return;
     g_app->fastImagePreview = true;
     ++g_app->imagePreviewGeneration;
     g_app->previewGeneration->store(g_app->imagePreviewGeneration, std::memory_order_release);
     cancelStalePopupPreviewWork();
-    g_app->scrollAnimating = g_app->scrollTargetPosition != g_app->scrollPosition;
-    if (g_app->scrollAnimating) {
+    g_app->scrollAnimating = true;
+    if (!wasAnimating) {
         g_app->scrollAnimationFromPosition = static_cast<float>(g_app->scrollPosition);
         g_app->scrollAnimationStartTicks = settingsToggleClock();
         SetTimer(g_app->popup, kPopupScrollAnimationTimer, 16, nullptr);
@@ -2671,8 +2730,17 @@ void notifyMissingFilePaste(HWND owner) {
                 MB_OK | MB_ICONWARNING);
 }
 
+void clearPopupSurfaceCache() {
+    if (!g_app) return;
+    for (const PopupSurfaceCache& surface : g_app->popupSurfaceCache) {
+        if (surface.bitmap) DeleteObject(surface.bitmap);
+    }
+    g_app->popupSurfaceCache.clear();
+}
+
 void clearPopupImagePreviews() {
     if (!g_app) return;
+    clearPopupSurfaceCache();
     for (const PopupImagePreview& preview : g_app->imagePreviews) {
         if (preview.bitmap) DeleteObject(preview.bitmap);
     }
@@ -2835,6 +2903,20 @@ bool fileItemHasMissingPath(std::size_t itemIndex, const ClipItem& item) {
         fileListHasMissingPath(payload);
     g_app->fileAvailability.push_back(FileAvailability{itemIndex, item.hash, missing});
     return missing;
+}
+
+bool cachedFileItemHasMissingPath(std::size_t itemIndex, const ClipItem& item) {
+    if (!g_app) return false;
+    if (g_app->fileAvailabilityRevision != g_app->store.revision()) {
+        g_app->fileAvailability.clear();
+        g_app->fileAvailabilityRevision = g_app->store.revision();
+    }
+    const auto cached = std::find_if(g_app->fileAvailability.begin(),
+                                     g_app->fileAvailability.end(),
+                                     [itemIndex, &item](const FileAvailability& status) {
+        return status.itemIndex == itemIndex && status.hash == item.hash;
+    });
+    return cached != g_app->fileAvailability.end() && cached->missing;
 }
 
 // 从图片文件按历史卡片尺寸生成一次性缩略图位图。
@@ -4353,6 +4435,7 @@ void showPopup(bool openedByWinV = false) {
     g_app->scrollPosition = 0;
     g_app->scrollTargetPosition = 0;
     g_app->scrollAnimating = false;
+    g_app->wheelScrollRemainder = 0.0f;
     g_app->fastImagePreview = false;
     g_app->filterScrollOffset = 0;
     resetPopupFilters();
@@ -5240,13 +5323,19 @@ HWND supportWindowForProcess(DWORD processId) {
 
 void closeSupportProcess() {
     if (!g_app || !g_app->supportProcess) return;
+    const HANDLE process = g_app->supportProcess;
     DWORD exitCode = 0;
-    if (GetExitCodeProcess(g_app->supportProcess, &exitCode) && exitCode == STILL_ACTIVE) {
+    if (GetExitCodeProcess(process, &exitCode) && exitCode == STILL_ACTIVE) {
         if (HWND window = supportWindowForProcess(g_app->supportProcessId)) {
             PostMessageW(window, WM_CLOSE, 0, 0);
         }
     }
-    CloseHandle(g_app->supportProcess);
+    if (WaitForSingleObject(process, 2000) == WAIT_TIMEOUT) {
+        // 支持窗口是主程序创建的辅助进程，关闭超时不能继续占用安装目录中的 exe。
+        TerminateProcess(process, 1);
+        WaitForSingleObject(process, 2000);
+    }
+    CloseHandle(process);
     g_app->supportProcess = nullptr;
     g_app->supportProcessId = 0;
 }
@@ -6509,10 +6598,12 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         }
         const bool rowHovered = row == g_app->hoveredRow;
         const bool rowSelected = row == g_app->selected;
-        drawGdiRoundedSurface(dc, rowRect,
-                              rowSelected ? settingsAccentSoftColor() :
-                                  (rowHovered ? settingsThemeColor(RGB(247, 251, 250), RGB(57, 64, 73)) : card),
-                              rowSelected || rowHovered ? accent : cardBorder, 6);
+        const COLORREF rowFill = rowSelected ? settingsAccentSoftColor() :
+            (rowHovered ? settingsThemeColor(RGB(247, 251, 250), RGB(57, 64, 73)) : card);
+        const COLORREF rowBorder = rowSelected || rowHovered ? accent : cardBorder;
+        if (!drawCachedPopupSurface(dc, rowRect, rowFill, rowBorder, 6)) {
+            drawGdiRoundedSurface(dc, rowRect, rowFill, rowBorder, 6);
+        }
         if (rowSelected) {
             drawGdiRoundedSurface(dc,
                                   RECT{rowRect.left + ui(4), rowRect.top + ui(6),
@@ -6521,7 +6612,9 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         }
         const bool image = isImageType(item.type);
         const bool file = item.type == ClipType::Files;
-        const bool missingFiles = file && fileItemHasMissingPath(itemIndex, item);
+        const bool missingFiles = file && (g_app->fastImagePreview || g_app->scrollDragging
+            ? cachedFileItemHasMissingPath(itemIndex, item)
+            : fileItemHasMissingPath(itemIndex, item));
         const int metadataTop = y + height - ui(20);
         const RECT previewRect{rowRect.left + ui(12), y + ui(6),
                                rowRect.left + ui(12 + kPopupPreviewSize),
@@ -10700,14 +10793,14 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const float progress = std::min(1.0f,
                 static_cast<float>(elapsed) * 1000.0f /
                 static_cast<float>(settingsToggleClockFrequency() * kPopupScrollAnimationMs));
-            const float eased = progress;
             const float position = g_app->scrollAnimationFromPosition +
                 (static_cast<float>(g_app->scrollTargetPosition) -
-                 g_app->scrollAnimationFromPosition) * eased;
+                 g_app->scrollAnimationFromPosition) * progress;
             if (!g_app->scrollAnimating || progress >= 1.0f) {
                 applyPopupScrollPosition(g_app->scrollTargetPosition);
                 g_app->scrollAnimating = false;
                 KillTimer(hwnd, kPopupScrollAnimationTimer);
+                invalidatePopupList(hwnd);
                 SetTimer(hwnd, kPopupPreviewResumeTimer, kPopupPreviewResumeMs, nullptr);
                 return 0;
             }
@@ -10857,9 +10950,13 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 invalidateFilterBar(hwnd);
                 return 0;
             }
-            const int direction = GET_WHEEL_DELTA_WPARAM(wParam) > 0
-                ? -ui(kPopupWheelScrollStep) : ui(kPopupWheelScrollStep);
-            scrollPopup(direction);
+            const int wheelDelta = GET_WHEEL_DELTA_WPARAM(wParam);
+            g_app->wheelScrollRemainder +=
+                -static_cast<float>(wheelDelta) * static_cast<float>(ui(kPopupWheelScrollStep)) /
+                static_cast<float>(WHEEL_DELTA);
+            const int pixelDelta = static_cast<int>(std::trunc(g_app->wheelScrollRemainder));
+            g_app->wheelScrollRemainder -= static_cast<float>(pixelDelta);
+            if (pixelDelta != 0) scrollPopup(pixelDelta);
             return 0;
         }
         if (message == WM_MOUSEHWHEEL) {
@@ -11336,13 +11433,31 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         HWND existing = FindWindowExW(HWND_MESSAGE, nullptr, L"ClipLiteHidden", nullptr);
         if (existing) {
             if (commandExit) {
+                DWORD processId = 0;
+                GetWindowThreadProcessId(existing, &processId);
+                HANDLE process = processId != 0
+                    ? OpenProcess(SYNCHRONIZE, FALSE, processId) : nullptr;
                 PostMessageW(existing, kExitMessage, 0, 0);
+                // 卸载器必须等主程序真正退出，否则安装目录中的 exe 仍可能被占用。
+                if (process) {
+                    WaitForSingleObject(process, INFINITE);
+                    CloseHandle(process);
+                } else {
+                    // 管理员模式下可能无法打开进程句柄，隐藏窗口消失同样表示进程已退出。
+                    while (IsWindow(existing)) Sleep(50);
+                }
             } else if (commandHistory) {
                 PostMessageW(existing, kShowPopupMessage, 0, 0);
             } else if (commandSettings || app.settingsData.showSettingsOnStartup) {
                 PostMessageW(existing, kShowSettingsMessage, 0, 0);
             }
         }
+        CloseHandle(mutex);
+        return 0;
+    }
+    if (commandExit) {
+        // 卸载器始终会尝试发送退出命令；没有运行实例时不能继续进入消息循环。
+        ReleaseMutex(mutex);
         CloseHandle(mutex);
         return 0;
     }

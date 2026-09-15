@@ -1,6 +1,6 @@
 param(
     [string]$Configuration = "Release",
-    [string]$Version = "1.2.3"
+    [string]$Version = "1.2.4"
 )
 
 $root = Split-Path -Parent $PSScriptRoot
@@ -27,13 +27,11 @@ New-Item -ItemType File -Path (Join-Path $portableOut "portable.flag") | Out-Nul
 Copy-Item $exe (Join-Path $portableOut "ClipLite.exe")
 Copy-Item (Join-Path $root "README.md") $portableOut
 Copy-Item (Join-Path $root "README.en.md") $portableOut
+Copy-Item (Join-Path $root "USAGE.md") $portableOut
 Copy-Item (Join-Path $root "CHANGELOG.md") $portableOut
 Copy-Item (Join-Path $root "CHANGELOG.en.md") $portableOut
 Copy-Item (Join-Path $root "LICENSE.md") $portableOut
-Copy-Item (Join-Path $root "CONTRIBUTING.md") $portableOut
-Copy-Item (Join-Path $root "CONTRIBUTING.en.md") $portableOut
-Copy-Item (Join-Path $root "SECURITY.md") $portableOut
-Copy-Item (Join-Path $root "SECURITY.en.md") $portableOut
+Copy-Item (Join-Path $root "LICENSE.zh-CN.md") $portableOut
 $hash = (Get-FileHash (Join-Path $portableOut "ClipLite.exe") -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -Path (Join-Path $portableOut "SHA256SUM.txt") -Value "$hash  ClipLite.exe" -Encoding ASCII
 Add-Type -AssemblyName System.IO.Compression.FileSystem

@@ -1,10 +1,19 @@
 # Changelog
 
+## [1.2.4] - 2026-09-15
+
+- Added English and Simplified Chinese installer languages, selected automatically from the Windows UI language.
+- The installer now displays the matching English or Simplified Chinese license text for the selected language.
+- Fixed uninstall shutdown races where the exit helper returned before `ClipLite.exe` finished closing; it now waits for the main process and support-window helper process to exit.
+
+### Build and Verification
+
+- The `1.2.4` x64 Release build, `ClipLiteStore` CTest, window lifecycle stress test, and portable/installer package generation passed.
+
 ## [1.2.3] - 2026-09-15
 
 - Fixed the tray icon disappearing after `explorer.exe` restarts or refreshes the taskbar; ClipLite now restores it automatically.
 - Added internal shortcut conflict detection and detailed registration status. Duplicate combinations are rejected before saving and marked in Settings; system-wide shortcuts occupied by Windows or another application identify the affected action and restore its default combination when available, otherwise prompting for a different shortcut.
-
 ### Build and Verification
 
 - The `1.2.3` x64 Release build, `ClipLiteStore` CTest, window lifecycle stress test, and portable/installer package generation passed.
