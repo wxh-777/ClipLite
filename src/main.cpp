@@ -168,6 +168,7 @@ constexpr UINT_PTR kPasteInputTimer = 15;
 constexpr UINT_PTR kPopupPreviewResumeTimer = 16;
 constexpr UINT_PTR kPopupPreviewHoverTimer = 17;
 constexpr UINT_PTR kPopupPreviewHideTimer = 18;
+constexpr UINT_PTR kPopupScrollAnimationTimer = 19;
 constexpr DWORD kSettingsToggleAnimationMs = 160;
 constexpr DWORD kSettingsDropdownAnimationMs = 150;
 constexpr DWORD kSettingsThemeAnimationMs = 180;
@@ -178,6 +179,8 @@ constexpr UINT kSettingsEncryptionDebounceMs = 800;
 constexpr UINT kSettingsActionFeedbackMs = 2400;
 constexpr UINT kPopupSearchDelayMs = 90;
 constexpr UINT kPopupPreviewResumeMs = 50;
+constexpr UINT kPopupScrollAnimationMs = 160;
+constexpr int kPopupWheelScrollStep = 72;
 constexpr UINT kPasteInputRetryMs = 4;
 constexpr UINT kPasteInputTimeoutMs = 500;
 constexpr UINT kTrayId = 1;
@@ -394,6 +397,9 @@ struct AppState {
     int selected = 0;
     int scrollOffset = 0;
     int scrollPosition = 0;
+    int scrollTargetPosition = 0;
+    float scrollAnimationFromPosition = 0.0f;
+    LONGLONG scrollAnimationStartTicks = 0;
     int filterScrollOffset = 0;
     bool filterDragging = false;
     int filterDragStartX = 0;
@@ -415,6 +421,7 @@ struct AppState {
     DWORD popupOpenInputTick = 0;
     bool popupImeMode = false;
     bool scrollDragging = false;
+    bool scrollAnimating = false;
     bool fastImagePreview = false;
     int scrollDragStartY = 0;
     int scrollDragStartOffset = 0;
@@ -2167,11 +2174,17 @@ int popupMaxScrollPixels() {
     return std::max(0, content - viewport);
 }
 
+void applyPopupScrollPosition(int position) {
+    if (!g_app) return;
+    g_app->scrollPosition = std::clamp(position, 0, popupMaxScrollPixels());
+    g_app->scrollOffset = g_app->scrollPosition / std::max(1, popupScrollStride());
+}
+
 void setPopupScrollPosition(int position) {
     if (!g_app) return;
-    const int maximum = popupMaxScrollPixels();
-    g_app->scrollPosition = std::clamp(position, 0, maximum);
-    g_app->scrollOffset = g_app->scrollPosition / std::max(1, popupScrollStride());
+    applyPopupScrollPosition(position);
+    g_app->scrollTargetPosition = g_app->scrollPosition;
+    g_app->scrollAnimating = false;
 }
 
 bool popupScrollMetrics(int& trackTop, int& trackBottom, int& thumbTop,
@@ -2627,12 +2640,20 @@ void cancelStalePopupPreviewWork();
 
 void scrollPopup(int delta) {
     if (!g_app->popup || g_app->visible.empty()) return;
+    if (!g_app->scrollAnimating) g_app->scrollTargetPosition = g_app->scrollPosition;
+    g_app->scrollTargetPosition = std::clamp(g_app->scrollTargetPosition + delta,
+                                             0, popupMaxScrollPixels());
     g_app->fastImagePreview = true;
     ++g_app->imagePreviewGeneration;
     g_app->previewGeneration->store(g_app->imagePreviewGeneration, std::memory_order_release);
     cancelStalePopupPreviewWork();
+    g_app->scrollAnimating = g_app->scrollTargetPosition != g_app->scrollPosition;
+    if (g_app->scrollAnimating) {
+        g_app->scrollAnimationFromPosition = static_cast<float>(g_app->scrollPosition);
+        g_app->scrollAnimationStartTicks = settingsToggleClock();
+        SetTimer(g_app->popup, kPopupScrollAnimationTimer, 16, nullptr);
+    }
     SetTimer(g_app->popup, kPopupPreviewResumeTimer, kPopupPreviewResumeMs, nullptr);
-    setPopupScrollPosition(g_app->scrollPosition + delta);
     invalidatePopupList(g_app->popup);
 }
 
@@ -4330,6 +4351,8 @@ void showPopup(bool openedByWinV = false) {
     g_app->selected = 0;
     g_app->scrollOffset = 0;
     g_app->scrollPosition = 0;
+    g_app->scrollTargetPosition = 0;
+    g_app->scrollAnimating = false;
     g_app->fastImagePreview = false;
     g_app->filterScrollOffset = 0;
     resetPopupFilters();
@@ -4398,6 +4421,7 @@ void closePopup() {
         KillTimer(g_app->popup, kPopupOpenGuardTimer);
         KillTimer(g_app->popup, kPopupDeactivateTimer);
         KillTimer(g_app->popup, kPopupPreviewResumeTimer);
+        KillTimer(g_app->popup, kPopupScrollAnimationTimer);
         KillTimer(g_app->popup, kPopupPreviewHoverTimer);
         KillTimer(g_app->popup, kPopupPreviewHideTimer);
         DestroyWindow(g_app->popup);
@@ -10670,8 +10694,33 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             closePopup();
             return 0;
         }
+        if (message == WM_TIMER && wParam == kPopupScrollAnimationTimer) {
+            const LONGLONG now = settingsToggleClock();
+            const LONGLONG elapsed = now - g_app->scrollAnimationStartTicks;
+            const float progress = std::min(1.0f,
+                static_cast<float>(elapsed) * 1000.0f /
+                static_cast<float>(settingsToggleClockFrequency() * kPopupScrollAnimationMs));
+            const float eased = progress;
+            const float position = g_app->scrollAnimationFromPosition +
+                (static_cast<float>(g_app->scrollTargetPosition) -
+                 g_app->scrollAnimationFromPosition) * eased;
+            if (!g_app->scrollAnimating || progress >= 1.0f) {
+                applyPopupScrollPosition(g_app->scrollTargetPosition);
+                g_app->scrollAnimating = false;
+                KillTimer(hwnd, kPopupScrollAnimationTimer);
+                SetTimer(hwnd, kPopupPreviewResumeTimer, kPopupPreviewResumeMs, nullptr);
+                return 0;
+            }
+            applyPopupScrollPosition(static_cast<int>(std::lround(position)));
+            invalidatePopupList(hwnd);
+            return 0;
+        }
         if (message == WM_TIMER && wParam == kPopupPreviewResumeTimer) {
             KillTimer(hwnd, kPopupPreviewResumeTimer);
+            if (g_app->scrollAnimating || g_app->scrollDragging) {
+                SetTimer(hwnd, kPopupPreviewResumeTimer, kPopupPreviewResumeMs, nullptr);
+                return 0;
+            }
             g_app->fastImagePreview = false;
             preloadPopupImageScreens(hwnd);
             invalidatePopupList(hwnd);
@@ -10808,7 +10857,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 invalidateFilterBar(hwnd);
                 return 0;
             }
-            const int direction = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -ui(96) : ui(96);
+            const int direction = GET_WHEEL_DELTA_WPARAM(wParam) > 0
+                ? -ui(kPopupWheelScrollStep) : ui(kPopupWheelScrollStep);
             scrollPopup(direction);
             return 0;
         }
@@ -10918,6 +10968,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == WM_LBUTTONUP && g_app->scrollDragging) {
             g_app->scrollDragging = false;
             ReleaseCapture();
+            SetTimer(hwnd, kPopupPreviewResumeTimer, kPopupPreviewResumeMs, nullptr);
             return 0;
         }
         if (message == WM_LBUTTONUP && g_app->filterDragging) {
@@ -11004,6 +11055,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 return 0;
             }
             if (popupScrollThumbAt(clickX, clickY)) {
+                KillTimer(hwnd, kPopupScrollAnimationTimer);
+                g_app->scrollAnimating = false;
                 g_app->scrollDragging = true;
                 g_app->scrollDragStartY = clickY;
                 g_app->scrollDragStartOffset = g_app->scrollPosition;
