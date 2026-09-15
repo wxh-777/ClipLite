@@ -193,7 +193,7 @@ constexpr int kPopupPinLeft = 342;
 constexpr int kPopupPinRight = 362;
 constexpr int kPopupCloseLeft = 366;
 constexpr int kPopupWidth = 400;
-constexpr int kPopupHeight = 500;
+constexpr int kPopupHeight = 600;
 constexpr int kPopupDetailPreviewWidth = 460;
 constexpr int kPopupDetailPreviewHeight = 340;
 constexpr int kPopupDetailPreviewGap = 8;
@@ -210,8 +210,9 @@ constexpr int kPopupCornerRadius = 10;
 constexpr int kPopupBorderInset = 1;
 constexpr int kPopupListTop = 96;
 constexpr int kPopupBottomPadding = 14;
-constexpr int kPopupCardHeight = 108;
-constexpr int kPopupCardGap = 8;
+constexpr int kPopupCardHeight = 88;
+constexpr int kPopupCardGap = 6;
+constexpr int kPopupPreviewSize = 60;
 constexpr int kSettingsWidth = 740;
 constexpr int kSettingsHeight = 520;
 constexpr int kSettingsSidebarWidth = 180;
@@ -2016,8 +2017,8 @@ int popupVisibleRows() {
     RECT client{};
     GetClientRect(g_app->popup, &client);
     const int available = client.bottom - ui(kPopupListTop) - ui(kPopupBottomPadding);
-    return std::max(1, (available + ui(kPopupCardGap)) /
-                           (ui(kPopupCardHeight) + ui(kPopupCardGap)));
+    const int stride = ui(kPopupCardHeight + kPopupCardGap);
+    return std::max(1, (available + stride - 1) / stride);
 }
 
 int popupCardHeight(const ClipItem& item) {
@@ -2155,8 +2156,15 @@ int popupScrollStride() {
 
 int popupMaxScrollPixels() {
     if (!g_app || !g_app->popup) return 0;
-    return std::max(0, static_cast<int>(g_app->visible.size()) - popupVisibleRows()) *
-        popupScrollStride();
+    RECT client{};
+    GetClientRect(g_app->popup, &client);
+    const int viewport = std::max(0, static_cast<int>(client.bottom) -
+        ui(kPopupListTop) - ui(kPopupBottomPadding));
+    const int itemCount = static_cast<int>(g_app->visible.size());
+    const int content = itemCount > 0
+        ? itemCount * ui(kPopupCardHeight) + (itemCount - 1) * ui(kPopupCardGap)
+        : 0;
+    return std::max(0, content - viewport);
 }
 
 void setPopupScrollPosition(int position) {
@@ -2171,15 +2179,19 @@ bool popupScrollMetrics(int& trackTop, int& trackBottom, int& thumbTop,
     if (!g_app || !g_app->popup) return false;
     RECT client{};
     GetClientRect(g_app->popup, &client);
-    const int visibleRows = popupVisibleRows();
     const int itemCount = static_cast<int>(g_app->visible.size());
-    maxOffset = std::max(0, itemCount - visibleRows) * popupScrollStride();
+    const int viewport = std::max(0, static_cast<int>(client.bottom) -
+        ui(kPopupListTop) - ui(kPopupBottomPadding));
+    const int content = itemCount > 0
+        ? itemCount * ui(kPopupCardHeight) + (itemCount - 1) * ui(kPopupCardGap)
+        : 0;
+    maxOffset = std::max(0, content - viewport);
     if (maxOffset == 0) return false;
     trackTop = ui(kPopupListTop);
     trackBottom = client.bottom - ui(kPopupBottomPadding);
     const int trackHeight = std::max(1, trackBottom - trackTop);
     thumbHeight = std::min(trackHeight,
-                           std::max(ui(24), trackHeight * visibleRows / std::max(1, itemCount)));
+                           std::max(ui(24), trackHeight * viewport / std::max(1, content)));
     thumbTop = trackTop + (trackHeight - thumbHeight) * g_app->scrollPosition /
         std::max(1, maxOffset);
     return true;
@@ -2556,13 +2568,13 @@ void applyVisibleCandidates(const std::vector<std::size_t>& candidates,
         setPopupScrollPosition(previousScrollPosition);
     } else {
         const int visibleRows = popupVisibleRows();
-        const int maxOffset = std::max(0, static_cast<int>(g_app->visible.size()) - visibleRows);
-        g_app->scrollOffset = std::clamp(g_app->scrollOffset, 0, maxOffset);
-        if (g_app->selected < g_app->scrollOffset) g_app->scrollOffset = g_app->selected;
-        if (g_app->selected >= g_app->scrollOffset + visibleRows) {
-            g_app->scrollOffset = g_app->selected - visibleRows + 1;
+        int rowOffset = std::clamp(g_app->scrollOffset, 0,
+                                   std::max(0, static_cast<int>(g_app->visible.size()) - visibleRows));
+        if (g_app->selected < rowOffset) rowOffset = g_app->selected;
+        if (g_app->selected >= rowOffset + visibleRows) {
+            rowOffset = g_app->selected - visibleRows + 1;
         }
-        g_app->scrollPosition = g_app->scrollOffset * popupScrollStride();
+        setPopupScrollPosition(rowOffset * popupScrollStride());
     }
     invalidatePopupList(g_app->popup);
     invalidateFilterBar(g_app->popup);
@@ -3990,7 +4002,7 @@ void preloadPopupImageScreens(HWND hwnd) {
     const int firstRow = g_app->scrollPosition / stride;
     const int startRow = std::max(0, firstRow - rows);
     const int endRow = std::min(static_cast<int>(g_app->visible.size()), firstRow + rows * 2);
-    const int previewSize = ui(72);
+    const int previewSize = ui(kPopupPreviewSize);
     const RECT previewRect{0, 0, previewSize, previewSize};
     const auto scheduleRange = [&](int rangeStart, int rangeEnd) {
         for (int row = rangeStart; row < rangeEnd; ++row) {
@@ -6479,16 +6491,17 @@ void paintPopupContent(HWND hwnd, HDC dc) {
                               rowSelected || rowHovered ? accent : cardBorder, 6);
         if (rowSelected) {
             drawGdiRoundedSurface(dc,
-                                  RECT{rowRect.left + ui(4), rowRect.top + ui(12),
-                                        rowRect.left + ui(7), rowRect.bottom - ui(12)},
+                                  RECT{rowRect.left + ui(4), rowRect.top + ui(6),
+                                        rowRect.left + ui(7), rowRect.bottom - ui(8)},
                                   accent, accent, 2);
         }
         const bool image = isImageType(item.type);
         const bool file = item.type == ClipType::Files;
         const bool missingFiles = file && fileItemHasMissingPath(itemIndex, item);
-        const int metadataTop = y + height - ui(24);
-        const RECT previewRect{rowRect.left + ui(12), y + ui(12),
-                               rowRect.left + ui(84), y + ui(84)};
+        const int metadataTop = y + height - ui(20);
+        const RECT previewRect{rowRect.left + ui(12), y + ui(6),
+                               rowRect.left + ui(12 + kPopupPreviewSize),
+                               y + ui(6 + kPopupPreviewSize)};
         if ((image && drawImagePreview(dc, item, previewRect,
                                        !g_app->fastImagePreview && !g_app->scrollDragging)) ||
             (file && drawFileImagePreview(dc, item, previewRect))) {
@@ -6496,15 +6509,15 @@ void paintPopupContent(HWND hwnd, HDC dc) {
             const std::wstring preview = localizedPopupPreview(item);
             SelectObject(dc, previewFont);
             SetTextColor(dc, text);
-            RECT textPreviewRect{rowRect.left + ui(12), y + ui(10),
+            RECT textPreviewRect{rowRect.left + ui(12), y + ui(6),
                                  rowRect.right - ui(missingFiles ? 144 : 12),
                                  metadataTop - ui(4)};
             DrawTextW(dc, preview.c_str(), -1, &textPreviewRect,
                       DT_LEFT | DT_TOP | DT_WORDBREAK | DT_END_ELLIPSIS);
         }
         if (missingFiles) {
-            const RECT missingRect{rowRect.right - ui(132), y + ui(9),
-                                   rowRect.right - ui(28), y + ui(27)};
+            const RECT missingRect{rowRect.right - ui(132), y + ui(5),
+                                   rowRect.right - ui(28), y + ui(23)};
             drawMetadataTag(dc, missingRect,
                             tr(L"File missing", L"文件已不存在"),
                             settingsThemeColor(RGB(254, 226, 226), RGB(76, 52, 56)),
@@ -10552,9 +10565,11 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const int row = popupRowAt(point.y);
             const int rowTop = row >= 0 ? popupRowTop(row) : -1;
             const bool deleteHover = row >= 0 && popupDeleteHitAt(client, rowTop, point.x, point.y);
+            const int rowHeight = row >= 0
+                ? popupCardHeight(g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]]) : 0;
             const bool pinHover = row >= 0 && point.x >= client.right - ui(45) &&
-                point.x < client.right - ui(10) && point.y >= rowTop + ui(kPopupCardHeight - 30) &&
-                point.y < rowTop + ui(kPopupCardHeight);
+                point.x < client.right - ui(10) && point.y >= rowTop + rowHeight - ui(30) &&
+                point.y < rowTop + rowHeight;
             if (point.x >= ui(kPopupSearchLeft) && point.x < ui(kPopupSearchRight) &&
                 point.y >= ui(12) && point.y < ui(48)) {
                 SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
@@ -10843,9 +10858,11 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const int rowTop = row >= 0 ? popupRowTop(row) : -1;
             const int deleteRow = row >= 0 && popupDeleteHitAt(client, rowTop, x, y)
                 ? row : -1;
+            const int rowHeight = row >= 0
+                ? popupCardHeight(g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]]) : 0;
             const int pinRow = row >= 0 && x >= client.right - ui(45) &&
-                x < client.right - ui(10) && y >= rowTop + ui(kPopupCardHeight - 30) &&
-                y < rowTop + ui(kPopupCardHeight) ? row : -1;
+                x < client.right - ui(10) && y >= rowTop + rowHeight - ui(30) &&
+                y < rowTop + rowHeight ? row : -1;
             const bool headerHover = popupPointInHeader(client, x, y);
             int headerButton = -1;
             if (x >= ui(kPopupFilterButtonLeft) && x < ui(kPopupFilterButtonRight) &&
@@ -11003,10 +11020,12 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 const bool deleteClick = popupDeleteHitAt(client, rowTop,
                                                            GET_X_LPARAM(lParam),
                                                            GET_Y_LPARAM(lParam));
+                const int rowHeight = popupCardHeight(
+                    g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]]);
                 const bool pinClick = GET_X_LPARAM(lParam) >= client.right - ui(45) &&
                     GET_X_LPARAM(lParam) < client.right - ui(10) &&
-                    GET_Y_LPARAM(lParam) >= rowTop + ui(kPopupCardHeight - 30) &&
-                    GET_Y_LPARAM(lParam) < rowTop + ui(kPopupCardHeight);
+                    GET_Y_LPARAM(lParam) >= rowTop + rowHeight - ui(30) &&
+                    GET_Y_LPARAM(lParam) < rowTop + rowHeight;
                 if (deleteClick) {
                     g_app->store.remove(g_app->visible[static_cast<std::size_t>(row)]);
                     refreshVisible(true);
