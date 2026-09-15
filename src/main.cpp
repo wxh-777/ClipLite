@@ -348,6 +348,7 @@ struct FileAvailability {
 
 struct AppState {
     HWND hidden = nullptr;
+    HWND taskbarWindow = nullptr;
     HWND popup = nullptr;
     HWND detailPreview = nullptr;
     HWND detailPreviewTextEdit = nullptr;
@@ -9835,11 +9836,14 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         g_app->shortcutCaptureControl = nullptr;
         g_app->languageDropdown = nullptr;
     }
-    if (hwnd == g_app->hidden) {
-        if (g_taskbarCreated != 0 && message == g_taskbarCreated) {
-            addTrayIcon();
-            return 0;
+    if (g_taskbarCreated != 0 && message == g_taskbarCreated &&
+        hwnd == g_app->taskbarWindow) {
+        if (!addTrayIcon()) {
+            appendDiagnosticLog("WARN", "shell: unable to restore tray icon", GetLastError());
         }
+        return 0;
+    }
+    if (hwnd == g_app->hidden) {
         if (message == kTrayMessage) {
             if (lParam == WM_LBUTTONUP || lParam == WM_LBUTTONDBLCLK) showPopup();
             else if (lParam == WM_RBUTTONUP) showTrayMenu();
@@ -11349,6 +11353,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     WNDCLASSW hiddenClass = popupClass;
     hiddenClass.lpszClassName = L"ClipLiteHidden";
     RegisterClassW(&hiddenClass);
+    WNDCLASSW taskbarClass = hiddenClass;
+    taskbarClass.lpszClassName = L"ClipLiteTaskbar";
+    RegisterClassW(&taskbarClass);
 
     app.hidden = CreateWindowExW(0, L"ClipLiteHidden", L"ClipLite", 0, 0, 0, 0, 0,
                                  HWND_MESSAGE, nullptr, instance, nullptr);
@@ -11359,10 +11366,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         CloseHandle(mutex);
         return 1;
     }
+    // 消息专用窗口不会收到 Explorer 广播，使用不可见顶层窗口监听 TaskbarCreated。
+    app.taskbarWindow = CreateWindowExW(WS_EX_TOOLWINDOW, L"ClipLiteTaskbar", L"ClipLiteTaskbar",
+                                        0, 0, 0, 0, 0, nullptr, nullptr, instance, nullptr);
+    if (!app.taskbarWindow) {
+        appendDiagnosticLog("ERROR", "startup: taskbar notification window creation failed", GetLastError());
+        DestroyWindow(app.hidden);
+        ReleaseMutex(mutex);
+        CloseHandle(mutex);
+        return 1;
+    }
     try {
         app.storeWorker = std::thread(storageWorkerLoop, &app);
     } catch (...) {
         appendDiagnosticLog("ERROR", "startup: storage worker creation failed");
+        DestroyWindow(app.taskbarWindow);
         DestroyWindow(app.hidden);
         ReleaseMutex(mutex);
         CloseHandle(mutex);
@@ -11376,6 +11394,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     if (!AddClipboardFormatListener(app.hidden)) {
         appendDiagnosticLog("ERROR", "startup: clipboard listener registration failed", GetLastError());
         showStartupFailure(settingsLocale().unableMonitorClipboard);
+        DestroyWindow(app.taskbarWindow);
         DestroyWindow(app.hidden);
         {
             std::lock_guard<std::mutex> lock(app.storeQueueMutex);
@@ -11422,6 +11441,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     KillTimer(app.hidden, kExpiryTimer);
     KillTimer(app.hidden, kPasteInputTimer);
     removeTrayIcon();
+    DestroyWindow(app.taskbarWindow);
     UnregisterHotKey(app.hidden, kHotkeyAltV);
     UnregisterHotKey(app.hidden, kHotkeyWinV);
     if (app.keyboardHook) UnhookWindowsHookEx(app.keyboardHook);

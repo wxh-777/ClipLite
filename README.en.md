@@ -2,7 +2,7 @@
 
 ClipLite is a lightweight native clipboard history manager for Windows. It is built with C++17, the Win32 API, and GDI/GDI+, without WebView, Electron, WinUI, Qt, or another large runtime. The project prioritizes low idle memory usage, reliable clipboard format handling, and portable distribution.
 
-Current release: **1.2.2** (Windows x64)
+Current release: **1.2.3** (Windows x64)
 
 中文文档：[README.md](README.md)
 
@@ -23,6 +23,7 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 - Paste as plain text or rich text; images are loaded on demand with bounded memory and disk thumbnail caches.
 - Automatic, light, and dark themes with blue, purple, green, and orange accents.
 - English and Simplified Chinese interfaces.
+- Runs in the system tray and restores its tray icon after Explorer restarts or refreshes the taskbar.
 - Limits for record count, disk usage, retention period, item size, and monitoring pause.
 - Source application filtering, sensitive text expiry, and optional Windows DPAPI user encryption.
 - Installer and portable distribution modes; clipboard archiving, history reads, and usage statistics run through short-lived worker tasks without keeping the full history payload in memory.
@@ -31,11 +32,11 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 
 History window with an image record:
 
-![ClipLite history window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.2/docs/screenshots/history.png)
+![ClipLite history window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.3/docs/screenshots/history.png)
 
 Settings window:
 
-![ClipLite settings window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.2/docs/screenshots/settings.png)
+![ClipLite settings window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.3/docs/screenshots/settings.png)
 
 ## Performance and Size
 
@@ -80,8 +81,8 @@ Features and versions vary across tools. This table describes product positionin
 
 The Windows x64 release provides:
 
-- Installer: `ClipLite-Setup-1.2.2-x64.exe`, with a selectable installation directory, shortcuts, and standard uninstall support.
-- Portable package: `ClipLite-1.2.2-portable-win-x64.zip`, which can be extracted and moved as a directory. Data is stored in its `data\\` directory.
+- Installer: `ClipLite-Setup-1.2.3-x64.exe`, with a selectable installation directory, shortcuts, and standard uninstall support.
+- Portable package: `ClipLite-1.2.3-portable-win-x64.zip`, which can be extracted and moved as a directory. Data is stored in its `data\\` directory.
 
 Use `SHA256SUM.txt` in the portable package to verify `ClipLite.exe`. Verify the download source before running the application.
 

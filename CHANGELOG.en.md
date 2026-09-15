@@ -1,8 +1,13 @@
 # Changelog
 
-## Unreleased
+## [1.2.3] - 2026-09-15
 
+- Fixed the tray icon disappearing after `explorer.exe` restarts or refreshes the taskbar; ClipLite now restores it automatically.
 - Added internal shortcut conflict detection and detailed registration status. Duplicate combinations are rejected before saving and marked in Settings; system-wide shortcuts occupied by Windows or another application identify the affected action and restore its default combination when available, otherwise prompting for a different shortcut.
+
+### Build and Verification
+
+- The `1.2.3` x64 Release build, `ClipLiteStore` CTest, window lifecycle stress test, and portable/installer package generation passed.
 
 ## [1.2.2] - 2026-09-14
 
