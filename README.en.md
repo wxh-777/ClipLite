@@ -45,7 +45,7 @@ ClipLite is designed to stay quietly in the tray. It uses less memory than many 
 Clipboard capture, history archiving, and pre-paste history reads run in the background. When an application delays providing HTML, text, or image formats after copying, disk writes and decryption do not block ClipLite's history window, paste flow, or global shortcuts.
 
 - A local Release measurement showed about `2.5 MB` of Private Bytes while idle.
-- The main executable is about `587.5 KB`, smaller than an ordinary phone photo.
+- The main executable is under `1 MB`.
 - Startup took about `0.05 seconds`, while full history and images are read only when needed.
 - The history popup caches recently displayed image thumbnails, so continuous scrolling does not reread and decode the same source image.
 
@@ -54,7 +54,7 @@ This makes ClipLite suitable for long-running background use and portable folder
 <details>
 <summary>Show detailed measurements</summary>
 
-Reference measurements from the current Windows x64 Release build on this machine: Working Set `13.73 MB`, Private Bytes `2.50 MB`, main executable `587.5 KB`, startup time `53.03 ms`, GDI `13`, and USER `10`. Task Manager and measurement tools use different memory definitions, so their displayed values can differ.
+Reference measurements from the current Windows x64 Release build on this machine: Working Set `13.73 MB`, Private Bytes `2.50 MB`, main executable under `1 MB`, startup time `53.03 ms`, GDI `13`, and USER `10`. Task Manager and measurement tools use different memory definitions, so their displayed values can differ.
 
 The values were sampled by `tools/measure.ps1` about one second after startup while idle, with the history window closed. Actual values vary with Windows version, DPI, system state, history data, and runtime scenario. These figures describe the local Release baseline and are not a fixed guarantee for every device.
 
@@ -67,7 +67,7 @@ ClipLite is for people who want clipboard history to be easy to find without mak
 | Comparison | ClipLite | Common clipboard tools |
 | --- | --- | --- |
 | Background usage | Lightweight by design; about `2.5 MB` Private Bytes in a local Release measurement | Resident usage often grows with feature scope |
-| Program size | Main executable about `587.5 KB` | Usually larger when bundled with runtimes or extra features |
+| Program size | Main executable under `1 MB` | Usually larger when bundled with runtimes or extra features |
 | Runtime | Native Win32, without WebView or a large runtime | Some tools depend on an additional runtime or framework |
 | Data control | History stays local by default, with optional DPAPI encryption | Data location and privacy policies vary |
 | Distribution | Installer and portable packages, including USB-friendly use | Usually installer-first |
