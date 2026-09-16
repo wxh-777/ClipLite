@@ -41,6 +41,10 @@ english.AdditionalShortcuts=Additional shortcuts
 chinesesimplified.AdditionalShortcuts=其他快捷方式
 english.LaunchApp=Launch {#AppName}
 chinesesimplified.LaunchApp=启动 {#AppName}
+english.DeleteAllUserData=Delete all ClipLite user data
+chinesesimplified.DeleteAllUserData=删除 ClipLite 的全部用户数据
+english.DeleteAllUserDataDescription=Delete history, thumbnail cache, settings, and logs during uninstall. This cannot be undone.
+chinesesimplified.DeleteAllUserDataDescription=卸载时删除历史记录、缩略图缓存、设置和日志，此操作无法撤销。
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopShortcut}"; GroupDescription: "{cm:AdditionalShortcuts}:"
@@ -66,3 +70,45 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [UninstallRun]
 Filename: "{app}\ClipLite.exe"; Parameters: "--exit"; RunOnceId: "ClipLiteExit"; Flags: runhidden waituntilterminated
+
+[Code]
+var
+  DeleteUserDataPage: TInputOptionWizardPage;
+
+function InitializeUninstall(): Boolean;
+begin
+  DeleteUserDataPage := CreateInputOptionPage(
+    wpWelcome, ExpandConstant('{cm:DeleteAllUserData}'),
+    ExpandConstant('{cm:DeleteAllUserData}'),
+    ExpandConstant('{cm:DeleteAllUserDataDescription}'), False, False);
+  DeleteUserDataPage.Add(ExpandConstant('{cm:DeleteAllUserData}'));
+  DeleteUserDataPage.CheckListBox.Checked[0] := False;
+  Result := True;
+end;
+
+procedure CurUninstallStepChanged(UninstallStep: TUninstallStep);
+var
+  DataDirectory: String;
+begin
+  if (UninstallStep <> usUninstall) or
+     (DeleteUserDataPage = nil) or
+     not DeleteUserDataPage.CheckListBox.Checked[0] then
+    Exit;
+
+  DataDirectory := ExpandConstant('{localappdata}\ClipLite');
+  DeleteFile(AddBackslash(DataDirectory) + 'history.bin');
+  DeleteFile(AddBackslash(DataDirectory) + 'history.bin.tmp');
+  DeleteFile(AddBackslash(DataDirectory) + 'thumbnails.bin');
+  DeleteFile(AddBackslash(DataDirectory) + 'thumbnails.bin.tmp');
+  DeleteFile(AddBackslash(DataDirectory) + 'settings.ini');
+  DeleteFile(AddBackslash(DataDirectory) + 'cliplite.log');
+
+  RegQueryStringValue(HKCU, 'Software\ClipLite', 'DataDirectory', DataDirectory);
+  DeleteFile(AddBackslash(DataDirectory) + 'history.bin');
+  DeleteFile(AddBackslash(DataDirectory) + 'history.bin.tmp');
+  DeleteFile(AddBackslash(DataDirectory) + 'thumbnails.bin');
+  DeleteFile(AddBackslash(DataDirectory) + 'thumbnails.bin.tmp');
+  DeleteFile(AddBackslash(DataDirectory) + 'settings.ini');
+  DeleteFile(AddBackslash(DataDirectory) + 'cliplite.log');
+  RegDeleteValue(HKCU, 'Software\ClipLite', 'DataDirectory');
+end;

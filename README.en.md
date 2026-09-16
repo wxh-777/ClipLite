@@ -112,6 +112,7 @@ The default locations in installer mode are:
 - Diagnostic log: `%LOCALAPPDATA%\\ClipLite\\cliplite.log`
 
 Portable mode uses the package's `data\\` directory. The cache directory can be changed in Settings. ClipLite does not write clipboard payloads to diagnostic logs and does not write user data into the source tree.
+When uninstalling the installed version, all user data is kept by default. To remove it completely, select the delete-all option in the uninstall wizard. It clears ClipLite files, settings, and logs from the default or configured data directory.
 
 DPAPI encryption is disabled by default. When enabled, history payloads can only be recovered by the same Windows user. Clearing history removes the local history file; pausing monitoring prevents new content from being recorded. Sensitive-content expiry is disabled by default and only checks text containing explicit sensitive markers.
 

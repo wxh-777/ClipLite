@@ -1463,6 +1463,28 @@ void updateStartupRegistration(bool enabled) {
     RegCloseKey(key);
 }
 
+// 安装版记录实际数据目录，供卸载器在用户确认后清理自定义目录。
+void recordInstalledDataDirectory(const std::wstring& dataDirectory) {
+    wchar_t executable[MAX_PATH]{};
+    const DWORD length = GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
+    if (length == 0 || length >= ARRAYSIZE(executable)) return;
+    std::wstring executablePath(executable, length);
+    const std::size_t separator = executablePath.find_last_of(L"\\/");
+    if (separator == std::wstring::npos) return;
+    const DWORD markerAttributes = GetFileAttributesW(
+        (executablePath.substr(0, separator) + L"\\portable.flag").c_str());
+    if (markerAttributes != INVALID_FILE_ATTRIBUTES &&
+        (markerAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) return;
+
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\ClipLite", 0, nullptr, 0,
+                        KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) return;
+    RegSetValueExW(key, L"DataDirectory", 0, REG_SZ,
+                   reinterpret_cast<const BYTE*>(dataDirectory.c_str()),
+                   static_cast<DWORD>((dataDirectory.size() + 1) * sizeof(wchar_t)));
+    RegCloseKey(key);
+}
+
 std::wstring utf8ToWide(const std::string& value) {
     if (value.empty()) return {};
     const int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
@@ -11482,6 +11504,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         return 1;
     }
     appendDiagnosticLog("INFO", "startup: history storage opened");
+    if (!commandImageBenchmark) {
+        recordInstalledDataDirectory(dataDirectoryFromStorePath(app.store.path()));
+    }
     app.thumbnailCache.setDirectory(dataDirectoryFromStorePath(app.store.path()));
     app.thumbnailCache.prune(32u * 1024u * 1024u, 5000);
     app.store.pruneExpired(nowUnix());
