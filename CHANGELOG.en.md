@@ -1,10 +1,17 @@
 # Changelog
 
+## [1.2.5] - 2026-09-16
+
+- Added an unchecked-by-default uninstall choice to delete all ClipLite user data, including history, cache, settings, and logs from the default or configured data directory.
+
+### Build and Verification
+
+- The `1.2.5` x64 Release build, `ClipLiteStore` CTest, and installer package generation passed.
+
 ## [1.2.4] - 2026-09-15
 
 - Added English and Simplified Chinese installer languages, selected automatically from the Windows UI language.
 - The installer now displays the matching English or Simplified Chinese license text for the selected language.
-- Added an unchecked-by-default uninstall choice to delete all ClipLite user data, including history, cache, settings, and logs from the default or configured data directory.
 - Fixed uninstall shutdown races where the exit helper returned before `ClipLite.exe` finished closing; it now waits for the main process and support-window helper process to exit.
 
 ### Build and Verification
