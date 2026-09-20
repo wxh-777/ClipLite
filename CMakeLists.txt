@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(ClipLite VERSION 1.2.5 LANGUAGES CXX)
+project(ClipLite VERSION 1.2.6 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -18,8 +18,10 @@ add_executable(ClipLite WIN32
     src/main.cpp
     src/clip_store.cpp
     src/thumbnail_cache.cpp
+    src/ui_backdrop.cpp
     include/clip_store.h
     include/thumbnail_cache.h
+    include/ui_backdrop.h
     resources/clipLite.rc
 )
 

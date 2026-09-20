@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.6] - 2026-09-20
+
+- Added Windows 11 DWM system backdrop support for the history window. Unsupported systems and high-contrast mode fall back to the normal themed surface without desktop screenshots or persistent blur caches.
+- Fixed count-limit cleanup potentially deleting pinned records. Pinned records are now protected from automatic count, capacity, category, expiry, and startup recovery cleanup.
+- Fixed the duplicate-hash update path potentially overwriting pinned content. New clipboard content no longer automatically replaces an existing pinned record.
+- Enabled automatic preview by default while preserving an existing explicit `previewAutomatic=0` setting.
+- Synchronized the application, resource, packaging script, About page, and bilingual documentation version numbers.
+
+### Build and Verification
+
+- The `1.2.6` x64 Release build, `ClipLiteStore` CTest, pinned-record protection regression tests, and release package generation passed.
+
 ## [1.2.5] - 2026-09-16
 
 - Added a separate post-uninstall confirmation to delete all ClipLite user data, including history, cache, settings, and logs from the default or configured data directory. Cancelling the uninstall or keeping the data does not affect program removal.

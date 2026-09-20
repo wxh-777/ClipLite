@@ -140,6 +140,23 @@ int main() {
     expiry.clear();
     if (!expiry.append(ClipType::Text, "expire", clipLiteHash("expire"), {}, 1)) return 48;
     if (expiry.items()[0].expiresAt != 1 || !expiry.pruneExpired(2) || expiry.activeCount() != 0) return 49;
+    if (!expiry.append(ClipType::Text, "pinned-expire", clipLiteHash("pinned-expire"), {}, 1) ||
+        !expiry.togglePinned(0) || !expiry.pruneExpired(2) || expiry.activeCount() != 1 ||
+        !expiry.items()[0].pinned) return 94;
+    expiry.clear();
+
+    ClipStore pinnedUpdate(10);
+    pinnedUpdate.open();
+    pinnedUpdate.clear();
+    const std::uint64_t pinnedHash = clipLiteHash("pinned-original");
+    std::string pinnedRestored;
+    if (!pinnedUpdate.append(ClipType::Text, "pinned-original", pinnedHash) ||
+        !pinnedUpdate.togglePinned(0) ||
+        pinnedUpdate.appendOrUpdate(ClipType::Text, "pinned-replacement", pinnedHash) ||
+        pinnedUpdate.activeCount() != 1 || !pinnedUpdate.items()[0].pinned ||
+        !pinnedUpdate.readPayload(0, pinnedRestored) || pinnedRestored != "pinned-original") return 95;
+    pinnedUpdate.clear();
+
     const std::string text = "ClipLite store test with a long searchable suffix";
     if (!store.append(ClipType::Text, text, clipLiteHash(text), "VS Code")) return 2;
     if (store.activeCount() != 1) return 3;
@@ -337,6 +354,32 @@ int main() {
         pinnedLimit.activeCount() != 1 || !pinnedLimit.items()[0].pinned) return 75;
     if (!pinnedLimit.clearType(ClipType::Text) || pinnedLimit.activeCount() != 0) return 76;
     pinnedLimit.clear();
+
+    ClipStore appendLimit(2);
+    appendLimit.open();
+    appendLimit.clear();
+    if (!appendLimit.append(ClipType::Text, "keep-pinned", clipLiteHash("keep-pinned")) ||
+        !appendLimit.togglePinned(0) ||
+        !appendLimit.append(ClipType::Text, "first-normal", clipLiteHash("first-normal")) ||
+        appendLimit.activeCount() != 2 || !appendLimit.items()[1].pinned ||
+        !appendLimit.append(ClipType::Text, "second-normal", clipLiteHash("second-normal")) ||
+        appendLimit.activeCount() != 2 || !appendLimit.items()[1].pinned ||
+        appendLimit.items()[0].preview != "second-normal") return 93;
+    appendLimit.clear();
+
+    ClipStore loadLimit(0);
+    loadLimit.open();
+    loadLimit.clear();
+    if (!loadLimit.append(ClipType::Text, "load-old", clipLiteHash("load-old")) ||
+        !loadLimit.append(ClipType::Text, "load-middle", clipLiteHash("load-middle")) ||
+        !loadLimit.append(ClipType::Text, "load-new", clipLiteHash("load-new")) ||
+        !loadLimit.togglePinned(2)) return 96;
+    ClipStore loadLimitReopened(1);
+    if (!loadLimitReopened.open() || loadLimitReopened.activeCount() != 3 ||
+        !loadLimitReopened.items()[2].pinned ||
+        loadLimitReopened.items()[2].preview != "load-old") return 97;
+    loadLimitReopened.clear();
+    loadLimit.clear();
 
     ClipStore allUnpinned(10);
     allUnpinned.open();

@@ -2,7 +2,7 @@
 
 ClipLite is a lightweight native clipboard history manager for Windows. It is built with C++17, the Win32 API, and GDI/GDI+, without WebView, Electron, WinUI, Qt, or another large runtime. The project prioritizes low idle memory usage, reliable clipboard format handling, and portable distribution.
 
-Current release: **1.2.5** (Windows x64)
+Current release: **1.2.6** (Windows x64)
 
 中文文档：[README.md](README.md)
 
@@ -18,6 +18,7 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 - Capture and restore plain text, HTML, file lists, DIB, and DIBV5 images; image files in file lists show on-demand thumbnails.
 - Search and combine type, time range, content length, source application, and sort filters; pin, delete, clear, and paste history items.
 - Supports a separate original-content preview window; choose automatic preview, hold-key preview, or disabled preview in Settings or the history context menu. Hold-key preview uses `F2` by default. Long text scrolls with the mouse wheel, and images zoom around the mouse position and support dragging.
+- Automatic preview is enabled by default; an existing configuration that explicitly disabled it remains disabled.
 - Search focuses the input by default; an optional compatibility mode keeps the original app in the foreground and uses `Ctrl+Space` to enter Chinese IME input.
 - Long settings pages show a scrollbar on the right, with wheel scrolling, page jumps on the track, and a draggable thumb.
 - Paste as plain text or rich text; images are loaded on demand with bounded memory and disk thumbnail caches.
@@ -25,6 +26,8 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 - English and Simplified Chinese interfaces.
 - Runs in the system tray and restores its tray icon after Explorer restarts or refreshes the taskbar.
 - Limits for record count, disk usage, retention period, item size, and monitoring pause.
+- Pinned records are protected from automatic count, capacity, expiry, and startup cleanup, and are not overwritten by new clipboard content.
+- On Windows 11, the history window uses the system DWM backdrop when available and falls back to the normal themed surface without desktop screenshot or persistent blur caches.
 - Source application filtering, sensitive text expiry, and optional Windows DPAPI user encryption.
 - Installer and portable distribution modes; clipboard archiving, history reads, and usage statistics run through short-lived worker tasks without keeping the full history payload in memory.
 
@@ -81,8 +84,8 @@ Features and versions vary across tools. This table describes product positionin
 
 The Windows x64 release provides:
 
-- Installer: `ClipLite-Setup-1.2.5-x64.exe`, with English and Simplified Chinese wizard languages, automatic selection based on the Windows UI language, a selectable installation directory, shortcuts, and standard uninstall support.
-- Portable package: `ClipLite-1.2.5-portable-win-x64.zip`, which can be extracted and moved as a directory. Data is stored in its `data\\` directory.
+- Installer: `ClipLite-Setup-1.2.6-x64.exe`, with English and Simplified Chinese wizard languages, automatic selection based on the Windows UI language, a selectable installation directory, shortcuts, and standard uninstall support.
+- Portable package: `ClipLite-1.2.6-portable-win-x64.zip`, which can be extracted and moved as a directory. Data is stored in its `data\\` directory.
 
 Use `SHA256SUM.txt` in the portable package to verify `ClipLite.exe`. Verify the download source before running the application.
 

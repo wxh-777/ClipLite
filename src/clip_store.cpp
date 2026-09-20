@@ -565,9 +565,6 @@ bool ClipStore::open() {
         item.preview = std::move(preview);
         items_.push_back(std::move(item));
         validBytes = payloadOffset + header.payloadSize;
-        if (maxItems_ > 0 && items_.size() > maxItems_ * 2) {
-            items_.erase(items_.begin(), items_.begin() + (items_.size() - maxItems_));
-        }
     }
     diskBytes_ = validBytes;
     std::fclose(file);
@@ -677,8 +674,16 @@ bool ClipStore::append(ClipType type, const std::string& payload, std::uint64_t 
 
     items_.insert(items_.begin(), std::move(item));
     diskBytes_ += recordSize;
-    const bool needsRebuild = maxItems_ > 0 && items_.size() > maxItems_;
-    while (maxItems_ > 0 && items_.size() > maxItems_) items_.pop_back();
+    bool needsRebuild = false;
+    while (maxItems_ > 0 && items_.size() > maxItems_) {
+        const auto victim = std::find_if(items_.rbegin(), items_.rend(),
+                                         [](const ClipItem& candidate) {
+                                             return !candidate.pinned;
+                                         });
+        if (victim == items_.rend()) break;
+        items_.erase(std::prev(victim.base()));
+        needsRebuild = true;
+    }
     if (needsRebuild && !rebuildFile()) {
         items_ = backup;
         diskBytes_ = oldDiskBytes;
@@ -752,6 +757,11 @@ bool ClipStore::appendOrUpdate(ClipType type, const std::string& payload, std::u
     if (existing == items_.size()) return append(type, payload, hash, source, expiresAt);
 
     const std::vector<ClipItem> backup = items_;
+    if (backup[existing].pinned) {
+        std::string pinnedPayload;
+        if (!readPayload(existing, pinnedPayload)) return false;
+        return backup[existing].type == type && pinnedPayload == payload;
+    }
     std::string existingPayload;
     if (backup[existing].type == type &&
         backup[existing].headerSize == sizeof(DiskHeader) + sizeof(DiskMetadataV1) &&
@@ -1229,7 +1239,7 @@ bool ClipStore::pruneExpired(std::uint64_t timestamp) {
     const std::vector<ClipItem> backup = items_;
     items_.erase(std::remove_if(items_.begin(), items_.end(),
                                 [timestamp](const ClipItem& item) {
-                                    return item.expiresAt != 0 && item.expiresAt <= timestamp;
+                                    return !item.pinned && item.expiresAt != 0 && item.expiresAt <= timestamp;
     }), items_.end());
     if (items_.size() == backup.size()) return true;
     if (rebuildFile()) {

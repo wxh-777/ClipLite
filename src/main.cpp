@@ -10,6 +10,7 @@
 
 #include "clip_store.h"
 #include "thumbnail_cache.h"
+#include "ui_backdrop.h"
 
 #include <algorithm>
 #include <atomic>
@@ -250,7 +251,7 @@ struct Settings {
     bool showStartupNotification = true;
     bool searchImeCompatibility = false;
     bool promotePastedItem = false;
-    bool previewAutomatic = false;
+    bool previewAutomatic = true;
     bool previewByKey = true;
     bool historyWindowPinned = false;
     bool runAsAdministrator = false;
@@ -1041,7 +1042,7 @@ const SettingsLocale kEnglishSettingsLocale{
      L"Some shortcuts could not be registered. Choose different combinations.",
     L"Custom shortcuts require at least one modifier key.",
     L"Sensitive markers: password, token, api_key, secret, and private keys; detected by content pattern.",
-      L"Application    ClipLite", L"Version        1.2.2 x64", L"Storage format  v4",
+       L"Application    ClipLite", L"Version        1.2.6 x64", L"Storage format  v4",
      L"Data directory  %LOCALAPPDATA%\\ClipLite", L"Browse", L"Clear unpinned history", L"Clear unpinned text",
      L"Clear unpinned images", L"Clear unpinned files", L"Press shortcut", L"Need modifier", L"One application per line", L"Auto",
     L"ClipLite Settings", L"Choose a valid cache directory.", L"Unable to create the cache directory.",
@@ -1092,7 +1093,7 @@ const SettingsLocale kChineseSettingsLocale{
      L"无法注册“%ls”（%ls），可能已被其他程序或 Windows 占用，已恢复为 %ls。",
      L"部分快捷键注册失败，请更换组合键。", L"自定义快捷键至少需要一个修饰键。",
     L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。",
-      L"应用名称    ClipLite", L"版本        1.2.2 x64", L"存储格式    v4",
+       L"应用名称    ClipLite", L"版本        1.2.6 x64", L"存储格式    v4",
      L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清理未置顶历史", L"清理未置顶文本", L"清理未置顶图片",
       L"清理未置顶文件", L"按下组合键", L"需要修饰键", L"每行一个应用名称", L"自动", L"ClipLite 设置",
     L"请选择有效的缓存目录。", L"无法创建缓存目录。", L"目标目录已有历史数据，请选择空目录。",
@@ -1224,6 +1225,7 @@ void loadSettings(Settings& settings) {
         if (std::strncmp(line, "showStartupNotification=1", 25) == 0) settings.showStartupNotification = true;
         if (std::strncmp(line, "searchImeCompatibility=1", 24) == 0) settings.searchImeCompatibility = true;
         if (std::strncmp(line, "promotePastedItem=1", 19) == 0) settings.promotePastedItem = true;
+        if (std::strncmp(line, "previewAutomatic=0", 18) == 0) settings.previewAutomatic = false;
         if (std::strncmp(line, "previewAutomatic=1", 18) == 0) settings.previewAutomatic = true;
         if (std::strncmp(line, "previewByKey=0", 14) == 0) settings.previewByKey = false;
         if (std::strncmp(line, "historyWindowPinned=1", 21) == 0) settings.historyWindowPinned = true;
@@ -4424,6 +4426,8 @@ void applyPopupWindowFrame(HWND hwnd, int width, int height) {
     constexpr DWORD kDwmCornerRound = 2;
     DwmSetWindowAttribute(hwnd, kDwmWindowCornerPreference, &kDwmCornerRound,
                           sizeof(kDwmCornerRound));
+    cliplite::applySystemBackdrop(hwnd, g_app && g_app->settingsData.dark,
+                                  highContrastEnabled());
 }
 
 void showPopup(bool openedByWinV = false) {
@@ -7895,6 +7899,8 @@ void refreshPopupBrush() {
         ? GetSysColor(COLOR_WINDOW)
         : settingsThemeColor(RGB(255, 255, 255), RGB(43, 47, 54));
     g_app->popupInputBrush = CreateSolidBrush(input);
+    cliplite::applySystemBackdrop(g_app->popup, g_app->settingsData.dark,
+                                  highContrastEnabled());
 }
 
 void refreshSettingsFrame(HWND hwnd) {
