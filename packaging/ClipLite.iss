@@ -41,10 +41,8 @@ english.AdditionalShortcuts=Additional shortcuts
 chinesesimplified.AdditionalShortcuts=其他快捷方式
 english.LaunchApp=Launch {#AppName}
 chinesesimplified.LaunchApp=启动 {#AppName}
-english.DeleteAllUserData=Delete all ClipLite user data
-chinesesimplified.DeleteAllUserData=删除 ClipLite 的全部用户数据
-english.DeleteAllUserDataDescription=Delete history, thumbnail cache, settings, and logs during uninstall. This cannot be undone.
-chinesesimplified.DeleteAllUserDataDescription=卸载时删除历史记录、缩略图缓存、设置和日志，此操作无法撤销。
+english.DeleteAllUserDataAfterUninstall=ClipLite has been uninstalled. Delete all ClipLite history, cache, settings, and logs now? This cannot be undone.
+chinesesimplified.DeleteAllUserDataAfterUninstall=ClipLite 已卸载。现在删除全部历史记录、缓存、设置和日志吗？此操作无法撤销。
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopShortcut}"; GroupDescription: "{cm:AdditionalShortcuts}:"
@@ -72,17 +70,8 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Filename: "{app}\ClipLite.exe"; Parameters: "--exit"; RunOnceId: "ClipLiteExit"; Flags: runhidden waituntilterminated
 
 [Code]
-var
-  DeleteUserDataPage: TInputOptionWizardPage;
-
 function InitializeUninstall(): Boolean;
 begin
-  DeleteUserDataPage := CreateInputOptionPage(
-    wpWelcome, ExpandConstant('{cm:DeleteAllUserData}'),
-    ExpandConstant('{cm:DeleteAllUserData}'),
-    ExpandConstant('{cm:DeleteAllUserDataDescription}'), False, False);
-  DeleteUserDataPage.Add(ExpandConstant('{cm:DeleteAllUserData}'));
-  DeleteUserDataPage.CheckListBox.Checked[0] := False;
   Result := True;
 end;
 
@@ -90,9 +79,12 @@ procedure CurUninstallStepChanged(UninstallStep: TUninstallStep);
 var
   DataDirectory: String;
 begin
-  if (UninstallStep <> usUninstall) or
-     (DeleteUserDataPage = nil) or
-     not DeleteUserDataPage.CheckListBox.Checked[0] then
+  if UninstallStep <> usPostUninstall then
+    Exit;
+
+  if MsgBox(
+       ExpandConstant('{cm:DeleteAllUserDataAfterUninstall}'),
+       mbConfirmation, MB_YESNO) <> IDYES then
     Exit;
 
   DataDirectory := ExpandConstant('{localappdata}\ClipLite');

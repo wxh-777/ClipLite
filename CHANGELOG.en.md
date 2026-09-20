@@ -2,7 +2,9 @@
 
 ## [1.2.5] - 2026-09-16
 
-- Added an unchecked-by-default uninstall choice to delete all ClipLite user data, including history, cache, settings, and logs from the default or configured data directory.
+- Added a separate post-uninstall confirmation to delete all ClipLite user data, including history, cache, settings, and logs from the default or configured data directory. Cancelling the uninstall or keeping the data does not affect program removal.
+- Fixed the uninstaller failing to start because it attempted to create an unsupported custom uninstall page.
+- Completed the Simplified Chinese installer and uninstaller messages for confirmations, progress, errors, and completion states to avoid English fallback on exceptional paths.
 
 ### Build and Verification
 
