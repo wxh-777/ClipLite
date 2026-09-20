@@ -2,7 +2,6 @@
 
 ## [1.2.6] - 2026-09-20
 
-- Added Windows 11 DWM system backdrop support for the history window. Unsupported systems and high-contrast mode fall back to the normal themed surface without desktop screenshots or persistent blur caches.
 - Fixed count-limit cleanup potentially deleting pinned records. Pinned records are now protected from automatic count, capacity, category, expiry, and startup recovery cleanup.
 - Fixed the duplicate-hash update path potentially overwriting pinned content. New clipboard content no longer automatically replaces an existing pinned record.
 - Enabled automatic preview by default while preserving an existing explicit `previewAutomatic=0` setting.

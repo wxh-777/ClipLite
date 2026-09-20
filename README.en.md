@@ -27,7 +27,6 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 - Runs in the system tray and restores its tray icon after Explorer restarts or refreshes the taskbar.
 - Limits for record count, disk usage, retention period, item size, and monitoring pause.
 - Pinned records are protected from automatic count, capacity, expiry, and startup cleanup, and are not overwritten by new clipboard content.
-- On Windows 11, the history window uses the system DWM backdrop when available and falls back to the normal themed surface without desktop screenshot or persistent blur caches.
 - Source application filtering, sensitive text expiry, and optional Windows DPAPI user encryption.
 - Installer and portable distribution modes; clipboard archiving, history reads, and usage statistics run through short-lived worker tasks without keeping the full history payload in memory.
 

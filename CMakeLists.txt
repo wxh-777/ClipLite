@@ -18,10 +18,8 @@ add_executable(ClipLite WIN32
     src/main.cpp
     src/clip_store.cpp
     src/thumbnail_cache.cpp
-    src/ui_backdrop.cpp
     include/clip_store.h
     include/thumbnail_cache.h
-    include/ui_backdrop.h
     resources/clipLite.rc
 )
 

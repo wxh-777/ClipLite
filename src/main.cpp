@@ -10,7 +10,6 @@
 
 #include "clip_store.h"
 #include "thumbnail_cache.h"
-#include "ui_backdrop.h"
 
 #include <algorithm>
 #include <atomic>
@@ -4426,8 +4425,6 @@ void applyPopupWindowFrame(HWND hwnd, int width, int height) {
     constexpr DWORD kDwmCornerRound = 2;
     DwmSetWindowAttribute(hwnd, kDwmWindowCornerPreference, &kDwmCornerRound,
                           sizeof(kDwmCornerRound));
-    cliplite::applySystemBackdrop(hwnd, g_app && g_app->settingsData.dark,
-                                  highContrastEnabled());
 }
 
 void showPopup(bool openedByWinV = false) {
@@ -7899,8 +7896,6 @@ void refreshPopupBrush() {
         ? GetSysColor(COLOR_WINDOW)
         : settingsThemeColor(RGB(255, 255, 255), RGB(43, 47, 54));
     g_app->popupInputBrush = CreateSolidBrush(input);
-    cliplite::applySystemBackdrop(g_app->popup, g_app->settingsData.dark,
-                                  highContrastEnabled());
 }
 
 void refreshSettingsFrame(HWND hwnd) {
