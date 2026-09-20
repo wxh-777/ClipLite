@@ -93,6 +93,7 @@ public:
 private:
     bool rebuildFile();
     bool rebuildFileRaw();
+    bool markDeleted(const ClipItem& item, bool deleted);
     bool writeRecord(std::FILE* file, const ClipItem& item, const std::string& payload) const;
     static std::string makePreview(ClipType type, const std::string& payload);
     static bool containsIgnoreCase(const std::string& text, const std::string& query);
@@ -102,6 +103,7 @@ private:
     bool encryptionEnabled_ = false;
     std::uint32_t maxPayloadBytes_ = 32u * 1024u * 1024u;
     std::uint64_t diskBytes_ = 0;
+    std::uint64_t deadBytes_ = 0;
     std::uint64_t revision_ = 0;
     bool sortByLastUsed_ = false;
     std::uint64_t nextRecordId_ = 1;

@@ -367,6 +367,19 @@ int main() {
         appendLimit.items()[0].preview != "second-normal") return 93;
     appendLimit.clear();
 
+    ClipStore limitReopened(2);
+    if (!limitReopened.open() || !limitReopened.append(ClipType::Text, "old", clipLiteHash("old")) ||
+        !limitReopened.append(ClipType::Text, "new", clipLiteHash("new")) ||
+        !limitReopened.append(ClipType::Text, "latest", clipLiteHash("latest")) ||
+        limitReopened.activeCount() != 2 || limitReopened.items()[0].preview != "latest" ||
+        limitReopened.items()[1].preview != "new") return 98;
+    ClipStore limitReopenedAgain(2);
+    if (!limitReopenedAgain.open() || limitReopenedAgain.activeCount() != 2 ||
+        limitReopenedAgain.items()[0].preview != "latest" ||
+        limitReopenedAgain.items()[1].preview != "new") return 99;
+    limitReopenedAgain.clear();
+    limitReopened.clear();
+
     ClipStore loadLimit(0);
     loadLimit.open();
     loadLimit.clear();

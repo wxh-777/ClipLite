@@ -18,6 +18,8 @@ constexpr std::uint16_t kVersion = 4;
 constexpr std::uint32_t kMaxPayload = 32u * 1024u * 1024u;
 constexpr std::uint32_t kMaxSource = 256;
 constexpr std::uint8_t kMetadataFlag = 4;
+constexpr std::uint8_t kDeletedFlag = 8;
+constexpr std::uint64_t kCompactionThreshold = 8u * 1024u * 1024u;
 constexpr std::uint32_t kMetadataMagic = 0x31444D43; // CMD1
 constexpr std::uint16_t kMetadataVersion = 1;
 constexpr std::uint32_t kMaxMetadataSize = 4096;
@@ -412,6 +414,7 @@ bool ClipStore::setDataDirectory(const std::wstring& directory) {
 bool ClipStore::open() {
     items_.clear();
     diskBytes_ = 0;
+    deadBytes_ = 0;
     ++revision_;
     DeleteFileW((path_ + L".tmp").c_str());
     std::FILE* file = nullptr;
@@ -430,7 +433,7 @@ bool ClipStore::open() {
         if (std::fread(&header, sizeof(header), 1, file) != 1) break;
         if (header.magic != kMagic || header.version != kVersion ||
             header.payloadSize > kMaxPayload || header.sourceSize > kMaxSource ||
-            header.type < 1 || header.type > 5 || (header.flags & ~0x07u) != 0) {
+            header.type < 1 || header.type > 5 || (header.flags & ~(0x07u | kDeletedFlag)) != 0) {
             break;
         }
 
@@ -563,8 +566,12 @@ bool ClipStore::open() {
         }
         if (header.type == static_cast<std::uint8_t>(ClipType::Files)) preview = "[Files] " + preview;
         item.preview = std::move(preview);
-        items_.push_back(std::move(item));
         validBytes = payloadOffset + header.payloadSize;
+        if ((header.flags & kDeletedFlag) != 0) {
+            deadBytes_ += recordBytes(item);
+            continue;
+        }
+        items_.push_back(std::move(item));
     }
     diskBytes_ = validBytes;
     std::fclose(file);
@@ -623,6 +630,8 @@ bool ClipStore::append(ClipType type, const std::string& payload, std::uint64_t 
     if (payload.empty() || payload.size() > maxPayloadBytes_ || findHash(hash) != items_.size()) return false;
     const std::vector<ClipItem> backup = items_;
     const std::uint64_t oldDiskBytes = diskBytes_;
+    const std::uint64_t oldDeadBytes = deadBytes_;
+    std::vector<ClipItem> deletedItems;
     std::FILE* file = nullptr;
     _wfopen_s(&file, path_.c_str(), L"ab");
     if (!file) return false;
@@ -681,12 +690,30 @@ bool ClipStore::append(ClipType type, const std::string& payload, std::uint64_t 
                                              return !candidate.pinned;
                                          });
         if (victim == items_.rend()) break;
-        items_.erase(std::prev(victim.base()));
-        needsRebuild = true;
+        const auto victimIterator = std::prev(victim.base());
+        if (!markDeleted(*victimIterator, true)) {
+            items_ = backup;
+            diskBytes_ = oldDiskBytes;
+            deadBytes_ = oldDeadBytes;
+            for (const ClipItem& deleted : deletedItems) markDeleted(deleted, false);
+            std::FILE* rollback = nullptr;
+            _wfopen_s(&rollback, path_.c_str(), L"r+b");
+            if (rollback) {
+                _chsize_s(_fileno(rollback), static_cast<__int64>(item.fileOffset));
+                std::fclose(rollback);
+            }
+            return false;
+        }
+        deadBytes_ += recordBytes(*victimIterator);
+        deletedItems.push_back(*victimIterator);
+        items_.erase(victimIterator);
+        needsRebuild = deadBytes_ >= kCompactionThreshold;
     }
-    if (needsRebuild && !rebuildFile()) {
+    if (needsRebuild && !rebuildFileRaw()) {
         items_ = backup;
         diskBytes_ = oldDiskBytes;
+        deadBytes_ = oldDeadBytes;
+        for (const ClipItem& deleted : deletedItems) markDeleted(deleted, false);
         std::FILE* rollback = nullptr;
         _wfopen_s(&rollback, path_.c_str(), L"r+b");
         if (rollback) {
@@ -940,7 +967,29 @@ bool ClipStore::rebuildFile() {
     std::reverse(rebuilt.begin(), rebuilt.end());
     items_ = std::move(rebuilt);
     diskBytes_ = offset;
+    deadBytes_ = 0;
     return true;
+}
+
+bool ClipStore::markDeleted(const ClipItem& item, bool deleted) {
+    const std::uint64_t flagsOffset = item.fileOffset + offsetof(DiskHeader, flags);
+    if (flagsOffset < item.fileOffset ||
+        flagsOffset > static_cast<std::uint64_t>(std::numeric_limits<__int64>::max())) {
+        return false;
+    }
+    std::FILE* file = nullptr;
+    _wfopen_s(&file, path_.c_str(), L"r+b");
+    if (!file) return false;
+    const std::uint8_t flags = static_cast<std::uint8_t>(
+        (item.pinned ? 1u : 0u) | (item.encrypted ? 2u : 0u) |
+        (item.headerSize > sizeof(DiskHeader) ? kMetadataFlag : 0u) |
+        (deleted ? kDeletedFlag : 0u));
+    const bool written = _fseeki64(file, static_cast<__int64>(flagsOffset), SEEK_SET) == 0 &&
+        std::fwrite(&flags, sizeof(flags), 1, file) == 1;
+    const bool flushed = written && std::fflush(file) == 0;
+    const bool committed = flushed && _commit(_fileno(file)) == 0;
+    const bool closed = std::fclose(file) == 0;
+    return written && flushed && committed && closed;
 }
 
 // 删除单条记录时直接复制未删除的原始记录，避免重新处理大型 payload。
@@ -1002,6 +1051,7 @@ bool ClipStore::rebuildFileRaw() {
     std::reverse(rebuilt.begin(), rebuilt.end());
     items_ = std::move(rebuilt);
     diskBytes_ = offset;
+    deadBytes_ = 0;
     return true;
 }
 
@@ -1181,6 +1231,7 @@ bool ClipStore::clear() {
     if (removed) {
         items_.clear();
         diskBytes_ = 0;
+        deadBytes_ = 0;
         ++revision_;
     }
     return removed;
