@@ -187,14 +187,15 @@ constexpr UINT kTrayId = 1;
 constexpr int kPopupFilterTop = 58;
 constexpr int kPopupFilterBottom = 82;
 constexpr int kPopupSearchLeft = 86;
-constexpr int kPopupSearchRight = 250;
-constexpr int kPopupClearLeft = 254;
-constexpr int kPopupClearRight = 268;
-constexpr int kPopupFilterButtonLeft = 270;
+constexpr int kPopupSearchRight = 240;
+constexpr int kPopupClearLeft = 244;
+constexpr int kPopupClearRight = 272;
+constexpr int kPopupFilterButtonLeft = 278;
 constexpr int kPopupFilterButtonRight = 338;
-constexpr int kPopupPinLeft = 342;
-constexpr int kPopupPinRight = 362;
-constexpr int kPopupCloseLeft = 366;
+constexpr int kPopupPinLeft = 344;
+constexpr int kPopupPinRight = 368;
+constexpr int kPopupCloseLeft = 374;
+constexpr int kPopupCloseRightInset = 8;
 constexpr int kPopupWidth = 400;
 constexpr int kPopupHeight = 600;
 constexpr int kPopupDetailPreviewWidth = 460;
@@ -335,6 +336,8 @@ struct PopupDetailPreview {
     float bitmapPanY = 0.0f;
     int sourceWidth = 0;
     int sourceHeight = 0;
+    std::uint64_t imageBytes = 0;
+    std::wstring imageFormat;
     std::string imagePayload;
     std::shared_ptr<Gdiplus::Image> imageSource;
 };
@@ -629,6 +632,8 @@ struct PopupDetailPreviewResult {
     int height = 0;
     int sourceWidth = 0;
     int sourceHeight = 0;
+    std::uint64_t imageBytes = 0;
+    std::wstring imageFormat;
     float zoom = 1.0f;
     float panX = 0.0f;
     float panY = 0.0f;
@@ -1716,6 +1721,46 @@ bool captureClipboard(HWND owner, ClipType& type, std::string& payload, std::str
     source = clipboardSource();
     if (!openClipboardWithRetry(owner)) return false;
 
+    const auto captureDib = [&]() {
+        if (HANDLE handle = GetClipboardData(CF_DIBV5)) {
+            const SIZE_T size = GlobalSize(handle);
+            if (size >= sizeof(BITMAPV5HEADER) && size <= 32u * 1024u * 1024u) {
+                const void* data = GlobalLock(handle);
+                if (data) {
+                    payload.assign(static_cast<const char*>(data), static_cast<std::size_t>(size));
+                    GlobalUnlock(handle);
+                    if (isValidDibPayload(payload)) {
+                        type = ClipType::ImageV5;
+                        return true;
+                    }
+                    payload.clear();
+                }
+            }
+        }
+
+        if (HANDLE handle = GetClipboardData(CF_DIB)) {
+            const SIZE_T size = GlobalSize(handle);
+            if (size > 0 && size <= 32u * 1024u * 1024u) {
+                const void* data = GlobalLock(handle);
+                if (data) {
+                    payload.assign(static_cast<const char*>(data), static_cast<std::size_t>(size));
+                    GlobalUnlock(handle);
+                    if (isValidDibPayload(payload)) {
+                        type = ClipType::Image;
+                        return true;
+                    }
+                    payload.clear();
+                }
+            }
+        }
+        return false;
+    };
+
+    if (captureDib()) {
+        CloseClipboard();
+        return true;
+    }
+
     std::string htmlPayload;
     if (const UINT format = htmlClipboardFormat(); format != 0) {
         if (HANDLE handle = GetClipboardData(format)) {
@@ -1777,40 +1822,6 @@ bool captureClipboard(HWND owner, ClipType& type, std::string& payload, std::str
             type = ClipType::Files;
             CloseClipboard();
             return true;
-        }
-    }
-
-    if (HANDLE handle = GetClipboardData(CF_DIBV5)) {
-        const SIZE_T size = GlobalSize(handle);
-        if (size >= sizeof(BITMAPV5HEADER) && size <= 32u * 1024u * 1024u) {
-            const void* data = GlobalLock(handle);
-            if (data) {
-                payload.assign(static_cast<const char*>(data), static_cast<std::size_t>(size));
-                GlobalUnlock(handle);
-                if (isValidDibPayload(payload)) {
-                    type = ClipType::ImageV5;
-                    CloseClipboard();
-                    return true;
-                }
-                payload.clear();
-            }
-        }
-    }
-
-    if (HANDLE handle = GetClipboardData(CF_DIB)) {
-        const SIZE_T size = GlobalSize(handle);
-        if (size > 0 && size <= 32u * 1024u * 1024u) {
-            const void* data = GlobalLock(handle);
-            if (data) {
-                payload.assign(static_cast<const char*>(data), static_cast<std::size_t>(size));
-                GlobalUnlock(handle);
-                if (isValidDibPayload(payload)) {
-                    type = ClipType::Image;
-                    CloseClipboard();
-                    return true;
-                }
-                payload.clear();
-            }
         }
     }
 
@@ -2135,7 +2146,8 @@ void invalidatePopupHover(HWND hwnd, int row, int filter, bool header) {
         } else if (filter == 8) {
             buttonRect = RECT{ui(kPopupPinLeft), ui(12), ui(kPopupPinRight), ui(46)};
         } else if (filter == 9) {
-            buttonRect = RECT{ui(kPopupCloseLeft), ui(12), client.right - ui(16), ui(46)};
+            buttonRect = RECT{ui(kPopupCloseLeft), ui(12),
+                              client.right - ui(kPopupCloseRightInset), ui(46)};
         } else {
             buttonRect = RECT{ui(kPopupFilterButtonLeft), ui(12),
                               ui(kPopupFilterButtonRight), ui(46)};
@@ -3292,6 +3304,8 @@ void postPopupPreviewResult(const PopupPreviewJob& job, HBITMAP bitmap,
 // 将详情预览后台结果安全地投递回主线程。
 void postPopupDetailPreviewResult(const PopupPreviewJob& job, HBITMAP bitmap,
                                   int width, int height, int sourceWidth, int sourceHeight,
+                                  std::uint64_t imageBytes,
+                                  std::wstring imageFormat,
                                   std::string imagePayload,
                                   std::shared_ptr<Gdiplus::Image> imageSource,
                                   std::wstring text, bool success) {
@@ -3308,7 +3322,7 @@ void postPopupDetailPreviewResult(const PopupPreviewJob& job, HBITMAP bitmap,
         auto result = std::make_unique<PopupDetailPreviewResult>(
             PopupDetailPreviewResult{job.popup, job.storeRevision, job.generation, job.itemIndex,
                                      job.item.recordId, bitmap, width, height, sourceWidth, sourceHeight,
-                                     job.zoom, job.panX, job.panY,
+                                     imageBytes, std::move(imageFormat), job.zoom, job.panX, job.panY,
                                      std::move(imagePayload), std::move(imageSource),
                                      std::move(text), success});
         if (!PostMessageW(g_app->hidden, kPopupDetailPreviewLoadedMessage,
@@ -3340,7 +3354,7 @@ void previewWorkerLoop(AppState* app) {
             : app->previewGeneration->load(std::memory_order_acquire);
         if (currentGeneration != job.generation) {
             if (job.detail) {
-                postPopupDetailPreviewResult(job, nullptr, 0, 0, 0, 0, {}, {}, {}, false);
+                postPopupDetailPreviewResult(job, nullptr, 0, 0, 0, 0, 0, {}, {}, {}, {}, false);
             } else {
                 postPopupPreviewResult(job, nullptr, 0, 0, false);
             }
@@ -3352,6 +3366,8 @@ void previewWorkerLoop(AppState* app) {
         int height = 0;
         int sourceWidth = 0;
         int sourceHeight = 0;
+        std::uint64_t imageBytes = 0;
+        std::wstring imageFormat;
         std::string encoded;
         bool success = false;
         std::string imagePayload;
@@ -3362,10 +3378,27 @@ void previewWorkerLoop(AppState* app) {
             success = app->store.readPayloadSnapshot(job.historyPath, job.item, payload);
             if (success && job.kind == PopupPreviewKind::Dib) {
                 imagePayload = payload;
+                imageBytes = payload.size();
+                imageFormat = L"DIB";
                 success = createDibImageView(payload, job.width, job.height, job.zoom, job.panX, job.panY,
                                              job.background, bitmap, width, height, sourceWidth, sourceHeight);
             } else if (success && job.kind == PopupPreviewKind::File) {
                 imageSource = std::make_shared<Gdiplus::Image>(job.filePath.c_str(), FALSE);
+                const std::size_t extensionStart = job.filePath.find_last_of(L'.');
+                imageFormat = extensionStart == std::wstring::npos
+                    ? L"IMAGE" : job.filePath.substr(extensionStart + 1);
+                for (wchar_t& character : imageFormat) {
+                    if (character >= L'a' && character <= L'z') {
+                        character = static_cast<wchar_t>(character - L'a' + L'A');
+                    }
+                }
+                WIN32_FILE_ATTRIBUTE_DATA fileData{};
+                if (GetFileAttributesExW(job.filePath.c_str(), GetFileExInfoStandard, &fileData)) {
+                    ULARGE_INTEGER fileSize{};
+                    fileSize.LowPart = fileData.nFileSizeLow;
+                    fileSize.HighPart = fileData.nFileSizeHigh;
+                    imageBytes = fileSize.QuadPart;
+                }
                 success = imageSource->GetLastStatus() == Gdiplus::Ok &&
                     createFileImageView(*imageSource, job.width, job.height, job.zoom, job.panX, job.panY,
                                               job.background, bitmap, width, height, sourceWidth, sourceHeight);
@@ -3380,6 +3413,8 @@ void previewWorkerLoop(AppState* app) {
                 }
             }
             postPopupDetailPreviewResult(job, bitmap, width, height, sourceWidth, sourceHeight,
+                                          imageBytes,
+                                          std::move(imageFormat),
                                           std::move(imagePayload), std::move(imageSource),
                                           std::move(text), success);
             continue;
@@ -3485,6 +3520,8 @@ void hideDetailPreview() {
     g_app->detailPreviewState.bitmapPanY = 0.0f;
     g_app->detailPreviewState.sourceWidth = 0;
     g_app->detailPreviewState.sourceHeight = 0;
+    g_app->detailPreviewState.imageBytes = 0;
+    g_app->detailPreviewState.imageFormat.clear();
     g_app->detailPreviewState.imagePayload.clear();
     g_app->detailPreviewState.imageSource.reset();
     if (g_app->detailPreviewTextEdit) ShowWindow(g_app->detailPreviewTextEdit, SW_HIDE);
@@ -3627,6 +3664,8 @@ void requestDetailPreview(int row) {
         g_app->detailPreviewState.bitmapPanY = 0.0f;
         g_app->detailPreviewState.sourceWidth = 0;
         g_app->detailPreviewState.sourceHeight = 0;
+        g_app->detailPreviewState.imageBytes = 0;
+        g_app->detailPreviewState.imageFormat.clear();
         g_app->detailPreviewState.imagePayload.clear();
         g_app->detailPreviewState.imageSource.reset();
     }
@@ -3973,13 +4012,26 @@ void paintDetailPreview(HWND hwnd, HDC dc) {
         const ClipItem& candidate = g_app->store.items()[g_app->detailPreviewState.itemIndex];
         if (candidate.recordId == g_app->detailPreviewState.recordId) item = &candidate;
     }
-    const std::wstring title = item && isImageType(item->type)
+    const std::wstring title = item && (isImageType(item->type) ||
+                                        g_app->detailPreviewState.sourceWidth > 0)
         ? std::wstring(settingsLocale().previewOriginalImage)
         : std::wstring(settingsLocale().previewContent);
     std::wstring meta;
     if (item) {
-        meta = std::wstring(automaticTypeLabel(item->type)) + L"  ·  " +
-            formatByteSize(item->contentSize);
+        if (g_app->detailPreviewState.sourceWidth > 0 &&
+            g_app->detailPreviewState.sourceHeight > 0) {
+            const std::uint64_t imageBytes = g_app->detailPreviewState.imageBytes > 0
+                ? g_app->detailPreviewState.imageBytes : item->contentSize;
+            const std::wstring format = g_app->detailPreviewState.imageFormat.empty()
+                ? L"IMAGE" : g_app->detailPreviewState.imageFormat;
+            meta = format + L"  ·  " +
+                std::to_wstring(g_app->detailPreviewState.sourceWidth) + L" x " +
+                std::to_wstring(g_app->detailPreviewState.sourceHeight) + L"  ·  " +
+                formatByteSize(imageBytes);
+        } else {
+            meta = std::wstring(automaticTypeLabel(item->type)) + L"  ·  " +
+                formatByteSize(item->contentSize);
+        }
     }
     SelectObject(buffer, g_app->popupTitleFont);
     SetTextColor(buffer, text);
@@ -6504,13 +6556,13 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     const int paintClipType = GetClipBox(dc, &paintClip);
     HGDIOBJ old = SelectObject(dc, titleFont);
     SetTextColor(dc, text);
-    RECT titleRect{ui(16), ui(14), ui(82), ui(46)};
+    RECT titleRect{ui(12), ui(10), ui(86), ui(50)};
     if (g_app->hoveredHeader) {
         drawGdiRoundedSurface(dc, RECT{ui(12), ui(10), ui(86), ui(50)},
                               settingsAccentSoftColor(), settingsAccentSoftColor(), 4);
     }
-    DrawTextW(dc, settingsLocale().popupTitle, -1, &titleRect,
-              DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    DrawTextW(dc, L"ClipLite", -1, &titleRect,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     const COLORREF searchBorder = g_app->searchEdit && g_app->popupSearchInputActive
         ? accent : border;
     const RECT searchRect{ui(kPopupSearchLeft), ui(12), ui(kPopupSearchRight), ui(48)};
@@ -6526,7 +6578,8 @@ void paintPopupContent(HWND hwnd, HDC dc) {
                               settingsAccentSoftColor(), 4);
     }
     SetTextColor(dc, g_app->hoveredFilter == 7 ? accent : secondary);
-    drawDeleteIcon(dc, ui(kPopupClearLeft + 2), ui(25),
+    drawDeleteIcon(dc, (clearRect.left + clearRect.right) / 2 - ui(5),
+                   (clearRect.top + clearRect.bottom) / 2 - ui(5),
                    g_app->hoveredFilter == 7 ? accent : secondary);
     const int filterCount = popupFilterConditionCount();
     const bool filterActive = filterCount > 0;
@@ -6537,22 +6590,14 @@ void paintPopupContent(HWND hwnd, HDC dc) {
                           filterActive || g_app->hoveredFilter == 10 ? accent : border, 5);
     const COLORREF filterColor = filterActive || g_app->hoveredFilter == 10 ? accent : secondary;
     drawFilterIcon(dc, ui(kPopupFilterButtonLeft + 11), ui(29), filterColor);
-    RECT filterTextRect{ui(kPopupFilterButtonLeft + 19), ui(14),
-                        ui(kPopupFilterButtonRight - 26), ui(46)};
+    RECT filterTextRect{ui(kPopupFilterButtonLeft + 22), ui(14),
+                        ui(kPopupFilterButtonRight - 7), ui(46)};
     SetTextColor(dc, filterColor);
     DrawTextW(dc, settingsLocale().popupFilter, -1, &filterTextRect,
-              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    if (filterCount > 0) {
-        const RECT badge{ui(kPopupFilterButtonRight - 24), ui(19),
-                         ui(kPopupFilterButtonRight - 4), ui(35)};
-        drawGdiRoundedSurface(dc, badge, accent, accent, 8);
-        const std::wstring count = std::to_wstring(filterCount);
-        SetTextColor(dc, RGB(255, 255, 255));
-        DrawTextW(dc, count.c_str(), -1, const_cast<RECT*>(&badge),
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    }
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     const RECT pinRect{ui(kPopupPinLeft), ui(14), ui(kPopupPinRight), ui(46)};
-    const RECT closeRect{ui(kPopupCloseLeft), ui(14), client.right - ui(16), ui(46)};
+    const RECT closeRect{ui(kPopupCloseLeft), ui(14),
+                         client.right - ui(kPopupCloseRightInset), ui(46)};
     if (g_app->hoveredFilter == 8 && !g_app->popupPinned) {
         drawGdiRoundedSurface(dc, pinRect, settingsAccentSoftColor(),
                               settingsAccentSoftColor(), 4);
@@ -6563,8 +6608,12 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     }
     const COLORREF pinColor = g_app->popupPinned ? RGB(245, 158, 11) :
         (g_app->hoveredFilter == 8 ? accent : secondary);
-    drawPinIcon(dc, ui(kPopupPinRight - 2), ui(30), pinColor, g_app->popupPinned);
-    drawDeleteIcon(dc, ui(kPopupCloseLeft + 5), ui(25),
+    const int pinCenterX = (pinRect.left + pinRect.right) / 2;
+    const float pinScale = static_cast<float>(g_uiDpi) / 96.0f * (10.0f / 14.0f);
+    const int pinRight = pinCenterX + static_cast<int>(7.0f * pinScale + 0.5f);
+    drawPinIcon(dc, pinRight, ui(30), pinColor, g_app->popupPinned);
+    drawDeleteIcon(dc, (closeRect.left + closeRect.right) / 2 - ui(5),
+                   (closeRect.top + closeRect.bottom) / 2 - ui(5),
                    g_app->hoveredFilter == 9 ? RGB(220, 38, 38) : secondary);
 
     const wchar_t* filterLabels[] = {
@@ -6627,12 +6676,6 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         if (!drawCachedPopupSurface(dc, rowRect, rowFill, rowBorder, 6)) {
             drawGdiRoundedSurface(dc, rowRect, rowFill, rowBorder, 6);
         }
-        if (rowSelected) {
-            drawGdiRoundedSurface(dc,
-                                  RECT{rowRect.left + ui(4), rowRect.top + ui(6),
-                                        rowRect.left + ui(7), rowRect.bottom - ui(8)},
-                                  accent, accent, 2);
-        }
         const bool image = isImageType(item.type);
         const bool file = item.type == ClipType::Files;
         const bool missingFiles = file && (g_app->fastImagePreview || g_app->scrollDragging
@@ -6653,7 +6696,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
                                  rowRect.right - ui(missingFiles ? 144 : 12),
                                  metadataTop - ui(4)};
             DrawTextW(dc, preview.c_str(), -1, &textPreviewRect,
-                      DT_LEFT | DT_TOP | DT_WORDBREAK | DT_END_ELLIPSIS);
+                      DT_LEFT | DT_VCENTER | DT_WORDBREAK | DT_END_ELLIPSIS);
         }
         if (missingFiles) {
             const RECT missingRect{rowRect.right - ui(132), y + ui(5),
@@ -10087,6 +10130,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 g_app->detailPreviewState.text = std::move(result->text);
                 g_app->detailPreviewState.sourceWidth = result->sourceWidth;
                 g_app->detailPreviewState.sourceHeight = result->sourceHeight;
+                g_app->detailPreviewState.imageBytes = result->imageBytes;
+                g_app->detailPreviewState.imageFormat = std::move(result->imageFormat);
                 g_app->detailPreviewState.imagePayload = std::move(result->imagePayload);
                 g_app->detailPreviewState.imageSource = std::move(result->imageSource);
                 g_app->detailPreviewState.bitmap = result->bitmap;
@@ -10730,7 +10775,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 SetCursor(LoadCursorW(nullptr, IDC_HAND));
                 return TRUE;
             }
-            if (point.x >= ui(kPopupCloseLeft) && point.x < client.right - ui(16) &&
+            if (point.x >= ui(kPopupCloseLeft) &&
+                point.x < client.right - ui(kPopupCloseRightInset) &&
                 point.y >= ui(12) && point.y < ui(46)) {
                 SetCursor(LoadCursorW(nullptr, IDC_HAND));
                 return TRUE;
@@ -11044,7 +11090,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             } else if (x >= ui(kPopupPinLeft) && x < ui(kPopupPinRight) &&
                        y >= ui(12) && y < ui(46)) {
                 headerButton = 8;
-            } else if (x >= ui(kPopupCloseLeft) && x < client.right - ui(16) &&
+            } else if (x >= ui(kPopupCloseLeft) &&
+                       x < client.right - ui(kPopupCloseRightInset) &&
                        y >= ui(12) && y < ui(46)) {
                 headerButton = 9;
             }
@@ -11157,7 +11204,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             if (GET_Y_LPARAM(lParam) >= ui(12) && GET_Y_LPARAM(lParam) < ui(46) &&
                 GET_X_LPARAM(lParam) >= ui(kPopupCloseLeft) &&
-                GET_X_LPARAM(lParam) < client.right - ui(16)) {
+                GET_X_LPARAM(lParam) < client.right - ui(kPopupCloseRightInset)) {
                 closePopup();
                 return 0;
             }
