@@ -2587,20 +2587,94 @@ void drawSettingsNavIcon(HDC dc, int index, int x, int y, COLORREF color) {
 }
 
 void drawSettingsThemeIcon(HDC dc, int mode, int centerX, int centerY, COLORREF color) {
-    const wchar_t* glyphs[] = {L"\u25D0", L"\u2600", L"\u263E"};
-    HFONT font = CreateFontW(-ui(14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI Symbol");
-    if (!font) return;
-    HGDIOBJ oldFont = SelectObject(dc, font);
-    const int radius = ui(9);
-    RECT rect{centerX - radius, centerY - radius, centerX + radius, centerY + radius};
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, color);
-    DrawTextW(dc, glyphs[std::clamp(mode, 0, 2)], -1, &rect,
-              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-    SelectObject(dc, oldFont);
-    DeleteObject(font);
+    if (!g_app || g_app->gdiplusToken == 0) return;
+    Gdiplus::Graphics graphics(dc);
+    configureGdiGraphics(graphics);
+    const float scale = static_cast<float>(g_uiDpi) / 96.0f * (16.0f / 24.0f);
+    const float originX = static_cast<float>(centerX) - 12.0f * scale;
+    const float originY = static_cast<float>(centerY) - 12.0f * scale;
+    const auto px = [originX, scale](float value) { return originX + value * scale; };
+    const auto py = [originY, scale](float value) { return originY + value * scale; };
+    const Gdiplus::Color iconColor = makeGdiColor(color);
+
+    if (std::clamp(mode, 0, 2) == 0) {
+        Gdiplus::GraphicsPath half;
+        half.StartFigure();
+        half.AddBezier(px(12.0f), py(2.5f), px(6.75329f), py(2.5f),
+                       px(2.5f), py(6.75329f), px(2.5f), py(12.0f));
+        half.AddBezier(px(2.5f), py(12.0f), px(2.5f), py(17.2467f),
+                       px(6.75329f), py(21.5f), px(12.0f), py(21.5f));
+        half.AddLine(px(12.0f), py(21.5f), px(12.0f), py(2.5f));
+        half.CloseFigure();
+        Gdiplus::SolidBrush brush(iconColor);
+        graphics.FillPath(&brush, &half);
+
+        Gdiplus::Pen outline(iconColor, 1.8f * scale);
+        graphics.DrawEllipse(&outline, px(2.5f), py(2.5f), 19.0f * scale, 19.0f * scale);
+
+        Gdiplus::Pen axis(iconColor, 1.8f * scale);
+        axis.SetStartCap(Gdiplus::LineCapRound);
+        axis.SetEndCap(Gdiplus::LineCapRound);
+        graphics.DrawLine(&axis, px(12.0f), py(3.0f), px(12.0f), py(10.0f));
+        graphics.DrawLine(&axis, px(12.0f), py(14.0f), px(12.0f), py(21.0f));
+    } else if (std::clamp(mode, 0, 2) == 1) {
+        Gdiplus::SolidBrush core(iconColor);
+        graphics.FillEllipse(&core, px(7.0f), py(7.0f), 10.0f * scale, 10.0f * scale);
+
+        Gdiplus::Pen mainRays(iconColor, 2.5f * scale);
+        mainRays.SetStartCap(Gdiplus::LineCapRound);
+        mainRays.SetEndCap(Gdiplus::LineCapRound);
+        graphics.DrawLine(&mainRays, px(12.0f), py(2.0f), px(12.0f), py(4.0f));
+        graphics.DrawLine(&mainRays, px(12.0f), py(20.0f), px(12.0f), py(22.0f));
+        graphics.DrawLine(&mainRays, px(2.0f), py(12.0f), px(4.0f), py(12.0f));
+        graphics.DrawLine(&mainRays, px(20.0f), py(12.0f), px(22.0f), py(12.0f));
+
+        Gdiplus::Pen diagonal(Gdiplus::Color(153, GetRValue(color), GetGValue(color),
+                                             GetBValue(color)), 2.0f * scale);
+        diagonal.SetStartCap(Gdiplus::LineCapRound);
+        diagonal.SetEndCap(Gdiplus::LineCapRound);
+        graphics.DrawLine(&diagonal, px(4.93f), py(4.93f), px(6.34f), py(6.34f));
+        graphics.DrawLine(&diagonal, px(17.66f), py(17.66f), px(19.07f), py(19.07f));
+        graphics.DrawLine(&diagonal, px(4.93f), py(19.07f), px(6.34f), py(17.66f));
+        graphics.DrawLine(&diagonal, px(17.66f), py(6.34f), px(19.07f), py(4.93f));
+    } else {
+        Gdiplus::GraphicsPath crescent;
+        crescent.StartFigure();
+        crescent.AddBezier(px(20.5f), py(14.5f), px(19.5f), py(18.5f),
+                           px(15.5f), py(21.0f), px(11.5f), py(20.5f));
+        crescent.AddBezier(px(11.5f), py(20.5f), px(7.5f), py(20.0f),
+                           px(4.0f), py(16.5f), px(4.0f), py(12.0f));
+        crescent.AddBezier(px(4.0f), py(12.0f), px(4.0f), py(7.5f),
+                           px(7.5f), py(4.0f), px(11.5f), py(3.5f));
+        crescent.AddBezier(px(11.5f), py(3.5f), px(9.5f), py(5.5f),
+                           px(8.5f), py(8.5f), px(9.5f), py(11.5f));
+        crescent.AddBezier(px(9.5f), py(11.5f), px(10.5f), py(14.5f),
+                           px(13.5f), py(16.0f), px(16.5f), py(16.0f));
+        crescent.AddBezier(px(16.5f), py(16.0f), px(18.0f), py(15.5f),
+                           px(19.5f), py(15.0f), px(20.5f), py(14.5f));
+        Gdiplus::Pen outline(iconColor, 1.8f * scale);
+        outline.SetStartCap(Gdiplus::LineCapRound);
+        outline.SetEndCap(Gdiplus::LineCapRound);
+        outline.SetLineJoin(Gdiplus::LineJoinRound);
+        graphics.DrawPath(&outline, &crescent);
+
+        Gdiplus::GraphicsPath sparkle;
+        sparkle.StartFigure();
+        sparkle.AddLine(px(17.0f), py(6.0f), px(17.5f), py(7.5f));
+        sparkle.AddLine(px(17.5f), py(7.5f), px(19.0f), py(8.0f));
+        sparkle.AddLine(px(19.0f), py(8.0f), px(17.5f), py(8.5f));
+        sparkle.AddLine(px(17.5f), py(8.5f), px(17.0f), py(10.0f));
+        sparkle.AddLine(px(17.0f), py(10.0f), px(16.5f), py(8.5f));
+        sparkle.AddLine(px(16.5f), py(8.5f), px(15.0f), py(8.0f));
+        sparkle.AddLine(px(15.0f), py(8.0f), px(16.5f), py(7.5f));
+        sparkle.CloseFigure();
+        Gdiplus::SolidBrush brush(iconColor);
+        graphics.FillPath(&brush, &sparkle);
+
+        Gdiplus::SolidBrush dot(Gdiplus::Color(153, GetRValue(color), GetGValue(color),
+                                               GetBValue(color)));
+        graphics.FillEllipse(&dot, px(6.0f), py(6.0f), 2.0f * scale, 2.0f * scale);
+    }
 }
 
 void drawSettingsAccentDot(HDC dc, int left, int top, int size,
@@ -6281,7 +6355,8 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
         const bool selected = themeMode == i;
         const bool hovered = g_app->hoveredSettingsThemeMode == i;
         if (selected || hovered) {
-            const COLORREF segmentBackground = selected ? accent : settingsAccentSoftColor();
+            const COLORREF segmentBackground = selected ? accent :
+                settingsThemeColor(RGB(214, 225, 242), RGB(53, 63, 78));
             drawRounded(modeRect, segmentBackground, segmentBackground, 12);
         }
         const COLORREF iconColor = selected ? RGB(255, 255, 255) :
@@ -7998,6 +8073,20 @@ int settingsThemeModeAtPoint(HWND hwnd, int x, int y) {
     return (x - segmentLeft) / ui(kSettingsThemeSegmentWidth);
 }
 
+void updateSettingsThemeHover(int x, int y) {
+    if (!g_app || !g_app->settings) return;
+    const int mode = settingsThemeModeAtPoint(g_app->settings, x, y);
+    if (mode == g_app->hoveredSettingsThemeMode) return;
+    g_app->hoveredSettingsThemeMode = mode;
+    RECT client{};
+    GetClientRect(g_app->settings, &client);
+    const RECT headerRect{0, ui(10), client.right, ui(48)};
+    InvalidateRect(g_app->settings, &headerRect, FALSE);
+    if (g_app->settingsHeaderOverlay) {
+        InvalidateRect(g_app->settingsHeaderOverlay, &headerRect, FALSE);
+    }
+}
+
 int settingsAccentAtPoint(HWND hwnd, int x, int y) {
     if (!hwnd || y < ui(20) || y >= ui(38)) return -1;
     RECT client{};
@@ -8692,9 +8781,17 @@ void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
         const COLORREF knobSurface = highContrast ? GetSysColor(COLOR_WINDOW) :
             settingsThemeColor(RGB(255, 255, 255), RGB(47, 53, 60));
         const COLORREF accent = highContrast ? GetSysColor(COLOR_HIGHLIGHT) : settingsAccentColor();
+        const auto lighten = [](COLORREF value, BYTE amount) {
+            return RGB(static_cast<BYTE>(GetRValue(value) +
+                           (255 - GetRValue(value)) * amount / 255),
+                       static_cast<BYTE>(GetGValue(value) +
+                           (255 - GetGValue(value)) * amount / 255),
+                       static_cast<BYTE>(GetBValue(value) +
+                           (255 - GetBValue(value)) * amount / 255));
+        };
         const COLORREF track = checked
-            ? (hovered ? settingsThemeColor(RGB(51, 145, 115), RGB(82, 180, 177)) : accent)
-            : (hovered ? settingsThemeColor(RGB(174, 191, 187), RGB(95, 105, 116))
+            ? (hovered ? lighten(accent, 28) : accent)
+            : (hovered ? settingsAccentSoftColor()
                        : settingsThemeColor(RGB(197, 208, 208), RGB(75, 84, 95)));
         const COLORREF trackBorder = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
             (checked ? track : settingsThemeColor(RGB(155, 171, 167), RGB(112, 123, 135)));
@@ -8732,7 +8829,7 @@ void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
         graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
         graphics.TranslateTransform(static_cast<Gdiplus::REAL>(-item.rcItem.left),
                                     static_cast<Gdiplus::REAL>(-item.rcItem.top));
-        Gdiplus::SolidBrush surfaceBrush(makeColor(surface));
+         Gdiplus::SolidBrush surfaceBrush(makeColor(surface));
         graphics.FillRectangle(&surfaceBrush, static_cast<INT>(item.rcItem.left),
                                static_cast<INT>(item.rcItem.top), bufferWidth, bufferHeight);
         Gdiplus::GraphicsPath surfacePath;
@@ -8742,17 +8839,17 @@ void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
                                           static_cast<float>(bufferHeight));
         addCapsule(surfacePath, surfaceRect);
         graphics.FillPath(&surfaceBrush, &surfacePath);
-        Gdiplus::SolidBrush trackBrush(makeColor(track));
-        Gdiplus::Pen trackPen(makeColor(trackBorder), 1.0f);
+         Gdiplus::SolidBrush trackBrush(makeColor(track));
+         Gdiplus::Pen trackPen(makeColor(trackBorder), 1.0f);
         Gdiplus::GraphicsPath trackPath;
         addCapsule(trackPath, trackRect);
         graphics.FillPath(&trackBrush, &trackPath);
         graphics.DrawPath(&trackPen, &trackPath);
-        Gdiplus::SolidBrush knobBrush(makeColor(knobSurface));
+         Gdiplus::SolidBrush knobBrush(makeColor(knobSurface));
          Gdiplus::Pen knobPen(makeColor(highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
              settingsThemeColor(RGB(224, 231, 228), RGB(214, 220, 226))), 1.0f);
-        graphics.FillEllipse(&knobBrush, knobRect);
-        graphics.DrawEllipse(&knobPen, knobRect);
+         graphics.FillEllipse(&knobBrush, knobRect);
+         graphics.DrawEllipse(&knobPen, knobRect);
         if (bufferBitmap) {
             BitBlt(item.hDC, item.rcItem.left, item.rcItem.top, bufferWidth, bufferHeight,
                    bufferDc, 0, 0, SRCCOPY);
@@ -9728,6 +9825,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
     }
     if (g_app && hwnd == g_app->settingsHeaderOverlay) {
+        if (message == WM_NCHITTEST) return HTTRANSPARENT;
         if (message == WM_ERASEBKGND) return 1;
         if (message == WM_PAINT) {
             PAINTSTRUCT ps{};
@@ -9739,6 +9837,15 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == WM_MOUSEMOVE || message == WM_MOUSELEAVE ||
             message == WM_SETCURSOR || message == WM_LBUTTONDOWN ||
             message == WM_LBUTTONUP || message == WM_MOUSEWHEEL) {
+            if (message == WM_MOUSEMOVE) {
+                TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};
+                TrackMouseEvent(&tracking);
+                POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+                MapWindowPoints(hwnd, g_app->settings, &point, 1);
+                updateSettingsThemeHover(point.x, point.y);
+            } else if (message == WM_MOUSELEAVE) {
+                updateSettingsThemeHover(-1, -1);
+            }
             const LRESULT result = g_app->settings
                 ? SendMessageW(g_app->settings, message, wParam, lParam)
                 : DefWindowProcW(hwnd, message, wParam, lParam);
