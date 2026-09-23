@@ -2,7 +2,7 @@
 
 ClipLite is a lightweight native clipboard history manager for Windows. It is built with C++17, the Win32 API, and GDI/GDI+, without WebView, Electron, WinUI, Qt, or another large runtime. The project prioritizes low idle memory usage, reliable clipboard format handling, and portable distribution.
 
-Current release: **1.2.6** (Windows x64)
+Current release: **1.3.0** (Windows x64)
 
 中文文档：[README.md](README.md)
 
@@ -29,6 +29,8 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 - Pinned records are protected from automatic count, capacity, expiry, and startup cleanup, and are not overwritten by new clipboard content.
 - Source application filtering, sensitive text expiry, and optional Windows DPAPI user encryption.
 - Installer and portable distribution modes; clipboard archiving, history reads, and usage statistics run through short-lived worker tasks without keeping the full history payload in memory.
+- When "Run ClipLite as administrator" is enabled, Windows authorization is required once; later launches use a per-user highest-privilege scheduled task and do not show the UAC prompt again. Disabling the option removes the task.
+- Running as administrator can improve clipboard access and paste compatibility with some elevated windows where Windows permits it; ClipLite still cannot bypass UIPI, the secure desktop, or protected-window restrictions.
 
 ## Screenshots
 
@@ -83,8 +85,8 @@ Features and versions vary across tools. This table describes product positionin
 
 The Windows x64 release provides:
 
-- Installer: `ClipLite-Setup-1.2.6-x64.exe`, with English and Simplified Chinese wizard languages, automatic selection based on the Windows UI language, a selectable installation directory, shortcuts, and standard uninstall support.
-- Portable package: `ClipLite-1.2.6-portable-win-x64.zip`, which can be extracted and moved as a directory. Data is stored in its `data\\` directory.
+- Installer: `ClipLite-Setup-1.3.0-x64.exe`, with English and Simplified Chinese wizard languages, automatic selection based on the Windows UI language, a selectable installation directory, shortcuts, and standard uninstall support.
+- Portable package: `ClipLite-1.3.0-portable-win-x64.zip`, which can be extracted and moved as a directory. Data is stored in its `data\\` directory.
 
 Use `SHA256SUM.txt` in the portable package to verify `ClipLite.exe`. Verify the download source before running the application.
 

@@ -6,6 +6,7 @@
 #include <dwmapi.h>
 #include <gdiplus.h>
 #include <richedit.h>
+#include <taskschd.h>
 #include <winhttp.h>
 
 #include "clip_store.h"
@@ -221,6 +222,8 @@ constexpr int kSettingsWidth = 740;
 constexpr int kSettingsHeight = 520;
 constexpr int kSettingsSidebarWidth = 180;
 constexpr int kSettingsHeaderHeight = 58;
+constexpr int kSettingsBodyMargin = 14;
+constexpr int kSettingsScrollbarReserve = 22;
 constexpr int kSettingsToggleWidth = 36;
 constexpr int kSettingsToggleHeight = 20;
 constexpr int kSettingsTrackWidth = 36;
@@ -370,7 +373,8 @@ struct AppState {
     HWND detailPreviewTextEdit = nullptr;
     HWND searchEdit = nullptr;
     HWND settings = nullptr;
-    HWND settingsHeaderOverlay = nullptr;
+    HWND settingsBodyViewport = nullptr;
+    HWND settingsBodyContent = nullptr;
     HWND support = nullptr;
     HANDLE supportProcess = nullptr;
     DWORD supportProcessId = 0;
@@ -1046,7 +1050,7 @@ const SettingsLocale kEnglishSettingsLocale{
      L"Some shortcuts could not be registered. Choose different combinations.",
     L"Custom shortcuts require at least one modifier key.",
     L"Sensitive markers: password, token, api_key, secret, and private keys; detected by content pattern.",
-       L"Application    ClipLite", L"Version        1.2.6 x64", L"Storage format  v4",
+       L"Application    ClipLite", L"Version        1.3.0 x64", L"Storage format  v4",
      L"Data directory  %LOCALAPPDATA%\\ClipLite", L"Browse", L"Clear unpinned history", L"Clear unpinned text",
      L"Clear unpinned images", L"Clear unpinned files", L"Press shortcut", L"Need modifier", L"One application per line", L"Auto",
     L"ClipLite Settings", L"Choose a valid cache directory.", L"Unable to create the cache directory.",
@@ -1097,7 +1101,7 @@ const SettingsLocale kChineseSettingsLocale{
      L"无法注册“%ls”（%ls），可能已被其他程序或 Windows 占用，已恢复为 %ls。",
      L"部分快捷键注册失败，请更换组合键。", L"自定义快捷键至少需要一个修饰键。",
     L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。",
-       L"应用名称    ClipLite", L"版本        1.2.6 x64", L"存储格式    v4",
+        L"应用名称    ClipLite", L"版本        1.3.0 x64", L"存储格式    v4",
      L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清理未置顶历史", L"清理未置顶文本", L"清理未置顶图片",
       L"清理未置顶文件", L"按下组合键", L"需要修饰键", L"每行一个应用名称", L"自动", L"ClipLite 设置",
     L"请选择有效的缓存目录。", L"无法创建缓存目录。", L"目标目录已有历史数据，请选择空目录。",
@@ -1439,6 +1443,130 @@ bool launchElevatedRestart(const wchar_t* arguments) {
     }
     if (execute.hProcess) CloseHandle(execute.hProcess);
     return true;
+}
+
+template <typename T>
+void releaseTaskSchedulerInterface(T*& value) {
+    if (value) value->Release();
+    value = nullptr;
+}
+
+bool connectTaskScheduler(ITaskService** service, ITaskFolder** rootFolder) {
+    if (!service || !rootFolder) return false;
+    *service = nullptr;
+    *rootFolder = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_TaskScheduler, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(service)))) {
+        return false;
+    }
+    VARIANT empty;
+    VariantInit(&empty);
+    if (FAILED((*service)->Connect(empty, empty, empty, empty))) {
+        releaseTaskSchedulerInterface(*service);
+        return false;
+    }
+    BSTR rootName = SysAllocString(L"\\");
+    const HRESULT folderResult = rootName ? (*service)->GetFolder(rootName, rootFolder) : E_OUTOFMEMORY;
+    if (rootName) SysFreeString(rootName);
+    if (FAILED(folderResult)) {
+        releaseTaskSchedulerInterface(*service);
+        return false;
+    }
+    return true;
+}
+
+bool registerElevatedTask() {
+    ITaskService* service = nullptr;
+    ITaskFolder* rootFolder = nullptr;
+    if (!connectTaskScheduler(&service, &rootFolder)) return false;
+
+    ITaskDefinition* definition = nullptr;
+    IPrincipal* principal = nullptr;
+    ITaskSettings* settings = nullptr;
+    IActionCollection* actions = nullptr;
+    IAction* action = nullptr;
+    IExecAction* execAction = nullptr;
+    IRegisteredTask* registeredTask = nullptr;
+    bool success = false;
+    do {
+        if (FAILED(service->NewTask(0, &definition))) break;
+        if (FAILED(definition->get_Principal(&principal))) break;
+        if (FAILED(principal->put_LogonType(TASK_LOGON_INTERACTIVE_TOKEN))) break;
+        if (FAILED(principal->put_RunLevel(TASK_RUNLEVEL_HIGHEST))) break;
+        if (FAILED(definition->get_Settings(&settings))) break;
+        if (FAILED(settings->put_Enabled(VARIANT_TRUE))) break;
+        if (FAILED(settings->put_StartWhenAvailable(VARIANT_TRUE))) break;
+        if (FAILED(definition->get_Actions(&actions))) break;
+        if (FAILED(actions->Create(TASK_ACTION_EXEC, &action))) break;
+        if (FAILED(action->QueryInterface(__uuidof(IExecAction),
+                                          reinterpret_cast<void**>(&execAction)))) break;
+
+        wchar_t executable[MAX_PATH]{};
+        const DWORD length = GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
+        if (length == 0 || length >= ARRAYSIZE(executable)) break;
+        BSTR executablePath = SysAllocStringLen(executable, length);
+        BSTR arguments = SysAllocString(L"--elevated-task");
+        if (!executablePath || !arguments || FAILED(execAction->put_Path(executablePath)) ||
+            FAILED(execAction->put_Arguments(arguments))) {
+            if (executablePath) SysFreeString(executablePath);
+            if (arguments) SysFreeString(arguments);
+            break;
+        }
+        SysFreeString(executablePath);
+        SysFreeString(arguments);
+
+        VARIANT empty;
+        VariantInit(&empty);
+        BSTR taskName = SysAllocString(L"\\ClipLite Elevated");
+        if (!taskName) break;
+        const HRESULT result = rootFolder->RegisterTaskDefinition(
+            taskName, definition, TASK_CREATE_OR_UPDATE, empty, empty,
+            TASK_LOGON_INTERACTIVE_TOKEN, empty, &registeredTask);
+        SysFreeString(taskName);
+        success = SUCCEEDED(result);
+    } while (false);
+
+    releaseTaskSchedulerInterface(registeredTask);
+    releaseTaskSchedulerInterface(execAction);
+    releaseTaskSchedulerInterface(action);
+    releaseTaskSchedulerInterface(actions);
+    releaseTaskSchedulerInterface(settings);
+    releaseTaskSchedulerInterface(principal);
+    releaseTaskSchedulerInterface(definition);
+    releaseTaskSchedulerInterface(rootFolder);
+    releaseTaskSchedulerInterface(service);
+    return success;
+}
+
+bool unregisterElevatedTask() {
+    ITaskService* service = nullptr;
+    ITaskFolder* rootFolder = nullptr;
+    if (!connectTaskScheduler(&service, &rootFolder)) return false;
+    BSTR taskName = SysAllocString(L"\\ClipLite Elevated");
+    const HRESULT result = taskName ? rootFolder->DeleteTask(taskName, 0) : E_OUTOFMEMORY;
+    if (taskName) SysFreeString(taskName);
+    releaseTaskSchedulerInterface(rootFolder);
+    releaseTaskSchedulerInterface(service);
+    return SUCCEEDED(result) || result == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+}
+
+bool launchRegisteredElevatedTask() {
+    ITaskService* service = nullptr;
+    ITaskFolder* rootFolder = nullptr;
+    if (!connectTaskScheduler(&service, &rootFolder)) return false;
+    IRegisteredTask* task = nullptr;
+    IRunningTask* runningTask = nullptr;
+    BSTR taskName = SysAllocString(L"\\ClipLite Elevated");
+    VARIANT empty;
+    VariantInit(&empty);
+    const HRESULT getResult = taskName ? rootFolder->GetTask(taskName, &task) : E_OUTOFMEMORY;
+    const HRESULT runResult = SUCCEEDED(getResult) ? task->Run(empty, &runningTask) : getResult;
+    if (taskName) SysFreeString(taskName);
+    releaseTaskSchedulerInterface(runningTask);
+    releaseTaskSchedulerInterface(task);
+    releaseTaskSchedulerInterface(rootFolder);
+    releaseTaskSchedulerInterface(service);
+    return SUCCEEDED(runResult);
 }
 
 void updateStartupRegistration(bool enabled) {
@@ -2164,17 +2292,11 @@ void invalidateSettingsNav(HWND hwnd, int tab) {
     if (tab < 0 || tab > 4) return;
     RECT rect{ui(8), ui(50 + tab * 38), ui(180), ui(50 + tab * 38 + 38)};
     InvalidateRect(hwnd, &rect, FALSE);
-    if (g_app && hwnd == g_app->settings && g_app->settingsHeaderOverlay) {
-        InvalidateRect(g_app->settingsHeaderOverlay, &rect, FALSE);
-    }
 }
 
 void invalidateSettingsHeader(HWND hwnd, const RECT& rect) {
     if (!hwnd) return;
     InvalidateRect(hwnd, &rect, FALSE);
-    if (g_app && hwnd == g_app->settings && g_app->settingsHeaderOverlay) {
-        InvalidateRect(g_app->settingsHeaderOverlay, &rect, FALSE);
-    }
 }
 
 void invalidatePopupList(HWND hwnd) {
@@ -2282,6 +2404,52 @@ void configureGdiGraphics(Gdiplus::Graphics& graphics) {
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
     graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
+}
+
+void configureTextRendering(HDC dc) {
+    if (!dc) return;
+    SetBkMode(dc, TRANSPARENT);
+    SetTextCharacterExtra(dc, 0);
+}
+
+void drawAntiAliasedText(HDC dc, HFONT font, const wchar_t* text, const RECT& rect,
+                         COLORREF color) {
+    if (!dc || !font || !text || !g_app || g_app->gdiplusToken == 0) return;
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
+    Gdiplus::Font gdiFont(dc, font);
+    Gdiplus::SolidBrush brush(makeGdiColor(color));
+    Gdiplus::RectF bounds(static_cast<float>(rect.left), static_cast<float>(rect.top),
+                          static_cast<float>(rect.right - rect.left),
+                          static_cast<float>(rect.bottom - rect.top));
+    Gdiplus::StringFormat format;
+    format.SetFormatFlags(Gdiplus::StringFormatFlagsLineLimit);
+    graphics.DrawString(text, -1, &gdiFont, bounds, &format, &brush);
+}
+
+void drawSettingsText(HDC dc, HFONT font, const wchar_t* text, RECT rect,
+                      COLORREF color, UINT flags) {
+    if (!dc || !font || !text || !g_app || g_app->gdiplusToken == 0) return;
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
+    Gdiplus::Font gdiFont(dc, font);
+    Gdiplus::SolidBrush brush(makeGdiColor(color));
+    Gdiplus::StringFormat format;
+    if ((flags & DT_CENTER) != 0) format.SetAlignment(Gdiplus::StringAlignmentCenter);
+    else if ((flags & DT_RIGHT) != 0) format.SetAlignment(Gdiplus::StringAlignmentFar);
+    else format.SetAlignment(Gdiplus::StringAlignmentNear);
+    if ((flags & DT_VCENTER) != 0) format.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+    else format.SetLineAlignment(Gdiplus::StringAlignmentNear);
+    if ((flags & DT_SINGLELINE) != 0) {
+        format.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap |
+                              Gdiplus::StringFormatFlagsNoClip);
+    } else {
+        format.SetFormatFlags(Gdiplus::StringFormatFlagsNoClip);
+    }
+    Gdiplus::RectF bounds(static_cast<float>(rect.left), static_cast<float>(rect.top),
+                          static_cast<float>(rect.right - rect.left),
+                          static_cast<float>(rect.bottom - rect.top));
+    graphics.DrawString(text, -1, &gdiFont, bounds, &format, &brush);
 }
 
 void addGdiRoundedRect(Gdiplus::GraphicsPath& path, const Gdiplus::RectF& rect, float radius) {
@@ -5194,7 +5362,7 @@ void drawSupportText(HDC dc, HFONT font, const wchar_t* text, RECT rect,
                      COLORREF color, UINT format) {
     if (!text) return;
     HGDIOBJ oldFont = font ? SelectObject(dc, font) : nullptr;
-    SetBkMode(dc, TRANSPARENT);
+    configureTextRendering(dc);
     SetTextColor(dc, color);
     DrawTextW(dc, text, -1, &rect, format);
     if (oldFont) SelectObject(dc, oldFont);
@@ -5662,6 +5830,8 @@ LRESULT CALLBACK lowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
     return CallNextHookEx(nullptr, code, wParam, lParam);
 }
 
+bool shortcutBindingIsEmpty(const ShortcutBinding& binding);
+
 bool registerConfiguredHotkey(int id, const ShortcutBinding& binding) {
     if (!g_app || !g_app->hidden || binding.modifiers == 0 || binding.virtualKey == 0) return false;
     return RegisterHotKey(g_app->hidden, id, binding.modifiers | MOD_NOREPEAT,
@@ -5683,6 +5853,7 @@ void registerHotkeys() {
     g_app->shortcutRegistrationDetail.clear();
     auto registerWithFallback = [&](int id, ShortcutBinding& binding,
                                      const ShortcutBinding& fallback) {
+        if (shortcutBindingIsEmpty(binding)) return;
         if (registerConfiguredHotkey(id, binding)) return;
         appendDiagnosticLog("WARN", "hotkey: configured shortcut registration failed");
         g_app->shortcutRegistrationWarning = true;
@@ -5881,6 +6052,28 @@ struct SettingsLayout {
     int contentBottom = 0;
 };
 
+HWND findSettingsControl(HWND parent, int id) {
+    if (!parent) return nullptr;
+    for (HWND child = GetWindow(parent, GW_CHILD); child;
+         child = GetWindow(child, GW_HWNDNEXT)) {
+        if (GetDlgCtrlID(child) == id) return child;
+        if (HWND nested = findSettingsControl(child, id)) return nested;
+    }
+    return nullptr;
+}
+
+HWND settingsControl(HWND settings, int id) {
+    return findSettingsControl(settings, id);
+}
+
+HWND settingsWindowFromControl(HWND control) {
+    if (!control || !g_app) return nullptr;
+    for (HWND parent = GetParent(control); parent; parent = GetParent(parent)) {
+        if (parent == g_app->settings) return parent;
+    }
+    return nullptr;
+}
+
 int settingsTextHeight(HWND hwnd, const wchar_t* text, int width) {
     if (!hwnd || !text || !*text) return 16;
     HDC dc = GetDC(hwnd);
@@ -5906,7 +6099,7 @@ SettingsRowLayout makeSettingsRow(HWND hwnd, const wchar_t* label,
     row.controlWidths.assign(widths.begin(), widths.end());
     row.controlHeights.assign(heights.begin(), heights.end());
     for (std::size_t i = 0; i < row.controlIds.size(); ++i) {
-        if (HWND control = GetDlgItem(hwnd, row.controlIds[i])) {
+        if (HWND control = settingsControl(hwnd, row.controlIds[i])) {
             RECT controlRect{};
             GetClientRect(control, &controlRect);
             const int widthInLogicalUnits = MulDiv(controlRect.right, 96, static_cast<int>(g_uiDpi));
@@ -5943,7 +6136,9 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
     RECT client{};
     GetClientRect(hwnd, &client);
     const int clientWidth = std::max(1, MulDiv(client.right, 96, static_cast<int>(g_uiDpi)));
-    const int contentWidth = std::max(1, clientWidth - kSettingsSidebarWidth - 40);
+    const int scrollbarReserve = kSettingsScrollbarReserve;
+    const int contentWidth = std::max(1,
+        clientWidth - kSettingsSidebarWidth - kSettingsBodyMargin * 2 - scrollbarReserve);
     int cursor = 74;
     auto makeCard = [&](const wchar_t* title, std::vector<SettingsRowLayout> rows,
                         int extraHeight = 0) {
@@ -6064,12 +6259,12 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
                             {kSettingIgnoredApps}, {150}, {60}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().sensitiveContentExpiry,
                             {kSettingSensitiveExpiry}, {150}, {30}, contentWidth)
-        }, 90);
-        makeCard(settingsLocale().protectionScope, {}, 48);
+        }, 190);
+        makeCard(settingsLocale().protectionScope, {}, 120);
     } else {
         makeCard(settingsLocale().about, {}, 300);
     }
-    const int controlRight = clientWidth - 20 - 14;
+    const int controlRight = clientWidth - kSettingsBodyMargin - 14 - scrollbarReserve;
     for (SettingsCardLayout& card : layout.cards) {
         for (SettingsRowLayout& row : card.rows) {
             int totalWidth = 0;
@@ -6094,7 +6289,7 @@ int settingsScrollMax(HWND hwnd) {
     GetClientRect(hwnd, &client);
     const int viewport = std::max(0, static_cast<int>(client.bottom) - ui(kSettingsHeaderHeight));
     const int contentHeight = buildSettingsLayout(hwnd).contentBottom;
-    return std::max(0, ui(contentHeight) - viewport);
+    return std::max(0, ui(std::max(0, contentHeight - kSettingsHeaderHeight)) - viewport);
 }
 
 // 判断当前设置页是否需要滚动内容区域。
@@ -6102,10 +6297,6 @@ bool settingsTabIsScrollable() {
     return g_app && (g_app->settingsTab == 0 ||
                      g_app->settingsTab == kSettingsShortcutPage ||
                      g_app->settingsTab == 2);
-}
-
-int settingsContentY(int logicalY) {
-    return ui(logicalY) - ui(settingsTabIsScrollable() ? g_app->settingsScrollOffset : 0);
 }
 
 // 计算设置页右侧滚动条的轨道、滑块和最大滚动距离。
@@ -6117,15 +6308,16 @@ bool settingsScrollbarMetrics(HWND hwnd, int& trackTop, int& trackBottom,
     GetClientRect(hwnd, &client);
     const int viewport = std::max(1, static_cast<int>(client.bottom) - ui(kSettingsHeaderHeight));
     if (contentHeight <= 0) contentHeight = ui(buildSettingsLayout(hwnd).contentBottom);
-    maxOffset = std::max(0, contentHeight - viewport);
+    const int bodyHeight = std::max(0, contentHeight - ui(kSettingsHeaderHeight));
+    maxOffset = std::max(0, bodyHeight - viewport);
     if (maxOffset == 0) return false;
 
     trackTop = ui(kSettingsHeaderHeight + 8);
     trackBottom = client.bottom - ui(8);
     const int trackHeight = std::max(1, trackBottom - trackTop);
     thumbHeight = std::min(trackHeight,
-                           std::max(ui(28), trackHeight * viewport /
-                               std::max(1, contentHeight)));
+                            std::max(ui(28), trackHeight * viewport /
+                                std::max(1, bodyHeight)));
     thumbTop = trackTop + (trackHeight - thumbHeight) * g_app->settingsScrollOffset /
         std::max(1, maxOffset);
     return true;
@@ -6213,9 +6405,10 @@ void createPopupPaintFonts() {
     g_app->popupMetaFont = createCachedFont(10, FW_NORMAL, L"Microsoft YaHei");
 }
 
-void paintSettingsContent(HWND hwnd, HDC dc) {
+void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
     RECT client{};
-    GetClientRect(hwnd, &client);
+    GetClientRect(bodyOnly && g_app->settingsBodyContent ? g_app->settingsBodyContent : hwnd, &client);
+    HWND settingsWindow = bodyOnly ? g_app->settings : hwnd;
     COLORREF windowBackground = settingsThemeColor(RGB(240, 244, 248), RGB(21, 26, 34));
     COLORREF sidebarBackground = settingsThemeColor(RGB(232, 238, 245), RGB(26, 33, 44));
     COLORREF cardBackground = settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
@@ -6235,18 +6428,13 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
     HBRUSH backgroundBrush = CreateSolidBrush(windowBackground);
     FillRect(dc, &client, backgroundBrush);
     DeleteObject(backgroundBrush);
-    HBRUSH sidebarBrush = CreateSolidBrush(sidebarBackground);
-    RECT sidebarRect{0, 0, ui(kSettingsSidebarWidth), client.bottom};
-    FillRect(dc, &sidebarRect, sidebarBrush);
-    DeleteObject(sidebarBrush);
 
-    RECT topbarRect{ui(kSettingsSidebarWidth), 0, client.right, ui(kSettingsHeaderHeight)};
-    HBRUSH topbarBrush = CreateSolidBrush(cardBackground);
-    FillRect(dc, &topbarRect, topbarBrush);
-    DeleteObject(topbarBrush);
-
-    const int contentLeft = ui(kSettingsSidebarWidth + 20);
-    const int contentRight = client.right - ui(20);
+    const int contentLeft = bodyOnly ? ui(kSettingsBodyMargin)
+                                     : ui(kSettingsSidebarWidth + kSettingsBodyMargin);
+    const int contentRight = client.right - ui(kSettingsBodyMargin);
+    auto settingsContentY = [](int logicalY) {
+        return ui(logicalY - kSettingsHeaderHeight);
+    };
     auto drawRounded = [&](RECT rect, COLORREF fill, COLORREF border, int radiusLogical = 10) {
         if (g_app->gdiplusToken != 0) {
             auto makeColor = [](COLORREF value) {
@@ -6281,20 +6469,32 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
         (void)radiusLogical;
     };
 
-    drawGdiLine(dc, ui(kSettingsSidebarWidth), 0, ui(kSettingsSidebarWidth), client.bottom, line);
-    drawGdiLine(dc, ui(kSettingsSidebarWidth), ui(kSettingsHeaderHeight - 1),
-                client.right, ui(kSettingsHeaderHeight - 1), line);
+    if (!bodyOnly) {
+        HBRUSH sidebarBrush = CreateSolidBrush(sidebarBackground);
+        RECT sidebarRect{0, 0, ui(kSettingsSidebarWidth), client.bottom};
+        FillRect(dc, &sidebarRect, sidebarBrush);
+        DeleteObject(sidebarBrush);
+        RECT topbarRect{ui(kSettingsSidebarWidth), 0, client.right, ui(kSettingsHeaderHeight)};
+        HBRUSH topbarBrush = CreateSolidBrush(cardBackground);
+        FillRect(dc, &topbarRect, topbarBrush);
+        DeleteObject(topbarBrush);
+        drawGdiLine(dc, ui(kSettingsSidebarWidth), 0, ui(kSettingsSidebarWidth), client.bottom, line);
+        drawGdiLine(dc, ui(kSettingsSidebarWidth), ui(kSettingsHeaderHeight - 1),
+                    client.right, ui(kSettingsHeaderHeight - 1), line);
+    }
 
     HFONT navFont = g_app->settingsNavFont;
     HFONT titleFont = g_app->settingsTitleFont;
     HFONT cardTitleFont = g_app->settingsCardTitleFont;
     HFONT bodyFont = g_app->settingsBodyFont;
     SetBkMode(dc, TRANSPARENT);
+    const SettingsLayout layout = buildSettingsLayout(settingsWindow);
     const wchar_t* navLabels[] = {
         settingsLocale().navGeneral, settingsLocale().navShortcuts, settingsLocale().navStorage,
         settingsLocale().navPrivacy, settingsLocale().navAbout
     };
     const int activeTop = 50 + g_app->settingsTab * 38;
+    if (!bodyOnly) {
     drawRounded(RECT{ui(12), ui(activeTop), ui(168), ui(activeTop + 34)},
                 settingsAccentSoftColor(), settingsAccentSoftColor(), 6);
     if (g_app->hoveredSettingsTab >= 0 && g_app->hoveredSettingsTab != g_app->settingsTab) {
@@ -6375,6 +6575,8 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
                               accentColors[i], g_app->settingsData.accent == i, text);
     }
 
+    }
+    if (bodyOnly) {
     auto drawCard = [&](int top, int bottom) {
         RECT rect{contentLeft, settingsContentY(top), contentRight, settingsContentY(bottom)};
         drawRounded(rect, cardBackground, line);
@@ -6384,7 +6586,8 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
         SetTextColor(dc, text);
         RECT title{contentLeft + ui(14), settingsContentY(top), contentRight - ui(14),
                    settingsContentY(top + 20)};
-        DrawTextW(dc, label, -1, &title, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        drawSettingsText(dc, cardTitleFont, label, title, text,
+                         DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         drawGdiLine(dc, contentLeft + ui(14), settingsContentY(top + 27),
                     contentRight - ui(14), settingsContentY(top + 27), line);
     };
@@ -6392,18 +6595,21 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
         if (!row.label) return;
         SelectObject(dc, bodyFont);
         SetTextColor(dc, text);
-        const int labelRight = row.controlX.empty() ? contentRight - ui(14) : ui(row.controlX.front() - 8);
-        const int labelLeftLogical = kSettingsSidebarWidth + 20 + 14;
+        const int labelRight = row.controlX.empty()
+            ? contentRight - ui(14) : ui(row.controlX.front() - kSettingsSidebarWidth - 8);
+        const int labelLeftLogical = bodyOnly
+            ? kSettingsBodyMargin + 14
+            : kSettingsSidebarWidth + kSettingsBodyMargin + 14;
         const int labelRightLogical = row.controlX.empty()
-            ? MulDiv(client.right, 96, static_cast<int>(g_uiDpi)) - 20 - 14
-            : row.controlX.front() - 8;
+            ? MulDiv(client.right, 96, static_cast<int>(g_uiDpi)) - kSettingsBodyMargin - 14
+            : row.controlX.front() - kSettingsSidebarWidth - 8;
         const int labelHeight = settingsTextHeight(hwnd, row.label,
                                                     std::max(1, labelRightLogical - labelLeftLogical));
         const int labelTop = row.top + std::max(0, (row.height - labelHeight) / 2);
         RECT label{contentLeft + ui(14), settingsContentY(labelTop), labelRight,
                    settingsContentY(labelTop + labelHeight)};
-        DrawTextW(dc, row.label, -1, &label,
-                  DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
+        drawSettingsText(dc, bodyFont, row.label, label, text,
+                         DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
     };
     auto drawStats = [&](int top) {
         const std::size_t textCount = g_app->store.countType(ClipType::Text);
@@ -6421,7 +6627,8 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
         SetTextColor(dc, secondary);
         RECT summaryRect{contentLeft + ui(14), settingsContentY(top + 37), contentRight - ui(14),
                          settingsContentY(top + 61)};
-        DrawTextW(dc, summary, -1, &summaryRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        drawSettingsText(dc, bodyFont, summary, summaryRect, secondary,
+                         DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         const wchar_t* labels[] = {
             settingsLocale().text, settingsLocale().images,
             settingsLocale().files, settingsLocale().pinned
@@ -6441,9 +6648,9 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
         }
     };
 
-    const SettingsLayout layout = buildSettingsLayout(hwnd);
     const int bodyClip = SaveDC(dc);
-    IntersectClipRect(dc, ui(kSettingsSidebarWidth), ui(kSettingsHeaderHeight), client.right, client.bottom);
+    if (bodyOnly) IntersectClipRect(dc, 0, 0, client.right, client.bottom);
+    else IntersectClipRect(dc, ui(kSettingsSidebarWidth), ui(kSettingsHeaderHeight), client.right, client.bottom);
     for (const SettingsCardLayout& card : layout.cards) {
         drawCard(card.top, card.bottom);
         drawCardTitle(card.title, card.top + 12);
@@ -6456,10 +6663,14 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
             SelectObject(dc, bodyFont);
             SetTextColor(dc, secondary);
             const SettingsRowLayout& firstRow = categoryCard.rows.front();
-            RECT maxHeader{ui(firstRow.controlX[0]), settingsContentY(categoryCard.top + 40),
-                           ui(firstRow.controlX[0] + 70), settingsContentY(categoryCard.top + 54)};
-            RECT diskHeader{ui(firstRow.controlX[1]), settingsContentY(categoryCard.top + 40),
-                            ui(firstRow.controlX[1] + 70), settingsContentY(categoryCard.top + 54)};
+            RECT maxHeader{ui(firstRow.controlX[0] - kSettingsSidebarWidth),
+                           settingsContentY(categoryCard.top + 40),
+                           ui(firstRow.controlX[0] - kSettingsSidebarWidth + 70),
+                           settingsContentY(categoryCard.top + 54)};
+            RECT diskHeader{ui(firstRow.controlX[1] - kSettingsSidebarWidth),
+                            settingsContentY(categoryCard.top + 40),
+                            ui(firstRow.controlX[1] - kSettingsSidebarWidth + 70),
+                            settingsContentY(categoryCard.top + 54)};
             DrawTextW(dc, settingsLocale().records, -1, &maxHeader,
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE);
              DrawTextW(dc, settingsLocale().space, -1, &diskHeader,
@@ -6472,7 +6683,8 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
                 swprintf_s(count, settingsLocale().currentCategoryFormat,
                            g_app->store.countType(types[i]), categorySize.c_str());
                 RECT countRect{contentLeft + ui(62), settingsContentY(row.top),
-                               ui(row.controlX.front() - 8), settingsContentY(row.top + row.height)};
+                               ui(row.controlX.front() - kSettingsSidebarWidth - 8),
+                               settingsContentY(row.top + row.height)};
                 SetTextColor(dc, secondary);
                 DrawTextW(dc, count, -1, &countRect,
                           DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -6502,13 +6714,13 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
         const SettingsCardLayout& privacyCard = layout.cards.front();
         RECT encryptionNote{contentLeft + ui(14), settingsContentY(privacyCard.bottom - 80),
                             contentRight - ui(14), settingsContentY(privacyCard.bottom - 12)};
-        DrawTextW(dc, settingsLocale().encryptionNote, -1, &encryptionNote,
-                  DT_LEFT | DT_WORDBREAK);
+        drawAntiAliasedText(dc, bodyFont, settingsLocale().encryptionNote,
+                            encryptionNote, secondary);
         const SettingsCardLayout& card = layout.cards.back();
         RECT description{contentLeft + ui(14), settingsContentY(card.bottom - 38), contentRight - ui(14),
                          settingsContentY(card.bottom - 12)};
-        DrawTextW(dc, settingsLocale().privacyNote, -1, &description,
-                  DT_LEFT | DT_WORDBREAK);
+        drawAntiAliasedText(dc, bodyFont, settingsLocale().privacyNote,
+                            description, secondary);
     } else if (g_app->settingsTab == 4 && !layout.cards.empty()) {
         SelectObject(dc, bodyFont);
         SetTextColor(dc, text);
@@ -6516,55 +6728,55 @@ void paintSettingsContent(HWND hwnd, HDC dc) {
             settingsLocale().aboutApplication, settingsLocale().aboutVersion,
             settingsLocale().aboutStorageFormat, settingsLocale().aboutDataDirectory
         };
+        const int aboutLabelWidth = ui(92);
+        const int aboutValueLeft = contentLeft + ui(110);
         for (int i = 0; i < 4; ++i) {
-            RECT aboutRect{contentLeft + ui(14), settingsContentY(layout.cards.front().top + 50 + i * 34),
-                           contentRight - ui(14), settingsContentY(layout.cards.front().top + 76 + i * 34)};
-            DrawTextW(dc, about[i], -1, &aboutRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            const std::wstring aboutLine = about[i];
+            const std::size_t separator = aboutLine.find_first_of(L" \t");
+            const std::wstring label = separator == std::wstring::npos
+                ? aboutLine : aboutLine.substr(0, separator);
+            std::size_t valueStart = separator;
+            while (valueStart < aboutLine.size() &&
+                   (aboutLine[valueStart] == L' ' || aboutLine[valueStart] == L'\t')) {
+                ++valueStart;
+            }
+            const std::wstring value = valueStart < aboutLine.size()
+                ? aboutLine.substr(valueStart) : std::wstring{};
+            const int top = layout.cards.front().top + 50 + i * 34;
+            RECT labelRect{contentLeft + ui(14), settingsContentY(top),
+                           contentLeft + ui(14) + aboutLabelWidth, settingsContentY(top + 26)};
+            RECT valueRect{aboutValueLeft, settingsContentY(top),
+                           contentRight - ui(14), settingsContentY(top + 26)};
+            drawSettingsText(dc, bodyFont, label.c_str(), labelRect, text,
+                             DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            drawSettingsText(dc, bodyFont, value.c_str(), valueRect, text,
+                             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         }
         const std::wstring logFile = settingsLocale().logFilePrefix + diagnosticLogPath();
-        RECT logRect{contentLeft + ui(14), settingsContentY(layout.cards.front().top + 186),
-                     contentRight - ui(14), settingsContentY(layout.cards.front().top + 212)};
-        DrawTextW(dc, logFile.c_str(), -1, &logRect,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        const std::size_t separator = logFile.find_first_of(L" \t");
+        const std::wstring logLabel = separator == std::wstring::npos
+            ? logFile : logFile.substr(0, separator);
+        std::size_t valueStart = separator;
+        while (valueStart < logFile.size() &&
+               (logFile[valueStart] == L' ' || logFile[valueStart] == L'\t')) {
+            ++valueStart;
+        }
+        const std::wstring logValue = valueStart < logFile.size()
+            ? logFile.substr(valueStart) : std::wstring{};
+        const int logTop = layout.cards.front().top + 186;
+        RECT logLabelRect{contentLeft + ui(14), settingsContentY(logTop),
+                          contentLeft + ui(14) + aboutLabelWidth, settingsContentY(logTop + 26)};
+        RECT logValueRect{aboutValueLeft, settingsContentY(logTop),
+                          contentRight - ui(14), settingsContentY(logTop + 26)};
+        drawSettingsText(dc, bodyFont, logLabel.c_str(), logLabelRect, text,
+                         DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        drawSettingsText(dc, bodyFont, logValue.c_str(), logValueRect, text,
+                         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
     RestoreDC(dc, bodyClip);
-    paintSettingsScrollbar(hwnd, dc, ui(layout.contentBottom));
-
-#ifdef _DEBUG
-    {
-        HPEN debugPen = CreatePen(PS_DASH, ui(1), RGB(220, 70, 70));
-        HGDIOBJ debugPreviousPen = SelectObject(dc, debugPen);
-        HGDIOBJ debugPreviousBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-        RECT headerRect{ui(kSettingsSidebarWidth), 0, client.right, ui(kSettingsHeaderHeight)};
-        Rectangle(dc, headerRect.left, headerRect.top, headerRect.right, headerRect.bottom);
-        auto drawDebugCard = [&](int top, int bottom) {
-            Rectangle(dc, contentLeft, settingsContentY(top), contentRight,
-                      settingsContentY(bottom));
-        };
-        const SettingsLayout debugLayout = buildSettingsLayout(hwnd);
-        for (const SettingsCardLayout& card : debugLayout.cards) {
-            drawDebugCard(card.top, card.bottom);
-        }
-        SelectObject(dc, debugPreviousBrush);
-        SelectObject(dc, debugPreviousPen);
-        DeleteObject(debugPen);
-        HFONT debugFont = CreateFontW(-ui(10), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                      CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Consolas");
-        HFONT oldDebugFont = reinterpret_cast<HFONT>(SelectObject(dc, debugFont));
-        SetBkMode(dc, OPAQUE);
-        SetBkColor(dc, RGB(255, 250, 210));
-        SetTextColor(dc, RGB(140, 30, 30));
-        wchar_t marker[96]{};
-        swprintf_s(marker, L"DEBUG body=%d scroll=%d", kSettingsHeaderHeight,
-                   g_app->settingsScrollOffset);
-        RECT markerRect{contentLeft + ui(4), ui(2), contentRight, ui(16)};
-        DrawTextW(dc, marker, -1, &markerRect, DT_LEFT | DT_SINGLELINE);
-        paintSettingsEditBorders(hwnd, dc);
-        SelectObject(dc, oldDebugFont);
-        DeleteObject(debugFont);
     }
-#endif
+    if (!bodyOnly) paintSettingsScrollbar(hwnd, dc, ui(layout.contentBottom));
+
 }
 
 void paintSettings(HWND hwnd, HDC dc) {
@@ -6589,6 +6801,7 @@ void paintSettings(HWND hwnd, HDC dc) {
 }
 
 void paintPopupContent(HWND hwnd, HDC dc) {
+    configureTextRendering(dc);
     RECT client{};
     GetClientRect(hwnd, &client);
     COLORREF background = settingsThemeColor(RGB(242, 244, 247), RGB(38, 42, 48));
@@ -6945,6 +7158,10 @@ bool shortcutBindingsEqual(const ShortcutBinding& first, const ShortcutBinding& 
     return first.modifiers == second.modifiers && first.virtualKey == second.virtualKey;
 }
 
+bool shortcutBindingIsEmpty(const ShortcutBinding& binding) {
+    return binding.virtualKey == 0;
+}
+
 ShortcutConflict findShortcutConflict(const Settings& settings, int targetId) {
     std::vector<int> ids(shortcutSettingIds().begin(), shortcutSettingIds().end());
     if (settings.winV) ids.push_back(kSettingWinV);
@@ -6954,7 +7171,8 @@ ShortcutConflict findShortcutConflict(const Settings& settings, int targetId) {
         for (const int id : ids) {
             if (id == targetId) continue;
             const ShortcutBinding* binding = shortcutBindingForConflict(settings, id);
-            if (binding && shortcutBindingsEqual(*target, *binding)) {
+            if (binding && !shortcutBindingIsEmpty(*target) &&
+                !shortcutBindingIsEmpty(*binding) && shortcutBindingsEqual(*target, *binding)) {
                 return {targetId, id};
             }
         }
@@ -6962,10 +7180,10 @@ ShortcutConflict findShortcutConflict(const Settings& settings, int targetId) {
     }
     for (std::size_t firstIndex = 0; firstIndex < ids.size(); ++firstIndex) {
         const ShortcutBinding* first = shortcutBindingForConflict(settings, ids[firstIndex]);
-        if (!first) continue;
+        if (!first || shortcutBindingIsEmpty(*first)) continue;
         for (std::size_t secondIndex = firstIndex + 1; secondIndex < ids.size(); ++secondIndex) {
             const ShortcutBinding* second = shortcutBindingForConflict(settings, ids[secondIndex]);
-            if (second && shortcutBindingsEqual(*first, *second)) {
+            if (second && !shortcutBindingIsEmpty(*second) && shortcutBindingsEqual(*first, *second)) {
                 return {ids[firstIndex], ids[secondIndex]};
             }
         }
@@ -6999,6 +7217,7 @@ std::wstring shortcutKeyName(UINT virtualKey) {
 }
 
 std::wstring formatShortcut(const ShortcutBinding& binding) {
+    if (shortcutBindingIsEmpty(binding)) return tr(L"Not set", L"未设置");
     std::wstring result;
     if (binding.modifiers & MOD_CONTROL) result += L"Ctrl + ";
     if (binding.modifiers & MOD_ALT) result += L"Alt + ";
@@ -7041,7 +7260,7 @@ void refreshSettingsShortcutControls(HWND hwnd) {
                        kSettingShortcutClosePopup, kSettingShortcutPopupSettings,
                        kSettingShortcutClearFilter, kSettingShortcutDelete};
     for (const int id : ids) {
-        HWND control = GetDlgItem(hwnd, id);
+        HWND control = settingsControl(hwnd, id);
         ShortcutBinding* binding = settingsShortcutBinding(g_app->settingsData, id);
         if (control && binding) SetWindowTextW(control, formatShortcut(*binding).c_str());
     }
@@ -7089,6 +7308,19 @@ void captureSettingsShortcut(HWND hwnd, HWND control, UINT virtualKey) {
         cancelSettingsShortcutCapture(hwnd);
         return;
     }
+    if (virtualKey == VK_DELETE || virtualKey == VK_BACK) {
+        ShortcutBinding* binding = settingsShortcutBinding(g_app->settingsData, GetDlgCtrlID(control));
+        if (!binding) return;
+        binding->modifiers = 0;
+        binding->virtualKey = 0;
+        g_app->shortcutConflictFeedback.clear();
+        g_app->shortcutCaptureControl = nullptr;
+        registerHotkeys();
+        refreshSettingsShortcutControls(hwnd);
+        saveSettings(g_app->settingsData);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
+    }
     if (isShortcutModifierKey(virtualKey)) return;
     const UINT modifiers = shortcutModifiersFromKeyboard();
     const int id = GetDlgCtrlID(control);
@@ -7126,21 +7358,25 @@ void captureSettingsShortcut(HWND hwnd, HWND control, UINT virtualKey) {
 }
 
 void createSettingsControlsModern(HWND hwnd) {
-    auto createToggle = [hwnd](int id, int x, int y, bool checked) {
+    HWND parent = g_app->settingsBodyContent ? g_app->settingsBodyContent : hwnd;
+    auto createToggle = [parent](int id, int x, int y, bool checked) {
         HWND control = CreateWindowW(L"BUTTON", L"",
                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP |
                                          BS_CHECKBOX | BS_OWNERDRAW,
-                                      ui(x), ui(y), ui(kSettingsToggleWidth), ui(kSettingsToggleHeight), hwnd,
+                                     ui(x - kSettingsSidebarWidth),
+                                     ui(y - kSettingsHeaderHeight),
+                                     ui(kSettingsToggleWidth), ui(kSettingsToggleHeight), parent,
                                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
                                      GetModuleHandleW(nullptr), nullptr);
         SendMessageW(control, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
         setSettingsToggleValue(control, checked);
         return control;
     };
-    auto createShortcut = [hwnd](int id, int y, const ShortcutBinding& binding) {
+    auto createShortcut = [parent](int id, int y, const ShortcutBinding& binding) {
         HWND control = CreateWindowW(L"BUTTON", formatShortcut(binding).c_str(),
                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                                     ui(520), ui(y), ui(150), ui(30), hwnd,
+                                     ui(520 - kSettingsSidebarWidth),
+                                     ui(y - kSettingsHeaderHeight), ui(150), ui(30), parent,
                                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
                                      GetModuleHandleW(nullptr), nullptr);
         return control;
@@ -7174,7 +7410,8 @@ void createSettingsControlsModern(HWND hwnd) {
 
     HWND language = CreateWindowW(L"STATIC", L"",
                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | SS_NOTIFY,
-                                  ui(520), ui(147), ui(180), ui(30), hwnd,
+                                   ui(520 - kSettingsSidebarWidth),
+                                   ui(147 - kSettingsHeaderHeight), ui(180), ui(30), parent,
                                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingLanguage)),
                                   GetModuleHandleW(nullptr), nullptr);
     const int languageSelection = g_app->settingsData.language < 0
@@ -7185,37 +7422,43 @@ void createSettingsControlsModern(HWND hwnd) {
     swprintf_s(value, L"%d", g_app->settingsData.maxItems);
     CreateWindowExW(0, L"EDIT", value,
                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
-                     ui(520), ui(112), ui(150), ui(30), hwnd,
+                     ui(520 - kSettingsSidebarWidth),
+                     ui(112 - kSettingsHeaderHeight), ui(150), ui(30), parent,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingMaxItems)),
                     GetModuleHandleW(nullptr), nullptr);
     swprintf_s(value, L"%d", g_app->settingsData.retentionDays);
     CreateWindowExW(0, L"EDIT", value,
                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
-                     ui(520), ui(147), ui(150), ui(30), hwnd,
+                     ui(520 - kSettingsSidebarWidth),
+                     ui(147 - kSettingsHeaderHeight), ui(150), ui(30), parent,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingRetentionDays)),
                     GetModuleHandleW(nullptr), nullptr);
     swprintf_s(value, L"%d", g_app->settingsData.maxDiskMb);
     CreateWindowExW(0, L"EDIT", value,
                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
-                     ui(520), ui(182), ui(150), ui(30), hwnd,
+                     ui(520 - kSettingsSidebarWidth),
+                     ui(182 - kSettingsHeaderHeight), ui(150), ui(30), parent,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingMaxDiskMb)),
                     GetModuleHandleW(nullptr), nullptr);
     swprintf_s(value, L"%d", g_app->settingsData.maxContentMb);
     CreateWindowExW(0, L"EDIT", value,
                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
-                     ui(520), ui(217), ui(150), ui(30), hwnd,
+                     ui(520 - kSettingsSidebarWidth),
+                     ui(217 - kSettingsHeaderHeight), ui(150), ui(30), parent,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingMaxContentMb)),
                     GetModuleHandleW(nullptr), nullptr);
     const std::wstring dataDirectory = g_app->settingsData.dataDirectory.empty()
         ? clipLiteDataDirectory() : utf8ToWide(g_app->settingsData.dataDirectory);
     CreateWindowExW(0, L"EDIT", dataDirectory.c_str(),
                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL,
-                    ui(520), ui(252), ui(360), ui(30), hwnd,
+                     ui(520 - kSettingsSidebarWidth),
+                     ui(252 - kSettingsHeaderHeight), ui(360), ui(30), parent,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingDataDirectory)),
                     GetModuleHandleW(nullptr), nullptr);
     CreateWindowW(L"BUTTON", settingsLocale().browse,
                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                  ui(888), ui(252), ui(64), ui(30), hwnd,
+                   ui(888 - kSettingsSidebarWidth),
+                   ui(252 - kSettingsHeaderHeight), ui(64), ui(30), parent,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingBrowseDataDirectory)),
                   GetModuleHandleW(nullptr), nullptr);
 
@@ -7226,13 +7469,15 @@ void createSettingsControlsModern(HWND hwnd) {
     }
     CreateWindowExW(0, L"EDIT", ignoredApps.c_str(),
                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL,
-                     ui(520), ui(151), ui(150), ui(60), hwnd,
+                     ui(520 - kSettingsSidebarWidth),
+                     ui(151 - kSettingsHeaderHeight), ui(150), ui(60), parent,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingIgnoredApps)),
                     GetModuleHandleW(nullptr), nullptr);
     swprintf_s(value, L"%d", g_app->settingsData.sensitiveExpiryHours);
     CreateWindowExW(0, L"EDIT", value,
                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
-                     ui(520), ui(235), ui(150), ui(30), hwnd,
+                     ui(520 - kSettingsSidebarWidth),
+                     ui(235 - kSettingsHeaderHeight), ui(150), ui(30), parent,
                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingSensitiveExpiry)),
                      GetModuleHandleW(nullptr), nullptr);
     for (int i = 0; i < kStorageCategoryCount; ++i) {
@@ -7240,19 +7485,23 @@ void createSettingsControlsModern(HWND hwnd) {
         swprintf_s(value, L"%d", limit.maxItems);
         CreateWindowExW(0, L"EDIT", value,
                         WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
-                        ui(520), ui(285 + i * 48), ui(70), ui(30), hwnd,
+                         ui(520 - kSettingsSidebarWidth),
+                         ui(285 + i * 48 - kSettingsHeaderHeight), ui(70), ui(30), parent,
                         reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingCategoryMaxBase + i)),
                         GetModuleHandleW(nullptr), nullptr);
         swprintf_s(value, L"%d", limit.maxDiskMb);
         CreateWindowExW(0, L"EDIT", value,
                         WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL | ES_NUMBER,
-                        ui(598), ui(285 + i * 48), ui(70), ui(30), hwnd,
+                         ui(598 - kSettingsSidebarWidth),
+                         ui(285 + i * 48 - kSettingsHeaderHeight), ui(70), ui(30), parent,
                         reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingCategoryDiskBase + i)),
                         GetModuleHandleW(nullptr), nullptr);
     }
 
     CreateWindowW(L"BUTTON", settingsLocale().clearHistory,
-                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, ui(232), ui(360), ui(120), ui(30), hwnd,
+                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                   ui(232 - kSettingsSidebarWidth), ui(360 - kSettingsHeaderHeight),
+                   ui(120), ui(30), parent,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingClear)),
                   GetModuleHandleW(nullptr), nullptr);
     const int clearIds[] = {kSettingClearText, kSettingClearImage, kSettingClearFiles};
@@ -7261,21 +7510,28 @@ void createSettingsControlsModern(HWND hwnd) {
     };
     for (int i = 0; i < kStorageCategoryCount; ++i) {
         CreateWindowW(L"BUTTON", clearLabels[i],
-                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, ui(232 + i * 82), ui(324),
-                      ui(84), ui(26), hwnd,
+                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                      ui(232 + i * 82 - kSettingsSidebarWidth),
+                      ui(324 - kSettingsHeaderHeight), ui(84), ui(26), parent,
                       reinterpret_cast<HMENU>(static_cast<INT_PTR>(clearIds[i])),
                       GetModuleHandleW(nullptr), nullptr);
     }
     CreateWindowW(L"BUTTON", settingsLocale().openLog,
-                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, ui(520), ui(298), ui(150), ui(30), hwnd,
+                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                   ui(520 - kSettingsSidebarWidth), ui(298 - kSettingsHeaderHeight),
+                   ui(150), ui(30), parent,
                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingOpenLog)),
                    GetModuleHandleW(nullptr), nullptr);
     CreateWindowW(L"BUTTON", settingsLocale().supportAuthor,
-                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, ui(520), ui(338), ui(150), ui(30), hwnd,
+                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                   ui(520 - kSettingsSidebarWidth), ui(338 - kSettingsHeaderHeight),
+                   ui(150), ui(30), parent,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingSupportAuthor)),
                   GetModuleHandleW(nullptr), nullptr);
     CreateWindowW(L"BUTTON", settingsLocale().joinQqGroup,
-                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, ui(520), ui(378), ui(150), ui(30), hwnd,
+                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                   ui(520 - kSettingsSidebarWidth), ui(378 - kSettingsHeaderHeight),
+                   ui(150), ui(30), parent,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingJoinQqGroup)),
                   GetModuleHandleW(nullptr), nullptr);
 }
@@ -7283,19 +7539,19 @@ void createSettingsControlsModern(HWND hwnd) {
 void refreshSettingsLocalizedControls(HWND hwnd) {
     if (!hwnd) return;
     SetWindowTextW(hwnd, settingsLocale().windowTitle);
-    if (HWND browse = GetDlgItem(hwnd, kSettingBrowseDataDirectory)) {
+    if (HWND browse = settingsControl(hwnd, kSettingBrowseDataDirectory)) {
         SetWindowTextW(browse, settingsLocale().browse);
     }
-    if (HWND clear = GetDlgItem(hwnd, kSettingClear)) {
+    if (HWND clear = settingsControl(hwnd, kSettingClear)) {
         SetWindowTextW(clear, settingsLocale().clearHistory);
     }
-    if (HWND openLog = GetDlgItem(hwnd, kSettingOpenLog)) {
+    if (HWND openLog = settingsControl(hwnd, kSettingOpenLog)) {
         SetWindowTextW(openLog, settingsLocale().openLog);
     }
-    if (HWND support = GetDlgItem(hwnd, kSettingSupportAuthor)) {
+    if (HWND support = settingsControl(hwnd, kSettingSupportAuthor)) {
         SetWindowTextW(support, settingsLocale().supportAuthor);
     }
-    if (HWND qq = GetDlgItem(hwnd, kSettingJoinQqGroup)) {
+    if (HWND qq = settingsControl(hwnd, kSettingJoinQqGroup)) {
         SetWindowTextW(qq, settingsLocale().joinQqGroup);
     }
     const int clearIds[] = {kSettingClearText, kSettingClearImage, kSettingClearFiles};
@@ -7303,7 +7559,7 @@ void refreshSettingsLocalizedControls(HWND hwnd) {
         settingsLocale().clearText, settingsLocale().clearImages, settingsLocale().clearFiles
     };
     for (int i = 0; i < kStorageCategoryCount; ++i) {
-        if (HWND clear = GetDlgItem(hwnd, clearIds[i])) {
+        if (HWND clear = settingsControl(hwnd, clearIds[i])) {
             SetWindowTextW(clear, clearLabels[i]);
         }
     }
@@ -7341,48 +7597,29 @@ void updateSettingsTabControls(HWND hwnd, bool redraw = true) {
     const bool tabChanged = g_app->settingsControlsTab != g_app->settingsTab;
     if (tabChanged) {
         for (const int id : ids) {
-            if (HWND control = GetDlgItem(hwnd, id)) ShowWindow(control, SW_HIDE);
+            if (HWND control = settingsControl(hwnd, id)) ShowWindow(control, SW_HIDE);
         }
         g_app->settingsControlsTab = g_app->settingsTab;
     }
-    RECT client{};
-    GetClientRect(hwnd, &client);
-    const int bodyTop = ui(kSettingsHeaderHeight);
-    const int scrollOffset = (g_app->settingsTab == 0 ||
-                              g_app->settingsTab == kSettingsShortcutPage ||
-                              g_app->settingsTab == 2)
-        ? ui(g_app->settingsScrollOffset) : 0;
-    struct SettingsControlClip {
-        HWND control = nullptr;
-        int top = 0;
-        int width = 0;
-        int height = 0;
-        bool visible = false;
-        bool fixed = false;
-    };
-    std::vector<SettingsControlClip> controlClips;
     std::vector<HWND> changedControls;
     HDWP defer = BeginDeferWindowPos(static_cast<int>(sizeof(ids) / sizeof(ids[0])));
-    auto show = [&, hwnd, client, bodyTop, scrollOffset, tabChanged](int id, int x, int y,
-                                                                   int width, int height,
-                                                                   bool fixed = false) {
-        HWND control = GetDlgItem(hwnd, id);
+    auto show = [&, hwnd, tabChanged](int id, int x, int y,
+                                                      int width, int height) {
+        HWND control = settingsControl(hwnd, id);
         if (!control) return;
         wchar_t className[32]{};
         GetClassNameW(control, className, static_cast<int>(sizeof(className) / sizeof(className[0])));
         const bool edit = std::wcscmp(className, L"Edit") == 0;
-        const int top = ui(y) - (fixed ? 0 : scrollOffset);
-        const int scaledWidth = ui(width);
-        const int scaledHeight = ui(height);
-        const bool visible = fixed || (top < client.bottom && top + scaledHeight > bodyTop);
-        controlClips.push_back(SettingsControlClip{control, top, scaledWidth, scaledHeight,
-                                                   visible, fixed});
+        const int left = x - kSettingsSidebarWidth;
+        const int top = y - kSettingsHeaderHeight;
+        const bool visible = true;
         RECT current{};
         GetWindowRect(control, &current);
-        MapWindowPoints(nullptr, hwnd, reinterpret_cast<POINT*>(&current), 2);
+        MapWindowPoints(nullptr, g_app->settingsBodyContent,
+                        reinterpret_cast<POINT*>(&current), 2);
         const bool resized = current.right - current.left != ui(width) ||
             current.bottom - current.top != ui(height);
-        const bool moved = current.left != ui(x) || current.top != top;
+        const bool moved = current.left != ui(left) || current.top != ui(top);
         if (moved || resized || static_cast<bool>(IsWindowVisible(control)) != visible) {
             changedControls.push_back(control);
             UINT flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOREDRAW;
@@ -7391,7 +7628,7 @@ void updateSettingsTabControls(HWND hwnd, bool redraw = true) {
             if (visible) flags |= SWP_SHOWWINDOW;
             else flags |= SWP_HIDEWINDOW;
             if (defer) {
-                HDWP next = DeferWindowPos(defer, control, nullptr, ui(x), top,
+                HDWP next = DeferWindowPos(defer, control, nullptr, ui(left), ui(top),
                                            ui(width), ui(height), flags);
                 if (next) {
                     defer = next;
@@ -7401,12 +7638,22 @@ void updateSettingsTabControls(HWND hwnd, bool redraw = true) {
                 }
             }
             if (!defer) {
-                SetWindowPos(control, nullptr, ui(x), top, ui(width), ui(height), flags);
+                SetWindowPos(control, nullptr, ui(left), ui(top), ui(width), ui(height), flags);
             }
         }
         if (edit && (resized || tabChanged)) configureSettingsEdit(control);
     };
     const SettingsLayout layout = buildSettingsLayout(hwnd);
+    if (g_app->settingsBodyViewport && g_app->settingsBodyContent) {
+        RECT viewport{};
+        GetClientRect(g_app->settingsBodyViewport, &viewport);
+        const int contentWidth = std::max<LONG>(0, viewport.right);
+        const int contentHeight = std::max<LONG>(
+            ui(std::max(0, layout.contentBottom - kSettingsHeaderHeight)), viewport.bottom);
+        SetWindowPos(g_app->settingsBodyContent, nullptr,
+                     0, -ui(g_app->settingsScrollOffset), contentWidth, contentHeight,
+                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW);
+    }
     for (const SettingsCardLayout& card : layout.cards) {
         for (const SettingsRowLayout& row : card.rows) {
             for (std::size_t i = 0; i < row.controlIds.size(); ++i) {
@@ -7423,21 +7670,6 @@ void updateSettingsTabControls(HWND hwnd, bool redraw = true) {
         show(kSettingJoinQqGroup, 520, 378, 150, 30);
     }
     if (defer) EndDeferWindowPos(defer);
-    for (const SettingsControlClip& clip : controlClips) {
-        if (!clip.visible || clip.fixed) {
-            SetWindowRgn(clip.control, nullptr, TRUE);
-            continue;
-        }
-        const int clipTop = std::max(0, bodyTop - clip.top);
-        const int clipBottom = std::min(clip.height,
-                                        static_cast<int>(client.bottom) - clip.top);
-        if (clipTop <= 0 && clipBottom >= clip.height) {
-            SetWindowRgn(clip.control, nullptr, TRUE);
-            continue;
-        }
-        HRGN region = CreateRectRgn(0, clipTop, clip.width, std::max(clipTop, clipBottom));
-        if (region && SetWindowRgn(clip.control, region, TRUE) == 0) DeleteObject(region);
-    }
     for (HWND control : changedControls) InvalidateRect(control, nullptr, FALSE);
     if (redraw) InvalidateRect(hwnd, nullptr, FALSE);
 }
@@ -7449,12 +7681,18 @@ void setSettingsScrollPosition(HWND hwnd, int position, int maximum = -1) {
                                 maximum >= 0 ? maximum : settingsScrollMax(hwnd));
     if (next == g_app->settingsScrollOffset) return;
     g_app->settingsScrollOffset = next;
-    updateSettingsTabControls(hwnd, false);
-    RECT client{};
-    GetClientRect(hwnd, &client);
-    const RECT body{ui(kSettingsSidebarWidth), ui(kSettingsHeaderHeight),
-                    client.right, client.bottom};
-    InvalidateRect(hwnd, &body, FALSE);
+    if (g_app->settingsBodyContent) {
+        SetWindowPos(g_app->settingsBodyContent, nullptr,
+                     0, -ui(next), 0, 0,
+                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW);
+        RedrawWindow(g_app->settingsBodyViewport, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+        RECT client{};
+        GetClientRect(hwnd, &client);
+        const RECT scrollbarRect{client.right - ui(kSettingsScrollbarReserve),
+                                 ui(kSettingsHeaderHeight), client.right, client.bottom};
+        InvalidateRect(hwnd, &scrollbarRect, FALSE);
+    }
 }
 
 void appendPasteMenu(HMENU menu, const ClipItem& item) {
@@ -7967,8 +8205,8 @@ void setPopupPreviewOptions(bool automatic, bool byKey) {
     g_app->settingsData.previewAutomatic = automatic;
     g_app->settingsData.previewByKey = byKey;
     if (g_app->settings) {
-        setSettingsToggleValue(GetDlgItem(g_app->settings, kSettingPreviewAutomatic), automatic);
-        setSettingsToggleValue(GetDlgItem(g_app->settings, kSettingPreviewByKey), byKey);
+        setSettingsToggleValue(settingsControl(g_app->settings, kSettingPreviewAutomatic), automatic);
+        setSettingsToggleValue(settingsControl(g_app->settings, kSettingPreviewByKey), byKey);
         InvalidateRect(g_app->settings, nullptr, FALSE);
     }
     if (!automatic && !byKey) hideDetailPreview();
@@ -8000,7 +8238,7 @@ void togglePopupPromotePastedItem() {
     g_app->settingsData.promotePastedItem = !g_app->settingsData.promotePastedItem;
     g_app->store.setSortByLastUsed(g_app->settingsData.promotePastedItem);
     if (g_app->settings) {
-        setSettingsToggleValue(GetDlgItem(g_app->settings, kSettingPromotePastedItem),
+        setSettingsToggleValue(settingsControl(g_app->settings, kSettingPromotePastedItem),
                                g_app->settingsData.promotePastedItem);
         InvalidateRect(g_app->settings, nullptr, FALSE);
     }
@@ -8082,9 +8320,6 @@ void updateSettingsThemeHover(int x, int y) {
     GetClientRect(g_app->settings, &client);
     const RECT headerRect{0, ui(10), client.right, ui(48)};
     InvalidateRect(g_app->settings, &headerRect, FALSE);
-    if (g_app->settingsHeaderOverlay) {
-        InvalidateRect(g_app->settingsHeaderOverlay, &headerRect, FALSE);
-    }
 }
 
 int settingsAccentAtPoint(HWND hwnd, int x, int y) {
@@ -8114,7 +8349,7 @@ void setSettingsThemeMode(HWND hwnd, int mode) {
     const bool toDark = mode == 2 || (mode == 0 && systemThemeIsDark());
     g_app->settingsData.themeMode = mode;
     g_app->settingsData.dark = toDark;
-    setSettingsToggleValue(GetDlgItem(hwnd, kSettingDark), toDark);
+    setSettingsToggleValue(settingsControl(hwnd, kSettingDark), toDark);
     if (fromDark != toDark) animateSettingsTheme(hwnd, fromDark, toDark);
     invalidateSettingsTheme(hwnd);
     refreshSettingsFrame(hwnd);
@@ -8246,7 +8481,7 @@ void browseDataDirectory(HWND hwnd) {
     if (!item) return;
     wchar_t path[MAX_PATH]{};
     if (SHGetPathFromIDListW(item, path)) {
-        SetWindowTextW(GetDlgItem(hwnd, kSettingDataDirectory), path);
+        SetWindowTextW(settingsControl(hwnd, kSettingDataDirectory), path);
         scheduleSettingsSync(hwnd);
     }
     CoTaskMemFree(item);
@@ -8261,13 +8496,13 @@ void restoreSettingsRetentionControls(HWND hwnd, const Settings& settings) {
         swprintf_s(text, L"%d", value);
         SetWindowTextW(control, text);
     };
-    setValue(GetDlgItem(hwnd, kSettingMaxItems), settings.maxItems);
-    setValue(GetDlgItem(hwnd, kSettingRetentionDays), settings.retentionDays);
-    setValue(GetDlgItem(hwnd, kSettingMaxDiskMb), settings.maxDiskMb);
+    setValue(settingsControl(hwnd, kSettingMaxItems), settings.maxItems);
+    setValue(settingsControl(hwnd, kSettingRetentionDays), settings.retentionDays);
+    setValue(settingsControl(hwnd, kSettingMaxDiskMb), settings.maxDiskMb);
     for (int i = 0; i < kStorageCategoryCount; ++i) {
         const CategoryLimit& limit = settings.categoryLimits[static_cast<std::size_t>(i)];
-        setValue(GetDlgItem(hwnd, kSettingCategoryMaxBase + i), limit.maxItems);
-        setValue(GetDlgItem(hwnd, kSettingCategoryDiskBase + i), limit.maxDiskMb);
+        setValue(settingsControl(hwnd, kSettingCategoryMaxBase + i), limit.maxItems);
+        setValue(settingsControl(hwnd, kSettingCategoryDiskBase + i), limit.maxDiskMb);
     }
     g_app->restoringSettingsControls = false;
     KillTimer(hwnd, kSettingsSyncTimer);
@@ -8310,31 +8545,31 @@ bool settingsWouldPruneExisting(const Settings& previous, const Settings& next) 
 
 bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     if (!hwnd) return false;
-    HWND win = GetDlgItem(hwnd, kSettingWinV);
-    HWND dark = GetDlgItem(hwnd, kSettingDark);
-    HWND language = GetDlgItem(hwnd, kSettingLanguage);
-    HWND pause = GetDlgItem(hwnd, kSettingPause);
-    HWND maxItems = GetDlgItem(hwnd, kSettingMaxItems);
-    HWND retentionDays = GetDlgItem(hwnd, kSettingRetentionDays);
-    HWND maxDiskMb = GetDlgItem(hwnd, kSettingMaxDiskMb);
-    HWND maxContentMb = GetDlgItem(hwnd, kSettingMaxContentMb);
-    HWND dataDirectory = GetDlgItem(hwnd, kSettingDataDirectory);
-    HWND ignoredApps = GetDlgItem(hwnd, kSettingIgnoredApps);
-    HWND sensitiveExpiry = GetDlgItem(hwnd, kSettingSensitiveExpiry);
-    HWND startup = GetDlgItem(hwnd, kSettingStartup);
-    HWND startupSettings = GetDlgItem(hwnd, kSettingStartupSettings);
-    HWND startupNotification = GetDlgItem(hwnd, kSettingStartupNotification);
-    HWND runAsAdministrator = GetDlgItem(hwnd, kSettingRunAsAdministrator);
-    HWND searchImeCompatibility = GetDlgItem(hwnd, kSettingSearchImeCompatibility);
-    HWND promotePastedItem = GetDlgItem(hwnd, kSettingPromotePastedItem);
-    HWND previewAutomatic = GetDlgItem(hwnd, kSettingPreviewAutomatic);
-    HWND previewByKey = GetDlgItem(hwnd, kSettingPreviewByKey);
-    HWND encrypt = GetDlgItem(hwnd, kSettingEncrypt);
+    HWND win = settingsControl(hwnd, kSettingWinV);
+    HWND dark = settingsControl(hwnd, kSettingDark);
+    HWND language = settingsControl(hwnd, kSettingLanguage);
+    HWND pause = settingsControl(hwnd, kSettingPause);
+    HWND maxItems = settingsControl(hwnd, kSettingMaxItems);
+    HWND retentionDays = settingsControl(hwnd, kSettingRetentionDays);
+    HWND maxDiskMb = settingsControl(hwnd, kSettingMaxDiskMb);
+    HWND maxContentMb = settingsControl(hwnd, kSettingMaxContentMb);
+    HWND dataDirectory = settingsControl(hwnd, kSettingDataDirectory);
+    HWND ignoredApps = settingsControl(hwnd, kSettingIgnoredApps);
+    HWND sensitiveExpiry = settingsControl(hwnd, kSettingSensitiveExpiry);
+    HWND startup = settingsControl(hwnd, kSettingStartup);
+    HWND startupSettings = settingsControl(hwnd, kSettingStartupSettings);
+    HWND startupNotification = settingsControl(hwnd, kSettingStartupNotification);
+    HWND runAsAdministrator = settingsControl(hwnd, kSettingRunAsAdministrator);
+    HWND searchImeCompatibility = settingsControl(hwnd, kSettingSearchImeCompatibility);
+    HWND promotePastedItem = settingsControl(hwnd, kSettingPromotePastedItem);
+    HWND previewAutomatic = settingsControl(hwnd, kSettingPreviewAutomatic);
+    HWND previewByKey = settingsControl(hwnd, kSettingPreviewByKey);
+    HWND encrypt = settingsControl(hwnd, kSettingEncrypt);
     HWND categoryMax[kStorageCategoryCount]{};
     HWND categoryDisk[kStorageCategoryCount]{};
     for (int i = 0; i < kStorageCategoryCount; ++i) {
-        categoryMax[i] = GetDlgItem(hwnd, kSettingCategoryMaxBase + i);
-        categoryDisk[i] = GetDlgItem(hwnd, kSettingCategoryDiskBase + i);
+        categoryMax[i] = settingsControl(hwnd, kSettingCategoryMaxBase + i);
+        categoryDisk[i] = settingsControl(hwnd, kSettingCategoryDiskBase + i);
     }
     if (!win || !dark || !language || !pause || !maxItems || !retentionDays || !maxDiskMb ||
         !maxContentMb || !dataDirectory || !ignoredApps || !sensitiveExpiry || !startup ||
@@ -8549,8 +8784,12 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
         InvalidateRect(hwnd, nullptr, FALSE);
     }
     saveSettings(g_app->settingsData);
-    if (adminModeChanged && g_app->settingsData.runAsAdministrator && !processIsElevated()) {
-        if (!launchElevatedRestart(L"--elevated-restart --settings")) {
+    if (adminModeChanged && g_app->settingsData.runAsAdministrator) {
+        if (processIsElevated()) {
+            if (!registerElevatedTask()) {
+                appendDiagnosticLog("WARN", "admin: unable to register elevated task");
+            }
+        } else if (!launchElevatedRestart(L"--elevated-restart --settings")) {
             g_app->settingsData.runAsAdministrator = false;
             setSettingsToggleValue(runAsAdministrator, false);
             saveSettings(g_app->settingsData);
@@ -8559,7 +8798,11 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
                         L"ClipLite", MB_OK | MB_ICONWARNING);
             return false;
         }
-        PostQuitMessage(0);
+        if (!processIsElevated()) PostQuitMessage(0);
+    } else if (adminModeChanged && !g_app->settingsData.runAsAdministrator && processIsElevated()) {
+        if (!unregisterElevatedTask()) {
+            appendDiagnosticLog("WARN", "admin: unable to remove elevated task");
+        }
     }
     return true;
 }
@@ -8687,8 +8930,8 @@ void animateSettingsToggle(HWND hwnd) {
     g_app->toggleAnimationTo = target ? 1.0f : 0.0f;
     g_app->toggleAnimationStartTicks = settingsToggleClock();
     setSettingsToggleValue(hwnd, target);
-    if (HWND parent = GetParent(hwnd)) {
-        SetTimer(parent, kSettingsToggleTimer, 8, nullptr);
+    if (HWND settings = settingsWindowFromControl(hwnd)) {
+        SetTimer(settings, kSettingsToggleTimer, 8, nullptr);
     }
     InvalidateRect(hwnd, nullptr, FALSE);
 }
@@ -8706,7 +8949,7 @@ float languageDropdownProgress() {
 
 void positionLanguageDropdown(HWND settings, float progress) {
     if (!g_app->languageDropdown) return;
-    HWND combo = GetDlgItem(settings, kSettingLanguage);
+    HWND combo = settingsControl(settings, kSettingLanguage);
     if (!combo) return;
     RECT comboRect{};
     GetWindowRect(combo, &comboRect);
@@ -8735,7 +8978,7 @@ void toggleLanguageDropdown(HWND settings) {
         g_app->languageDropdownFrom = 0.0f;
         g_app->languageDropdownTo = 1.0f;
         g_app->languageDropdownStartTicks = settingsToggleClock();
-        HWND combo = GetDlgItem(settings, kSettingLanguage);
+        HWND combo = settingsControl(settings, kSettingLanguage);
         if (!combo) return;
         RECT comboRect{};
         GetWindowRect(combo, &comboRect);
@@ -8981,10 +9224,8 @@ void drawSettingsButton(const DRAWITEMSTRUCT& item) {
     drawGdiRoundedSurface(item.hDC, buttonRect, background, border, 7);
     wchar_t label[256]{};
     GetWindowTextW(item.hwndItem, label, static_cast<int>(sizeof(label) / sizeof(label[0])));
-    SetBkMode(item.hDC, TRANSPARENT);
-    SetTextColor(item.hDC, text);
-    DrawTextW(item.hDC, label, -1, &buttonRect,
-              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    drawSettingsText(item.hDC, g_app->settingsBodyFont, label, buttonRect, text,
+                     DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     if (focused && !highContrast) {
         RECT focusRect = buttonRect;
         InflateRect(&focusRect, -ui(3), -ui(3));
@@ -9007,12 +9248,12 @@ void drawSettingsShortcut(const DRAWITEMSTRUCT& item) {
     drawGdiRoundedSurface(item.hDC, item.rcItem, background, border, 6);
     wchar_t label[128]{};
     GetWindowTextW(item.hwndItem, label, static_cast<int>(sizeof(label) / sizeof(label[0])));
-    SetBkMode(item.hDC, TRANSPARENT);
-    SetTextColor(item.hDC, conflicted ? settingsThemeColor(RGB(185, 28, 28), RGB(248, 160, 160)) :
-                 (capturing ? settingsAccentColor() :
-                              settingsThemeColor(settingsAccentColor(), RGB(238, 241, 245))));
-    DrawTextW(item.hDC, label, -1, const_cast<RECT*>(&item.rcItem),
-              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    const COLORREF shortcutText = conflicted
+        ? settingsThemeColor(RGB(185, 28, 28), RGB(248, 160, 160))
+        : (capturing ? settingsAccentColor()
+                     : settingsThemeColor(settingsAccentColor(), RGB(238, 241, 245)));
+    drawSettingsText(item.hDC, g_app->settingsBodyFont, label, item.rcItem, shortcutText,
+                     DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 }
 
 void drawSettingsLanguage(const DRAWITEMSTRUCT& item) {
@@ -9029,11 +9270,10 @@ void drawSettingsLanguage(const DRAWITEMSTRUCT& item) {
         ? static_cast<int>(SendMessageW(item.hwndItem, CB_GETCURSEL, 0, 0))
         : static_cast<int>(item.itemID);
     if (index >= 0) SendMessageW(item.hwndItem, CB_GETLBTEXT, index, reinterpret_cast<LPARAM>(value));
-    SetBkMode(item.hDC, TRANSPARENT);
-    SetTextColor(item.hDC, text);
     RECT textRect = item.rcItem;
     textRect.left += ui(8);
-    DrawTextW(item.hDC, value, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    drawSettingsText(item.hDC, g_app->settingsBodyFont, value, textRect, text,
+                     DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 }
 
 int languageDropdownRowAt(int y) {
@@ -9096,7 +9336,7 @@ void paintLanguageDropdown(HWND hwnd, HDC dc) {
         for (int row = 0; row < 3; ++row) {
             if (row * ui(30) >= renderHeight) break;
             const bool active = row == settingsLanguageSelection(
-                GetDlgItem(g_app->settings, kSettingLanguage));
+                settingsControl(g_app->settings, kSettingLanguage));
             const bool hovered = row == g_app->languageDropdownHover;
             if (!active && !hovered) continue;
             const BYTE alpha = active ? 42 : 24;
@@ -9115,7 +9355,7 @@ void paintLanguageDropdown(HWND hwnd, HDC dc) {
     SetBkMode(renderDc, TRANSPARENT);
     const wchar_t* labels[] = {settingsLocale().autoLanguage, L"English", L"简体中文"};
     const int selected = settingsLanguageSelection(
-        GetDlgItem(g_app->settings, kSettingLanguage));
+                settingsControl(g_app->settings, kSettingLanguage));
     for (int row = 0; row < 3; ++row) {
         if (row * ui(30) >= renderHeight) break;
         RECT rowRect{ui(10), ui(row * 30 + 3), contentWidth - ui(30), ui(row * 30 + 27)};
@@ -9139,6 +9379,7 @@ void paintLanguageDropdown(HWND hwnd, HDC dc) {
 }
 
 void paintSettingsLanguageCombo(HWND hwnd, HDC dc) {
+    configureTextRendering(dc);
     RECT client{};
     GetClientRect(hwnd, &client);
     const int width = client.right - client.left;
@@ -9218,6 +9459,7 @@ void paintSettingsLanguageCombo(HWND hwnd, HDC dc) {
 }
 
 void paintSettingsEdit(HWND hwnd, HDC dc, WNDPROC oldProc) {
+    configureTextRendering(dc);
     RECT client{};
     GetClientRect(hwnd, &client);
     const int width = client.right - client.left;
@@ -9397,7 +9639,7 @@ void paintSettingsEditBorders(HWND hwnd, HDC dc) {
                        kSettingMaxContentMb, kSettingIgnoredApps, kSettingSensitiveExpiry};
     const bool highContrast = highContrastEnabled();
     for (const int id : ids) {
-        HWND edit = GetDlgItem(hwnd, id);
+        HWND edit = settingsControl(hwnd, id);
         RECT rect{};
         if (!settingsEditBorderRect(edit, hwnd, rect)) continue;
         const bool focused = GetFocus() == edit;
@@ -9488,6 +9730,7 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
     const WNDPROC oldProc = reinterpret_cast<WNDPROC>(GetPropW(hwnd, L"ClipLiteOldProc"));
     if (!oldProc) return DefWindowProcW(hwnd, message, wParam, lParam);
     const int id = GetDlgCtrlID(hwnd);
+    HWND settings = settingsWindowFromControl(hwnd);
     wchar_t className[32]{};
     GetClassNameW(hwnd, className, static_cast<int>(sizeof(className) / sizeof(className[0])));
     if (std::wcscmp(className, L"Edit") == 0 && message == WM_ERASEBKGND) {
@@ -9497,20 +9740,21 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
     if (id == kSettingLanguage && message == WM_ERASEBKGND) return 1;
     if (isSettingsShortcut(id)) {
         if (message == WM_LBUTTONDOWN) {
-            beginSettingsShortcutCapture(GetParent(hwnd), hwnd);
+            beginSettingsShortcutCapture(settings, hwnd);
             return 0;
         }
         if (message == WM_KEYDOWN || message == WM_SYSKEYDOWN) {
-            captureSettingsShortcut(GetParent(hwnd), hwnd, static_cast<UINT>(wParam));
+            captureSettingsShortcut(settings, hwnd, static_cast<UINT>(wParam));
             return 0;
         }
         if (message == WM_KILLFOCUS && g_app->shortcutCaptureControl == hwnd) {
-            cancelSettingsShortcutCapture(GetParent(hwnd));
-            return 0;
+            const LRESULT result = CallWindowProcW(oldProc, hwnd, message, wParam, lParam);
+            cancelSettingsShortcutCapture(settings);
+            return result;
         }
     }
     if (message == WM_MOUSEWHEEL && id != kSettingIgnoredApps) {
-        SendMessageW(GetParent(hwnd), message, wParam, lParam);
+        if (settings) SendMessageW(settings, message, wParam, lParam);
         return 0;
     }
     if (std::wcscmp(className, L"Edit") == 0 && id != kSettingIgnoredApps) {
@@ -9533,13 +9777,13 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
     if (id == kSettingLanguage && message == WM_LBUTTONDOWN) {
         SendMessageW(hwnd, CB_SHOWDROPDOWN, FALSE, 0);
         SetFocus(hwnd);
-        toggleLanguageDropdown(GetParent(hwnd));
+        toggleLanguageDropdown(settings);
         return 0;
     }
     if (id == kSettingLanguage && message == WM_LBUTTONDBLCLK) {
         SendMessageW(hwnd, CB_SHOWDROPDOWN, FALSE, 0);
         SetFocus(hwnd);
-        toggleLanguageDropdown(GetParent(hwnd));
+        toggleLanguageDropdown(settings);
         return 0;
     }
     if (id == kSettingLanguage &&
@@ -9550,11 +9794,11 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
     if (id == kSettingLanguage && message == WM_KEYDOWN &&
         (wParam == VK_SPACE || wParam == VK_RETURN || wParam == VK_DOWN || wParam == VK_F4)) {
         SendMessageW(hwnd, CB_SHOWDROPDOWN, FALSE, 0);
-        toggleLanguageDropdown(GetParent(hwnd));
+        toggleLanguageDropdown(settings);
         return 0;
     }
     if (message == WM_LBUTTONDOWN && g_app->languageDropdown) {
-        animateLanguageDropdown(GetParent(hwnd), 0.0f);
+        animateLanguageDropdown(settings, 0.0f);
     }
     if (message == WM_MOUSEMOVE) {
         SetCursor(std::wcscmp(className, L"Edit") == 0
@@ -9562,7 +9806,7 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
         if (g_app->hoveredSettingsControl != id) {
             const int previous = g_app->hoveredSettingsControl;
             g_app->hoveredSettingsControl = id;
-            if (previous != 0) invalidateSettingsEditBorder(GetDlgItem(GetParent(hwnd), previous));
+            if (previous != 0) invalidateSettingsEditBorder(settingsControl(settings, previous));
             invalidateSettingsEditBorder(hwnd);
             InvalidateRect(hwnd, nullptr, FALSE);
         }
@@ -9593,7 +9837,7 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
                 long maximum = 0;
                 if (settingsNumericEditRange(id, minimum, maximum)) {
                     normalizeSettingsNumericEdit(hwnd);
-                    if (!g_app->settingsClosing) scheduleSettingsSync(GetParent(hwnd));
+                    if (!g_app->settingsClosing) scheduleSettingsSync(settings);
                 }
             }
             configureSettingsEdit(hwnd);
@@ -9611,7 +9855,8 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
 }
 
 void subclassSettingsControls(HWND hwnd) {
-    for (HWND child = GetWindow(hwnd, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
+    HWND root = g_app->settingsBodyContent ? g_app->settingsBodyContent : hwnd;
+    for (HWND child = GetWindow(root, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
         wchar_t className[32]{};
         GetClassNameW(child, className, static_cast<int>(sizeof(className) / sizeof(className[0])));
         if (std::wcscmp(className, L"Button") != 0 &&
@@ -9824,38 +10069,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
     }
-    if (g_app && hwnd == g_app->settingsHeaderOverlay) {
-        if (message == WM_NCHITTEST) return HTTRANSPARENT;
-        if (message == WM_ERASEBKGND) return 1;
-        if (message == WM_PAINT) {
-            PAINTSTRUCT ps{};
-            HDC dc = BeginPaint(hwnd, &ps);
-            if (dc && g_app->settings) paintSettingsContent(g_app->settings, dc);
-            EndPaint(hwnd, &ps);
-            return 0;
-        }
-        if (message == WM_MOUSEMOVE || message == WM_MOUSELEAVE ||
-            message == WM_SETCURSOR || message == WM_LBUTTONDOWN ||
-            message == WM_LBUTTONUP || message == WM_MOUSEWHEEL) {
-            if (message == WM_MOUSEMOVE) {
-                TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};
-                TrackMouseEvent(&tracking);
-                POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-                MapWindowPoints(hwnd, g_app->settings, &point, 1);
-                updateSettingsThemeHover(point.x, point.y);
-            } else if (message == WM_MOUSELEAVE) {
-                updateSettingsThemeHover(-1, -1);
-            }
-            const LRESULT result = g_app->settings
-                ? SendMessageW(g_app->settings, message, wParam, lParam)
-                : DefWindowProcW(hwnd, message, wParam, lParam);
-            return result;
-        }
-        if (message == WM_NCDESTROY) {
-            g_app->settingsHeaderOverlay = nullptr;
-            return 0;
-        }
-    }
     if (hwnd == g_app->settings && message == WM_DRAWITEM) {
         const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
         if (item && item->CtlType == ODT_BUTTON && isSettingsToggle(GetDlgCtrlID(item->hwndItem))) {
@@ -9875,6 +10088,42 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return TRUE;
         }
     }
+    if (g_app && (hwnd == g_app->settingsBodyViewport || hwnd == g_app->settingsBodyContent)) {
+        if (message == WM_ERASEBKGND) return 1;
+        if (message == WM_LBUTTONDOWN && g_app->settings) {
+            SetFocus(g_app->settings);
+            if (g_app->languageDropdown) animateLanguageDropdown(g_app->settings, 0.0f);
+            return 0;
+        }
+        if (message == WM_PAINT) {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd, &ps);
+            if (dc) {
+                if (hwnd == g_app->settingsBodyContent && g_app->settings) {
+                    paintSettingsContent(g_app->settings, dc, true);
+                } else {
+                    RECT client{};
+                    GetClientRect(hwnd, &client);
+                    const COLORREF background = settingsThemeColor(
+                        RGB(240, 244, 248), RGB(21, 26, 34));
+                    HBRUSH brush = CreateSolidBrush(background);
+                    FillRect(dc, &client, brush);
+                    DeleteObject(brush);
+                }
+            }
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        if (message == WM_MOUSEWHEEL && g_app->settings) {
+            return SendMessageW(g_app->settings, message, wParam, lParam);
+        }
+    }
+    if ((hwnd == g_app->settingsBodyContent || hwnd == g_app->settingsBodyViewport) &&
+        (message == WM_COMMAND || message == WM_DRAWITEM || message == WM_MEASUREITEM ||
+         message == WM_CTLCOLORSTATIC || message == WM_CTLCOLOREDIT ||
+         message == WM_CTLCOLORBTN || message == WM_CTLCOLORLISTBOX)) {
+        return g_app->settings ? SendMessageW(g_app->settings, message, wParam, lParam) : 0;
+    }
     if (hwnd == g_app->settings && message == WM_MEASUREITEM) {
         auto* measure = reinterpret_cast<MEASUREITEMSTRUCT*>(lParam);
         if (measure && measure->CtlType == ODT_COMBOBOX && measure->CtlID == kSettingLanguage) {
@@ -9886,11 +10135,13 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         wchar_t className[64]{};
         GetClassNameW(hwnd, className, 64);
         if (std::wcscmp(className, L"ClipLiteSettings") == 0) {
+            const UINT windowDpi = GetDpiForWindow(hwnd);
+            if (windowDpi != 0) g_uiDpi = windowDpi;
             g_app->settingsControlsTab = -1;
-            g_app->settingsFont = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            g_app->settingsFont = CreateFontW(-ui(15), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-            g_app->settingsMultilineFont = CreateFontW(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            g_app->settingsMultilineFont = CreateFontW(-ui(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                                        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                                        CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
             createSettingsPaintFonts();
@@ -9904,32 +10155,43 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             g_app->settingsBackgroundBrush = CreateSolidBrush(background);
             g_app->settingsCardBrush = CreateSolidBrush(card);
             g_app->settingsInputBrush = CreateSolidBrush(input);
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            g_app->settingsBodyViewport = CreateWindowExW(
+                0, L"ClipLiteSettingsViewport", L"",
+                WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+                ui(kSettingsSidebarWidth), ui(kSettingsHeaderHeight),
+                 std::max<LONG>(0, client.right - ui(kSettingsSidebarWidth + kSettingsScrollbarReserve)),
+                std::max<LONG>(0, client.bottom - ui(kSettingsHeaderHeight)),
+                hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+            if (g_app->settingsBodyViewport) {
+                g_app->settingsBodyContent = CreateWindowExW(
+                    0, L"ClipLiteSettingsContent", L"",
+                    WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+                    0, 0,
+                     std::max<LONG>(0, client.right - ui(kSettingsSidebarWidth + kSettingsScrollbarReserve)),
+                    std::max<LONG>(0, client.bottom - ui(kSettingsHeaderHeight)),
+                    g_app->settingsBodyViewport, nullptr,
+                    GetModuleHandleW(nullptr), nullptr);
+            }
             createSettingsControlsModern(hwnd);
             subclassSettingsControls(hwnd);
             updateSettingsTabControls(hwnd);
             applyFontToChildren(hwnd, g_app->settingsFont);
-            for (HWND child = GetWindow(hwnd, GW_CHILD); child;
+            for (HWND child = GetWindow(g_app->settingsBodyContent, GW_CHILD); child;
                  child = GetWindow(child, GW_HWNDNEXT)) {
                 wchar_t childClass[32]{};
                 GetClassNameW(child, childClass,
                               static_cast<int>(sizeof(childClass) / sizeof(childClass[0])));
-                if (std::wcscmp(childClass, L"Edit") == 0) configureSettingsEdit(child);
+                if (std::wcscmp(childClass, L"Edit") == 0) {
+                    SendMessageW(child, WM_SETFONT,
+                                 reinterpret_cast<WPARAM>(g_app->settingsBodyFont), TRUE);
+                    configureSettingsEdit(child);
+                }
                 if (GetDlgCtrlID(child) == kSettingIgnoredApps && g_app->settingsMultilineFont) {
                     SendMessageW(child, WM_SETFONT,
                                  reinterpret_cast<WPARAM>(g_app->settingsMultilineFont), TRUE);
                 }
-            }
-            RECT client{};
-            GetClientRect(hwnd, &client);
-            g_app->settingsHeaderOverlay = CreateWindowExW(
-                0, L"ClipLiteSettingsHeader", L"",
-                WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
-                0, 0, client.right, ui(kSettingsHeaderHeight), hwnd, nullptr,
-                GetModuleHandleW(nullptr), nullptr);
-            if (g_app->settingsHeaderOverlay) {
-                SetWindowPos(g_app->settingsHeaderOverlay, HWND_TOP,
-                             0, 0, client.right, ui(kSettingsHeaderHeight),
-                             SWP_NOACTIVATE | SWP_SHOWWINDOW);
             }
             return 0;
         }
@@ -10054,7 +10316,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == WM_LBUTTONUP) {
             const int row = languageDropdownRowAt(GET_Y_LPARAM(lParam));
             if (row >= 0) {
-                HWND combo = GetDlgItem(g_app->settings, kSettingLanguage);
+                HWND combo = settingsControl(g_app->settings, kSettingLanguage);
                 setSettingsLanguageSelection(combo, row);
                 InvalidateRect(combo, nullptr, FALSE);
                 scheduleSettingsSync(g_app->settings);
@@ -10122,6 +10384,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (g_app->settingsBackgroundBrush) DeleteObject(g_app->settingsBackgroundBrush);
         if (g_app->settingsCardBrush) DeleteObject(g_app->settingsCardBrush);
         if (g_app->settingsInputBrush) DeleteObject(g_app->settingsInputBrush);
+        if (g_app->settingsBodyContent) DestroyWindow(g_app->settingsBodyContent);
+        if (g_app->settingsBodyViewport) DestroyWindow(g_app->settingsBodyViewport);
         releasePaintFonts(g_app->settingsNavFont, g_app->settingsTitleFont,
                           g_app->settingsCardTitleFont, g_app->settingsBodyFont);
         g_app->settingsFont = nullptr;
@@ -10129,6 +10393,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         g_app->settingsBackgroundBrush = nullptr;
         g_app->settingsCardBrush = nullptr;
         g_app->settingsInputBrush = nullptr;
+        g_app->settingsBodyContent = nullptr;
+        g_app->settingsBodyViewport = nullptr;
         KillTimer(hwnd, kSettingsToggleTimer);
         KillTimer(hwnd, kSettingsDropdownTimer);
         KillTimer(hwnd, kSettingsSyncTimer);
@@ -10162,7 +10428,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             } else if (wParam == kHotkeyPause) {
                 g_app->settingsData.pauseMonitoring = !g_app->settingsData.pauseMonitoring;
                 if (g_app->settings) {
-                    setSettingsToggleValue(GetDlgItem(g_app->settings, kSettingPause),
+                    setSettingsToggleValue(settingsControl(g_app->settings, kSettingPause),
                                            g_app->settingsData.pauseMonitoring);
                     InvalidateRect(g_app->settings, nullptr, FALSE);
                 }
@@ -10500,11 +10766,12 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                                                       0, settingsScrollMax(hwnd));
             RECT client{};
             GetClientRect(hwnd, &client);
-            if (g_app->settingsHeaderOverlay) {
-                SetWindowPos(g_app->settingsHeaderOverlay, HWND_TOP,
-                             0, 0, client.right, ui(kSettingsHeaderHeight),
-                             SWP_NOACTIVATE | SWP_SHOWWINDOW);
-                InvalidateRect(g_app->settingsHeaderOverlay, nullptr, FALSE);
+            if (g_app->settingsBodyViewport) {
+                SetWindowPos(g_app->settingsBodyViewport, nullptr,
+                             ui(kSettingsSidebarWidth), ui(kSettingsHeaderHeight),
+                             std::max<LONG>(0, client.right - ui(kSettingsSidebarWidth + kSettingsScrollbarReserve)),
+                             std::max<LONG>(0, client.bottom - ui(kSettingsHeaderHeight)),
+                             SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW);
             }
             updateSettingsTabControls(hwnd);
             invalidatePopupList(hwnd);
@@ -10719,7 +10986,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (g_app->languageDropdown) animateLanguageDropdown(hwnd, 0.0f);
             const int toggleId = settingsToggleAtPoint(g_app->settingsTab, x, y);
             if (toggleId != 0) {
-                HWND toggle = GetDlgItem(hwnd, toggleId);
+                HWND toggle = settingsControl(hwnd, toggleId);
                 animateSettingsToggle(toggle);
                 if (toggleId == kSettingEncrypt) scheduleSettingsEncryptionSync(hwnd);
                 else syncSettingsFromControls(hwnd, false);
@@ -10763,7 +11030,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (LOWORD(wParam) == kSettingLanguage &&
                 (HIWORD(wParam) == CBN_DROPDOWN || HIWORD(wParam) == CBN_SELENDOK ||
                  HIWORD(wParam) == CBN_SELENDCANCEL)) {
-                HWND language = GetDlgItem(hwnd, kSettingLanguage);
+                HWND language = settingsControl(hwnd, kSettingLanguage);
                 SendMessageW(language, CB_SHOWDROPDOWN, FALSE, 0);
                 if (HIWORD(wParam) == CBN_DROPDOWN && !g_app->languageDropdown) {
                     toggleLanguageDropdown(hwnd);
@@ -10773,7 +11040,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             if (isSettingsToggle(LOWORD(wParam)) &&
                 (HIWORD(wParam) == BN_CLICKED || HIWORD(wParam) == BN_DOUBLECLICKED)) {
-                HWND toggle = GetDlgItem(hwnd, LOWORD(wParam));
+                HWND toggle = settingsControl(hwnd, LOWORD(wParam));
                 animateSettingsToggle(toggle);
                 if (LOWORD(wParam) == kSettingEncrypt) scheduleSettingsEncryptionSync(hwnd);
                 else syncSettingsFromControls(hwnd, false);
@@ -11512,9 +11779,6 @@ void openSettings() {
         refreshSettingsFrame(g_app->settings);
         SendMessageW(g_app->settings, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(clipLiteIcon()));
         SendMessageW(g_app->settings, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(clipLiteIcon()));
-        if (g_app->settingsHeaderOverlay) {
-            InvalidateRect(g_app->settingsHeaderOverlay, nullptr, FALSE);
-        }
     }
     ShowWindow(g_app->settings, SW_SHOW);
     UpdateWindow(g_app->settings);
@@ -11536,6 +11800,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     const bool commandSettings = wcsstr(commandLine, L"--settings") || wcsstr(commandLine, L"/settings");
     const bool commandImageBenchmark = wcsstr(commandLine, L"--benchmark-image-scroll") != nullptr;
     const bool commandElevatedRestart = wcsstr(commandLine, L"--elevated-restart") != nullptr;
+    const bool commandElevatedTask = wcsstr(commandLine, L"--elevated-task") != nullptr;
     const bool commandSupportPayment = wcsstr(commandLine, L"--support-payment") != nullptr;
     const bool commandSupportQq = wcsstr(commandLine, L"--support-qq") != nullptr;
     if (commandSupportPayment || commandSupportQq) {
@@ -11583,7 +11848,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         showStartupFailure(settingsLocale().unableCreateMutex);
         return 1;
     }
-    if (mutexError == ERROR_ALREADY_EXISTS && commandElevatedRestart) {
+    if (mutexError == ERROR_ALREADY_EXISTS && (commandElevatedRestart || commandElevatedTask)) {
         CloseHandle(mutex);
         mutex = nullptr;
         for (int attempt = 0; attempt < 50; ++attempt) {
@@ -11638,7 +11903,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         CloseHandle(mutex);
         return 0;
     }
-    if (app.settingsData.runAsAdministrator && !processIsElevated() && !commandElevatedRestart) {
+    if (app.settingsData.runAsAdministrator && !processIsElevated() &&
+        !commandElevatedRestart && !commandElevatedTask && !commandHistory && !commandSettings) {
+        if (launchRegisteredElevatedTask()) {
+            ReleaseMutex(mutex);
+            CloseHandle(mutex);
+            return 0;
+        }
         if (launchElevatedRestart(commandHistory ? L"--elevated-restart --history" :
                                    (commandSettings ? L"--elevated-restart --settings" :
                                                        L"--elevated-restart"))) {
@@ -11649,6 +11920,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         appendDiagnosticLog("WARN", "admin: continuing without administrator rights");
         app.settingsData.runAsAdministrator = false;
         saveSettings(app.settingsData);
+    }
+    if (app.settingsData.runAsAdministrator && processIsElevated() && !registerElevatedTask()) {
+        appendDiagnosticLog("WARN", "admin: unable to register elevated task");
     }
     const bool storeOpened = commandImageBenchmark ? populateBenchmarkImages() : app.store.open();
     if (!storeOpened) {
@@ -11698,9 +11972,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     settingsClass.style = 0;
     settingsClass.lpszClassName = L"ClipLiteSettings";
     RegisterClassW(&settingsClass);
-    WNDCLASSW settingsHeaderClass = settingsClass;
-    settingsHeaderClass.lpszClassName = L"ClipLiteSettingsHeader";
-    RegisterClassW(&settingsHeaderClass);
+    WNDCLASSW settingsViewportClass = settingsClass;
+    settingsViewportClass.hbrBackground = nullptr;
+    settingsViewportClass.lpszClassName = L"ClipLiteSettingsViewport";
+    RegisterClassW(&settingsViewportClass);
+    WNDCLASSW settingsContentClass = settingsClass;
+    settingsContentClass.hbrBackground = nullptr;
+    settingsContentClass.lpszClassName = L"ClipLiteSettingsContent";
+    RegisterClassW(&settingsContentClass);
     WNDCLASSW dropdownClass = popupClass;
     dropdownClass.style = CS_HREDRAW | CS_VREDRAW;
     dropdownClass.hbrBackground = nullptr;

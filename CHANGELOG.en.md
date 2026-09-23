@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.3.0] - 2026-09-23
+
+- Register a per-user highest-privilege scheduled task after the first administrator authorization, so later normal launches do not repeat the UAC prompt; disabling the setting removes the task.
+- Preserve command arguments for `--history` and `--settings` in administrator mode to avoid opening the wrong window.
+- Refined the settings scroll container, theme switching, antialiased text, and control layout; updated the history and settings screenshots.
+
+### Build and Verification
+
+- The `1.3.0` x64 Release build and `ClipLiteStore` CTest passed.
+
 ## [1.2.6] - 2026-09-20
 
 - Fixed count-limit cleanup potentially deleting pinned records. Pinned records are now protected from automatic count, capacity, category, expiry, and startup recovery cleanup.
