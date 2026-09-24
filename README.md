@@ -43,13 +43,18 @@ ClipLite 从一开始就希望把剪贴板历史做得更克制：程序尽量�
 
 ![ClipLite 设置窗口](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.4/docs/screenshots/settings.png)
 
+任务管理器闲时内存实测：
+
+![ClipLite 任务管理器内存占用](docs/screenshots/task-manager-memory.png)
+
 ## 性能与体积
 
 ClipLite 专注于“常驻但不打扰”：相比常见剪贴板工具，占用更少内存，适合长期在后台运行，也不需要额外运行时。
 
 剪贴板格式捕获、历史归档和历史粘贴前的内容读取在后台执行。部分应用复制后需要延迟提供 HTML、文本或图片格式时，不会因为磁盘写入或解密阻塞 ClipLite 的历史窗口、粘贴和全局快捷键响应。
 
-- 后台运行时，本机 Release 测量的 Private Bytes 约为 `2.5 MB`。
+- 任务管理器闲时显示的内存约为 `0.7 MB`（截图实测）。
+- 使用测量工具采样时，本机 Release 的 Private Bytes 约为 `2.5 MB`；这是另一种统计口径。
 - 主程序体积小于 `1 MB`。
 - 启动约 `0.05 秒`，打开历史窗口后才按需读取内容和图片。
 - 历史窗口缓存最近显示的图片缩略图，连续滚动不会重复读取和解码同一原图。
@@ -59,7 +64,7 @@ ClipLite 专注于“常驻但不打扰”：相比常见剪贴板工具，占�
 <details>
 <summary>查看详细测量条件</summary>
 
-当前 Windows x64 Release 本机实测：Working Set `13.73 MB`、Private Bytes `2.50 MB`、主程序体积小于 `1 MB`、启动耗时 `53.03 ms`、GDI `13`、USER `10`。任务管理器和测量工具的内存统计口径不同，因此显示数值可能不同。
+当前 Windows x64 Release 本机实测：任务管理器闲时显示内存约 `0.7 MB`、Working Set `13.73 MB`、Private Bytes `2.50 MB`、主程序体积小于 `1 MB`、启动耗时 `53.03 ms`、GDI `13`、USER `10`。任务管理器、Working Set 和 Private Bytes 的统计口径不同，因此显示数值可能不同；截图中的 `0.7 MB` 是任务管理器闲时观察值。
 
 数据由 `tools/measure.ps1` 在程序启动约 1 秒后、未打开历史窗口的空闲状态采样。实际数值会受到 Windows 版本、DPI、系统状态、历史数据和运行场景影响，这些数据是本机 Release 参考值，不是所有设备上的固定承诺。
 
@@ -71,7 +76,7 @@ ClipLite 更适合希望“复制过的内容方便找回，但程序不要拖�
 
 | 对比项目 | ClipLite | 常见剪贴板工具 |
 | --- | --- | --- |
-| 后台占用 | 轻量设计，本机 Release 测量 Private Bytes 约 `2.5 MB` | 功能越多，常驻占用通常越高 |
+| 后台占用 | 任务管理器闲时显示约 `0.7 MB`；Private Bytes 约 `2.5 MB` | 功能越多，常驻占用通常越高 |
 | 程序体积 | 主程序小于 `1 MB` | 依赖运行时或集成功能后通常更大 |
 | 运行方式 | 原生 Win32，无 WebView 和大型运行时 | 部分工具依赖额外运行时或框架 |
 | 数据控制 | 历史默认保存在本机，可选 DPAPI 加密 | 数据位置和隐私策略因工具而异 |
