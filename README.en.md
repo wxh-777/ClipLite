@@ -17,6 +17,7 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 - Open clipboard history with `Alt+V`, with an optional `Win+V` replacement mode.
 - Capture and restore plain text, HTML, file lists, DIB, and DIBV5 images; image files in file lists show on-demand thumbnails.
 - Search and combine type, time range, content length, source application, and sort filters; pin, delete, clear, and paste history items.
+- History items show clipboard content previews so you can confirm the target before pasting.
 - Supports a separate original-content preview window; choose automatic preview, hold-key preview, or disabled preview in Settings or the history context menu. Hold-key preview uses `F2` by default. Long text scrolls with the mouse wheel, and images zoom around the mouse position and support dragging.
 - Automatic preview is enabled by default; an existing configuration that explicitly disabled it remains disabled.
 - Search focuses the input by default; an optional compatibility mode keeps the original app in the foreground and uses `Ctrl+Space` to enter Chinese IME input.
@@ -29,6 +30,7 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 - Pinned records are protected from automatic count, capacity, expiry, and startup cleanup, and are not overwritten by new clipboard content.
 - Source application filtering, sensitive text expiry, and optional Windows DPAPI user encryption.
 - Installer and portable distribution modes; clipboard archiving, history reads, and usage statistics run through short-lived worker tasks without keeping the full history payload in memory.
+- The history window does not take input focus from the original application; left-clicking an item pastes it without requiring the input field to be selected again.
 - When "Run ClipLite as administrator" is enabled, Windows authorization is required once; later launches use a per-user highest-privilege scheduled task and do not show the UAC prompt again. Disabling the option removes the task.
 - Running as administrator can improve clipboard access and paste compatibility with some elevated windows where Windows permits it; ClipLite still cannot bypass UIPI, the secure desktop, or protected-window restrictions.
 
@@ -36,11 +38,15 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 
 History window with an image record:
 
-![ClipLite history window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.4/docs/screenshots/history.png)
+![ClipLite history window](https://raw.githubusercontent.com/wxh-777/ClipLite/main/docs/screenshots/history.png)
 
 Settings window:
 
-![ClipLite settings window](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.4/docs/screenshots/settings.png)
+![ClipLite settings window](https://raw.githubusercontent.com/wxh-777/ClipLite/main/docs/screenshots/settings.png)
+
+Idle memory shown in Task Manager:
+
+![ClipLite Task Manager memory usage](https://raw.githubusercontent.com/wxh-777/ClipLite/main/docs/screenshots/task-manager-memory.png)
 
 ## Performance and Size
 
@@ -48,7 +54,8 @@ ClipLite is designed to stay quietly in the tray. It uses less memory than many 
 
 Clipboard capture, history archiving, and pre-paste history reads run in the background. When an application delays providing HTML, text, or image formats after copying, disk writes and decryption do not block ClipLite's history window, paste flow, or global shortcuts.
 
-- A local Release measurement showed about `2.5 MB` of Private Bytes while idle.
+- Task Manager showed about `0.7 MB` of idle memory in a local screenshot measurement.
+- A separate local Release measurement showed about `2.5 MB` of Private Bytes; this uses a different accounting method.
 - The main executable is under `1 MB`.
 - Startup took about `0.05 seconds`, while full history and images are read only when needed.
 - The history popup caches recently displayed image thumbnails, so continuous scrolling does not reread and decode the same source image.
@@ -58,7 +65,7 @@ This makes ClipLite suitable for long-running background use and portable folder
 <details>
 <summary>Show detailed measurements</summary>
 
-Reference measurements from the current Windows x64 Release build on this machine: Working Set `13.73 MB`, Private Bytes `2.50 MB`, main executable under `1 MB`, startup time `53.03 ms`, GDI `13`, and USER `10`. Task Manager and measurement tools use different memory definitions, so their displayed values can differ.
+Reference measurements from the current Windows x64 Release build on this machine: Task Manager idle memory about `0.7 MB`, Working Set `13.73 MB`, Private Bytes `2.50 MB`, main executable under `1 MB`, startup time `53.03 ms`, GDI `13`, and USER `10`. Task Manager, Working Set, and Private Bytes use different memory definitions, so their displayed values can differ; the `0.7 MB` value is the idle Task Manager observation.
 
 The values were sampled by `tools/measure.ps1` about one second after startup while idle, with the history window closed. Actual values vary with Windows version, DPI, system state, history data, and runtime scenario. These figures describe the local Release baseline and are not a fixed guarantee for every device.
 
@@ -70,7 +77,7 @@ ClipLite is for people who want clipboard history to be easy to find without mak
 
 | Comparison | ClipLite | Common clipboard tools |
 | --- | --- | --- |
-| Background usage | Lightweight by design; about `2.5 MB` Private Bytes in a local Release measurement | Resident usage often grows with feature scope |
+| Background usage | About `0.7 MB` idle memory shown by Task Manager; about `2.5 MB` Private Bytes | Resident usage often grows with feature scope |
 | Program size | Main executable under `1 MB` | Usually larger when bundled with runtimes or extra features |
 | Runtime | Native Win32, without WebView or a large runtime | Some tools depend on an additional runtime or framework |
 | Data control | History stays local by default, with optional DPAPI encryption | Data location and privacy policies vary |
@@ -93,7 +100,7 @@ Use `SHA256SUM.txt` in the portable package to verify `ClipLite.exe`. Verify the
 ## Shortcuts
 
 - `Alt+V`: Open clipboard history.
-- `Enter` or left click: Paste the selected item.
+- Left click: Paste the selected item without taking input focus from the original application.
 - `Ctrl+Shift+V`: Paste as plain text.
 - `Ctrl+Shift+R`: Paste as rich text when available.
 - `Delete`: Delete the selected item.

@@ -37,15 +37,15 @@ ClipLite 从一开始就希望把剪贴板历史做得更克制：程序尽量�
 
 历史窗口（含图片记录）：
 
-![ClipLite 历史窗口](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.4/docs/screenshots/history.png)
+![ClipLite 历史窗口](https://raw.githubusercontent.com/wxh-777/ClipLite/main/docs/screenshots/history.png)
 
 设置窗口：
 
-![ClipLite 设置窗口](https://raw.githubusercontent.com/wxh-777/ClipLite/v1.2.4/docs/screenshots/settings.png)
+![ClipLite 设置窗口](https://raw.githubusercontent.com/wxh-777/ClipLite/main/docs/screenshots/settings.png)
 
 任务管理器闲时内存实测：
 
-![ClipLite 任务管理器内存占用](docs/screenshots/task-manager-memory.png)
+![ClipLite 任务管理器内存占用](https://raw.githubusercontent.com/wxh-777/ClipLite/main/docs/screenshots/task-manager-memory.png)
 
 ## 性能与体积
 
