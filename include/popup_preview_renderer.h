@@ -25,6 +25,7 @@ public:
                    int sourceWidth, int sourceHeight, bool premultipliedAlpha);
     void clearSource();
     void setTransform(float zoom, float panX, float panY);
+    void setBackground(COLORREF color);
     HWND window() const { return window_; }
 
 private:
@@ -49,6 +50,7 @@ private:
     float zoom_ = 1.0f;
     float panX_ = 0.0f;
     float panY_ = 0.0f;
+    COLORREF background_ = RGB(248, 250, 252);
 };
 
 #endif

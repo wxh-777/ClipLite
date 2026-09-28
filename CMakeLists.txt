@@ -16,10 +16,12 @@ endif()
 
 add_executable(ClipLite WIN32
     src/main.cpp
+    src/theme.cpp
     src/popup_preview_renderer.cpp
     src/clip_store.cpp
     src/thumbnail_cache.cpp
     include/clip_store.h
+    include/theme.h
     include/popup_preview_renderer.h
     include/thumbnail_cache.h
     resources/clipLite.rc
@@ -42,4 +44,14 @@ if(BUILD_TESTING)
     target_compile_definitions(ClipLiteStoreTests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
     target_link_libraries(ClipLiteStoreTests PRIVATE shell32 crypt32)
     add_test(NAME ClipLiteStore COMMAND ClipLiteStoreTests)
+
+    add_executable(ClipLiteThemeTests
+        tests/theme_tests.cpp
+        src/theme.cpp
+        include/theme.h
+    )
+    target_include_directories(ClipLiteThemeTests PRIVATE include)
+    target_compile_definitions(ClipLiteThemeTests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(ClipLiteThemeTests PRIVATE user32)
+    add_test(NAME ClipLiteThemes COMMAND ClipLiteThemeTests)
 endif()

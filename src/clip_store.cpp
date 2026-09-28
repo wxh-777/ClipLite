@@ -107,6 +107,17 @@ std::uint64_t nowUnixMillis() {
     return value.QuadPart < kUnixEpoch ? 0 : (value.QuadPart - kUnixEpoch) / 10000ULL;
 }
 
+std::uint64_t nextCopyTime(const std::vector<ClipItem>& items) {
+    const std::uint64_t now = nowUnixMillis();
+    if (items.empty()) return now;
+    const std::uint64_t latest = std::max_element(
+        items.begin(), items.end(), [](const ClipItem& first, const ClipItem& second) {
+            return first.lastCopiedAt < second.lastCopiedAt;
+        })->lastCopiedAt;
+    if (now > latest) return now;
+    return latest == std::numeric_limits<std::uint64_t>::max() ? latest : latest + 1;
+}
+
 std::uint64_t activityTime(const ClipItem& item) {
     const std::uint64_t copiedAt = item.lastCopiedAt != 0 ? item.lastCopiedAt :
         (item.timestamp > std::numeric_limits<std::uint64_t>::max() / 1000ULL
@@ -644,7 +655,7 @@ bool ClipStore::append(ClipType type, const std::string& payload, std::uint64_t 
     item.type = type;
     item.recordId = nextRecordId_ == 0 ? 1 : nextRecordId_;
     item.timestamp = nowUnix();
-    item.lastCopiedAt = nowUnixMillis();
+    item.lastCopiedAt = nextCopyTime(items_);
     item.createdAt = item.timestamp;
     item.hash = hash;
     item.encrypted = encryptionEnabled_;
@@ -796,7 +807,7 @@ bool ClipStore::appendOrUpdate(ClipType type, const std::string& payload, std::u
         readPayload(existing, existingPayload) && existingPayload == payload) {
         ClipItem item = backup[existing];
         item.timestamp = nowUnix();
-        item.lastCopiedAt = nowUnixMillis();
+        item.lastCopiedAt = nextCopyTime(items_);
         if (item.copyCount != std::numeric_limits<std::uint64_t>::max()) ++item.copyCount;
         if (!source.empty()) item.source = source.substr(0, kMaxSource);
         item.expiresAt = expiresAt;
@@ -860,7 +871,7 @@ bool ClipStore::appendOrUpdate(ClipType type, const std::string& payload, std::u
         item.timestamp = promoted ? nowUnix() : item.timestamp;
         if (promoted) {
             item.hash = hash;
-            item.lastCopiedAt = nowUnixMillis();
+            item.lastCopiedAt = nextCopyTime(items_);
             if (item.copyCount != std::numeric_limits<std::uint64_t>::max()) ++item.copyCount;
             if (!source.empty()) item.source = source.substr(0, kMaxSource);
             item.expiresAt = expiresAt;

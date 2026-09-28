@@ -113,6 +113,11 @@ void PopupPreviewRenderer::setTransform(float zoom, float panX, float panY) {
     if (window_) InvalidateRect(window_, nullptr, FALSE);
 }
 
+void PopupPreviewRenderer::setBackground(COLORREF color) {
+    background_ = color;
+    if (window_) InvalidateRect(window_, nullptr, FALSE);
+}
+
 bool PopupPreviewRenderer::createDeviceResources() {
     if (renderTarget_) return true;
     if (!window_) return false;
@@ -144,14 +149,14 @@ void PopupPreviewRenderer::paint(HDC dc) {
     if (!sourceBitmap_) {
         RECT client{};
         GetClientRect(window_, &client);
-        HBRUSH brush = CreateSolidBrush(RGB(248, 250, 252));
+        HBRUSH brush = CreateSolidBrush(background_);
         FillRect(dc, &client, brush);
         DeleteObject(brush);
         return;
     }
     if (!createDeviceResources()) {
         const RECT client = [&] { RECT value{}; GetClientRect(window_, &value); return value; }();
-        HBRUSH brush = CreateSolidBrush(RGB(248, 250, 252));
+        HBRUSH brush = CreateSolidBrush(background_);
         FillRect(dc, &client, brush);
         DeleteObject(brush);
         if (sourceBitmap_ && bitmapWidth_ > 0 && bitmapHeight_ > 0) {
@@ -177,7 +182,10 @@ void PopupPreviewRenderer::paint(HDC dc) {
     }
     if (!source_ && !createSourceResource()) return;
     renderTarget_->BeginDraw();
-    renderTarget_->Clear(D2D1::ColorF(0.968f, 0.976f, 0.984f));
+    renderTarget_->Clear(D2D1::ColorF(
+        GetRValue(background_) / 255.0f,
+        GetGValue(background_) / 255.0f,
+        GetBValue(background_) / 255.0f));
     if (source_ && sourceWidth_ > 0 && sourceHeight_ > 0) {
         const D2D1_SIZE_F target = renderTarget_->GetSize();
         const float scaleX = zoom_ * sourceWidth_ / bitmapWidth_;
