@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(ClipLite VERSION 1.3.0 LANGUAGES CXX)
+project(ClipLite VERSION 1.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,16 +16,18 @@ endif()
 
 add_executable(ClipLite WIN32
     src/main.cpp
+    src/popup_preview_renderer.cpp
     src/clip_store.cpp
     src/thumbnail_cache.cpp
     include/clip_store.h
+    include/popup_preview_renderer.h
     include/thumbnail_cache.h
     resources/clipLite.rc
 )
 
 target_include_directories(ClipLite PRIVATE include)
 target_compile_definitions(ClipLite PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(ClipLite PRIVATE user32 gdi32 shell32 shcore ole32 oleaut32 taskschd comctl32 crypt32 gdiplus dwmapi advapi32 winhttp)
+target_link_libraries(ClipLite PRIVATE user32 gdi32 shell32 shcore ole32 oleaut32 taskschd comctl32 crypt32 gdiplus windowscodecs d2d1 dwmapi advapi32 winhttp)
 
 include(CTest)
 if(BUILD_TESTING)

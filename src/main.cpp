@@ -6,11 +6,14 @@
 #include <dwmapi.h>
 #include <gdiplus.h>
 #include <richedit.h>
+#include <sddl.h>
 #include <taskschd.h>
 #include <winhttp.h>
+#include <wincodec.h>
 
 #include "clip_store.h"
 #include "thumbnail_cache.h"
+#include "popup_preview_renderer.h"
 
 #include <algorithm>
 #include <atomic>
@@ -170,6 +173,8 @@ constexpr UINT_PTR kPopupPreviewResumeTimer = 16;
 constexpr UINT_PTR kPopupPreviewHoverTimer = 17;
 constexpr UINT_PTR kPopupPreviewHideTimer = 18;
 constexpr UINT_PTR kPopupScrollAnimationTimer = 19;
+constexpr UINT_PTR kPopupDetailRenderTimer = 20;
+constexpr UINT_PTR kFilterSubmenuHoverTimer = 21;
 constexpr DWORD kSettingsToggleAnimationMs = 160;
 constexpr DWORD kSettingsDropdownAnimationMs = 150;
 constexpr DWORD kSettingsThemeAnimationMs = 180;
@@ -180,6 +185,7 @@ constexpr UINT kSettingsEncryptionDebounceMs = 800;
 constexpr UINT kSettingsActionFeedbackMs = 2400;
 constexpr UINT kPopupSearchDelayMs = 90;
 constexpr UINT kPopupPreviewResumeMs = 50;
+constexpr UINT kFilterSubmenuHoverDelayMs = 120;
 constexpr UINT kPopupScrollAnimationMs = 110;
 constexpr int kPopupWheelScrollStep = 96;
 constexpr UINT kPasteInputRetryMs = 4;
@@ -204,8 +210,11 @@ constexpr int kPopupDetailPreviewHeight = 340;
 constexpr int kPopupDetailPreviewGap = 8;
 constexpr int kPopupDetailPreviewDelayMs = 180;
 constexpr int kPopupDetailPreviewHideDelayMs = 120;
-constexpr float kPopupDetailPreviewMinZoom = 0.5f;
-constexpr float kPopupDetailPreviewMaxZoom = 8.0f;
+constexpr float kPopupDetailPreviewMinZoom = 0.01f;
+constexpr float kPopupDetailPreviewMaxZoom = 100.0f;
+constexpr int kPopupDetailPreviewSourceLimit = 1024;
+constexpr std::uint64_t kPopupPreviewMaxPixels = 100000000ULL;
+constexpr std::uint64_t kPopupPreviewMaxEncodedBytes = 256ULL * 1024ULL * 1024ULL;
 constexpr int kFilterMenuWidth = 204;
 constexpr int kFilterMenuRowHeight = 32;
 constexpr int kFilterSubmenuWidth = 190;
@@ -312,15 +321,16 @@ struct PopupPreviewJob {
     COLORREF background = RGB(255, 255, 255);
     bool encrypted = false;
     bool detail = false;
-    float zoom = 1.0f;
-    float panX = 0.0f;
-    float panY = 0.0f;
+    bool highQuality = false;
     ClipItem item;
     std::wstring historyPath;
 };
 
 struct PopupDetailPreview {
     HBITMAP bitmap = nullptr;
+    HBITMAP sourceBitmap = nullptr;
+    int sourceBitmapWidth = 0;
+    int sourceBitmapHeight = 0;
     int width = 0;
     int height = 0;
     std::wstring text;
@@ -334,15 +344,10 @@ struct PopupDetailPreview {
     float zoom = 1.0f;
     float panX = 0.0f;
     float panY = 0.0f;
-    float bitmapZoom = 1.0f;
-    float bitmapPanX = 0.0f;
-    float bitmapPanY = 0.0f;
     int sourceWidth = 0;
     int sourceHeight = 0;
     std::uint64_t imageBytes = 0;
     std::wstring imageFormat;
-    std::string imagePayload;
-    std::shared_ptr<Gdiplus::Image> imageSource;
 };
 
 struct PopupSourceIcon {
@@ -371,6 +376,7 @@ struct AppState {
     HWND popup = nullptr;
     HWND detailPreview = nullptr;
     HWND detailPreviewTextEdit = nullptr;
+    std::unique_ptr<PopupPreviewRenderer> detailPreviewRenderer;
     HWND searchEdit = nullptr;
     HWND settings = nullptr;
     HWND settingsBodyViewport = nullptr;
@@ -429,6 +435,7 @@ struct AppState {
     HWND filterMenuWindow = nullptr;
     HWND filterSubmenuWindow = nullptr;
     int filterMenuSubmenu = -1;
+    int filterMenuPendingSubmenu = -1;
     int filterMenuHover = -1;
     int filterSubmenuHover = -1;
     int filterSubmenuScrollOffset = 0;
@@ -495,6 +502,8 @@ struct AppState {
     float detailPreviewDragPanY = 0.0f;
     bool detailPreviewVisible = false;
     bool detailPreviewHeld = false;
+    bool detailPreviewHighQuality = false;
+    bool detailPreviewUpgradeFailed = false;
     int detailPreviewHoverRow = -1;
     int detailPreviewPendingRow = -1;
     PopupDetailPreview detailPreviewState;
@@ -588,6 +597,39 @@ UINT g_uiDpi = 96;
 std::wstring g_diagnosticLogPath;
 bool g_supportProcessMode = false;
 HWND g_supportOwnerWindow = nullptr;
+std::recursive_mutex g_gdiplusMutex;
+
+bool ensureGdiplus() {
+    if (!g_app) return false;
+    std::lock_guard<std::recursive_mutex> lock(g_gdiplusMutex);
+    if (g_app->gdiplusToken != 0) return true;
+    Gdiplus::GdiplusStartupInput input;
+    return Gdiplus::GdiplusStartup(&g_app->gdiplusToken, &input, nullptr) == Gdiplus::Ok;
+}
+
+void shutdownGdiplusIfIdle() {
+    if (!g_app || g_app->popup || g_app->settings || g_app->detailPreview ||
+        g_app->support || g_app->previewWorker.joinable()) return;
+    std::lock_guard<std::recursive_mutex> lock(g_gdiplusMutex);
+    if (g_app->gdiplusToken != 0) {
+        Gdiplus::GdiplusShutdown(g_app->gdiplusToken);
+        g_app->gdiplusToken = 0;
+    }
+}
+
+HANDLE createSingleInstanceMutex() {
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    SECURITY_ATTRIBUTES attributes{sizeof(attributes), nullptr, FALSE};
+    const bool securityReady = ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        L"D:(A;;GA;;;WD)", SDDL_REVISION_1, &descriptor, nullptr) != FALSE;
+    if (securityReady) attributes.lpSecurityDescriptor = descriptor;
+    HANDLE mutex = CreateMutexW(securityReady ? &attributes : nullptr, TRUE,
+                                L"ClipLite.SingleInstance");
+    const DWORD error = GetLastError();
+    if (descriptor) LocalFree(descriptor);
+    SetLastError(error);
+    return mutex;
+}
 
 struct PopupSearchResult {
     HWND popup = nullptr;
@@ -632,18 +674,17 @@ struct PopupDetailPreviewResult {
     std::size_t itemIndex = 0;
     std::uint64_t recordId = 0;
     HBITMAP bitmap = nullptr;
+    HBITMAP sourceBitmap = nullptr;
+    int sourceBitmapWidth = 0;
+    int sourceBitmapHeight = 0;
     int width = 0;
     int height = 0;
     int sourceWidth = 0;
     int sourceHeight = 0;
     std::uint64_t imageBytes = 0;
     std::wstring imageFormat;
-    float zoom = 1.0f;
-    float panX = 0.0f;
-    float panY = 0.0f;
-    std::string imagePayload;
-    std::shared_ptr<Gdiplus::Image> imageSource;
     std::wstring text;
+    bool highQuality = false;
     bool success = false;
 };
 
@@ -695,7 +736,8 @@ void clearPopupImagePreviews();
 void clearPopupSurfaceCache();
 void clearPopupSourceIcons();
 void hideDetailPreview();
-void requestDetailPreview(int row);
+void requestDetailPreview(int row, bool upgrade = false);
+void positionDetailPreview(int row);
 void scheduleDetailPreview(int row);
 LRESULT CALLBACK detailPreviewTextEditSubclass(HWND hwnd, UINT message, WPARAM wParam,
                                                LPARAM lParam, UINT_PTR subclassId,
@@ -704,6 +746,8 @@ void positionDetailPreviewTextEdit(bool show);
 void refreshDetailPreviewTextEditAppearance();
 void updateDetailPreviewTextEdit();
 void updateDetailPreviewKeyState(bool down);
+RECT detailPreviewContentRect(HWND hwnd);
+void fitDetailPreviewImage();
 void closeFilterMenu();
 bool filterMenuContainsPoint(POINT point);
 LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -1050,7 +1094,7 @@ const SettingsLocale kEnglishSettingsLocale{
      L"Some shortcuts could not be registered. Choose different combinations.",
     L"Custom shortcuts require at least one modifier key.",
     L"Sensitive markers: password, token, api_key, secret, and private keys; detected by content pattern.",
-       L"Application    ClipLite", L"Version        1.3.0 x64", L"Storage format  v4",
+        L"Application    ClipLite", L"Version        1.4.0 x64", L"Storage format  v4",
      L"Data directory  %LOCALAPPDATA%\\ClipLite", L"Browse", L"Clear unpinned history", L"Clear unpinned text",
      L"Clear unpinned images", L"Clear unpinned files", L"Press shortcut", L"Need modifier", L"One application per line", L"Auto",
     L"ClipLite Settings", L"Choose a valid cache directory.", L"Unable to create the cache directory.",
@@ -1101,7 +1145,7 @@ const SettingsLocale kChineseSettingsLocale{
      L"无法注册“%ls”（%ls），可能已被其他程序或 Windows 占用，已恢复为 %ls。",
      L"部分快捷键注册失败，请更换组合键。", L"自定义快捷键至少需要一个修饰键。",
     L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。",
-        L"应用名称    ClipLite", L"版本        1.3.0 x64", L"存储格式    v4",
+          L"应用名称    ClipLite", L"版本        1.4.0 x64", L"存储格式    v4",
      L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清理未置顶历史", L"清理未置顶文本", L"清理未置顶图片",
       L"清理未置顶文件", L"按下组合键", L"需要修饰键", L"每行一个应用名称", L"自动", L"ClipLite 设置",
     L"请选择有效的缓存目录。", L"无法创建缓存目录。", L"目标目录已有历史数据，请选择空目录。",
@@ -2309,6 +2353,18 @@ void invalidatePopupList(HWND hwnd) {
     InvalidateRect(hwnd, &listRect, FALSE);
 }
 
+void invalidatePopupImageRow(HWND hwnd, std::size_t itemIndex) {
+    if (!g_app || !hwnd) return;
+    const auto visibleRow = std::find(g_app->visible.begin(), g_app->visible.end(), itemIndex);
+    if (visibleRow == g_app->visible.end()) return;
+    const int row = static_cast<int>(visibleRow - g_app->visible.begin());
+    const int top = popupRowTop(row);
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    RECT rowRect{ui(16), top, client.right - ui(16), top + ui(kPopupCardHeight)};
+    InvalidateRect(hwnd, &rowRect, FALSE);
+}
+
 void invalidateFilterBar(HWND hwnd);
 
 void invalidatePopupStatus(HWND hwnd) {
@@ -3012,7 +3068,7 @@ void clearPopupSurfaceCache() {
     for (const PopupSurfaceCache& surface : g_app->popupSurfaceCache) {
         if (surface.bitmap) DeleteObject(surface.bitmap);
     }
-    g_app->popupSurfaceCache.clear();
+    std::vector<PopupSurfaceCache>().swap(g_app->popupSurfaceCache);
 }
 
 void clearPopupImagePreviews() {
@@ -3021,7 +3077,7 @@ void clearPopupImagePreviews() {
     for (const PopupImagePreview& preview : g_app->imagePreviews) {
         if (preview.bitmap) DeleteObject(preview.bitmap);
     }
-    g_app->imagePreviews.clear();
+    std::vector<PopupImagePreview>().swap(g_app->imagePreviews);
     g_app->imagePreviewRevision = g_app->store.revision();
     ++g_app->imagePreviewGeneration;
     g_app->previewGeneration->store(g_app->imagePreviewGeneration, std::memory_order_release);
@@ -3044,12 +3100,14 @@ void cancelStalePopupPreviewWork() {
             }),
             g_app->previewJobs.end());
     }
-    g_app->imagePreviews.erase(
-        std::remove_if(g_app->imagePreviews.begin(), g_app->imagePreviews.end(),
-                       [generation](const PopupImagePreview& preview) {
-            return preview.loading && preview.loadGeneration != generation;
-        }),
-        g_app->imagePreviews.end());
+    for (auto preview = g_app->imagePreviews.begin(); preview != g_app->imagePreviews.end();) {
+        if (preview->loading && preview->loadGeneration != generation) {
+            if (preview->bitmap) DeleteObject(preview->bitmap);
+            preview = g_app->imagePreviews.erase(preview);
+        } else {
+            ++preview;
+        }
+    }
 }
 
 // 删除最早的缩略图缓存，限制历史窗口的 GDI 对象占用。
@@ -3061,11 +3119,9 @@ void trimPopupImagePreviewCache() {
         if (first.loading != second.loading) return !first.loading;
         return first.lastUsed < second.lastUsed;
     });
-    if (oldest == g_app->imagePreviews.end() || oldest->loading) return;
-    if (oldest != g_app->imagePreviews.end()) {
-        if (oldest->bitmap) DeleteObject(oldest->bitmap);
-        g_app->imagePreviews.erase(oldest);
-    }
+    if (oldest == g_app->imagePreviews.end()) return;
+    if (oldest->bitmap) DeleteObject(oldest->bitmap);
+    g_app->imagePreviews.erase(oldest);
 }
 
 void touchPopupImagePreview(std::size_t itemIndex) {
@@ -3197,18 +3253,158 @@ bool cachedFileItemHasMissingPath(std::size_t itemIndex, const ClipItem& item) {
 }
 
 // 从图片文件按历史卡片尺寸生成一次性缩略图位图。
-bool createFileImagePreview(const std::wstring& path, int boundsWidth, int boundsHeight,
-                            COLORREF background, HBITMAP& bitmap, int& width, int& height) {
+bool previewJobCancelled(const std::atomic<std::uint64_t>* generation,
+                         std::uint64_t expected) {
+    return generation && generation->load(std::memory_order_acquire) != expected;
+}
+
+bool createPreviewFileStream(const std::wstring& path, IStream** streamOut,
+                             const std::atomic<std::uint64_t>* generation = nullptr,
+                             std::uint64_t expected = 0) {
+    if (!streamOut || path.empty()) return false;
+    *streamOut = nullptr;
+    if (previewJobCancelled(generation, expected)) return false;
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER size{};
+    const bool sized = GetFileSizeEx(file, &size) && size.QuadPart > 0 &&
+        static_cast<std::uint64_t>(size.QuadPart) <= kPopupPreviewMaxEncodedBytes;
+    if (!sized) {
+        CloseHandle(file);
+        return false;
+    }
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, static_cast<SIZE_T>(size.QuadPart));
+    if (!memory) {
+        CloseHandle(file);
+        return false;
+    }
+    void* data = GlobalLock(memory);
+    DWORD bytesRead = 0;
+    const bool read = data && ReadFile(file, data, static_cast<DWORD>(size.QuadPart),
+                                       &bytesRead, nullptr) &&
+        bytesRead == static_cast<DWORD>(size.QuadPart);
+    if (data) GlobalUnlock(memory);
+    CloseHandle(file);
+    if (!read || previewJobCancelled(generation, expected) ||
+        FAILED(CreateStreamOnHGlobal(memory, TRUE, streamOut))) {
+        GlobalFree(memory);
+        *streamOut = nullptr;
+        return false;
+    }
+    return true;
+}
+
+bool createFileImagePreviewWic(const std::wstring& path, int boundsWidth, int boundsHeight,
+                             COLORREF background, HBITMAP& bitmap, int& width, int& height,
+                             int* sourceWidth = nullptr, int* sourceHeight = nullptr,
+                             bool fullResolution = false,
+                             const std::atomic<std::uint64_t>* generation = nullptr,
+                             std::uint64_t expected = 0) {
+    (void)background;
+    bitmap = nullptr;
+    width = 0;
+    height = 0;
+    if (path.empty() || boundsWidth <= 0 || boundsHeight <= 0) return false;
+    const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (FAILED(comResult)) return false;
+
+    IWICImagingFactory* factory = nullptr;
+    IWICBitmapDecoder* decoder = nullptr;
+    IWICBitmapFrameDecode* frame = nullptr;
+    IWICBitmapScaler* scaler = nullptr;
+    IWICFormatConverter* converter = nullptr;
+    IStream* stream = nullptr;
+    bool success = false;
+    do {
+        if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                    IID_PPV_ARGS(&factory))) ||
+            !createPreviewFileStream(path, &stream, generation, expected) ||
+            FAILED(factory->CreateDecoderFromStream(stream, nullptr,
+                                                     WICDecodeMetadataCacheOnDemand, &decoder)) ||
+            FAILED(decoder->GetFrame(0, &frame))) {
+            break;
+        }
+        if (previewJobCancelled(generation, expected)) break;
+        UINT originalWidth = 0;
+        UINT originalHeight = 0;
+        if (FAILED(frame->GetSize(&originalWidth, &originalHeight)) ||
+            originalWidth == 0 || originalHeight == 0) break;
+        if (static_cast<std::uint64_t>(originalWidth) * originalHeight >
+            kPopupPreviewMaxPixels) break;
+        if (sourceWidth) *sourceWidth = static_cast<int>(originalWidth);
+        if (sourceHeight) *sourceHeight = static_cast<int>(originalHeight);
+        const float scale = fullResolution ? 1.0f :
+            std::min(static_cast<float>(boundsWidth) / originalWidth,
+                     static_cast<float>(boundsHeight) / originalHeight);
+        width = std::max(1, static_cast<int>(originalWidth * scale + 0.5f));
+        height = std::max(1, static_cast<int>(originalHeight * scale + 0.5f));
+        IWICBitmapSource* source = frame;
+        if (width != static_cast<int>(originalWidth) || height != static_cast<int>(originalHeight)) {
+            if (FAILED(factory->CreateBitmapScaler(&scaler)) ||
+                FAILED(scaler->Initialize(frame, static_cast<UINT>(width), static_cast<UINT>(height),
+                                          WICBitmapInterpolationModeFant))) break;
+            source = scaler;
+        }
+        if (FAILED(factory->CreateFormatConverter(&converter)) ||
+            FAILED(converter->Initialize(source, GUID_WICPixelFormat32bppPBGRA,
+                                         WICBitmapDitherTypeNone, nullptr, 0.0,
+                                         WICBitmapPaletteTypeCustom))) break;
+        if (previewJobCancelled(generation, expected)) break;
+        BITMAPINFO info{};
+        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = width;
+        info.bmiHeader.biHeight = -height;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+        void* bits = nullptr;
+        bitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+        if (!bitmap || !bits) break;
+        const UINT stride = static_cast<UINT>(width) * 4;
+        const UINT bytes = stride * static_cast<UINT>(height);
+        if (FAILED(converter->CopyPixels(nullptr, stride, bytes, static_cast<BYTE*>(bits)))) break;
+        success = true;
+    } while (false);
+    if (!success) {
+        if (bitmap) DeleteObject(bitmap);
+        bitmap = nullptr;
+        width = 0;
+        height = 0;
+    }
+    if (converter) converter->Release();
+    if (scaler) scaler->Release();
+    if (frame) frame->Release();
+    if (decoder) decoder->Release();
+    if (stream) stream->Release();
+    if (factory) factory->Release();
+    CoUninitialize();
+    return success;
+}
+
+bool createFileImagePreviewGdi(const std::wstring& path, int boundsWidth, int boundsHeight,
+                              COLORREF background, HBITMAP& bitmap, int& width, int& height,
+                              int* sourceWidth = nullptr, int* sourceHeight = nullptr,
+                              bool fullResolution = false,
+                              const std::atomic<std::uint64_t>* generation = nullptr,
+                              std::uint64_t expected = 0) {
+    if (previewJobCancelled(generation, expected)) return false;
+    std::lock_guard<std::recursive_mutex> lock(g_gdiplusMutex);
+    if (!ensureGdiplus()) return false;
     Gdiplus::Image image(path.c_str(), FALSE);
     if (image.GetLastStatus() != Gdiplus::Ok || image.GetWidth() == 0 || image.GetHeight() == 0) {
         return false;
     }
-
-    const float scale = std::min(static_cast<float>(boundsWidth) / image.GetWidth(),
-                                 static_cast<float>(boundsHeight) / image.GetHeight());
+    if (sourceWidth) *sourceWidth = static_cast<int>(image.GetWidth());
+    if (sourceHeight) *sourceHeight = static_cast<int>(image.GetHeight());
+    if (previewJobCancelled(generation, expected) ||
+        static_cast<std::uint64_t>(image.GetWidth()) * image.GetHeight() >
+            kPopupPreviewMaxPixels) return false;
+    const float scale = fullResolution ? 1.0f :
+        std::min(static_cast<float>(boundsWidth) / image.GetWidth(),
+                 static_cast<float>(boundsHeight) / image.GetHeight());
     width = std::max(1, static_cast<int>(image.GetWidth() * scale + 0.5f));
     height = std::max(1, static_cast<int>(image.GetHeight() * scale + 0.5f));
-
     Gdiplus::Bitmap preview(width, height, PixelFormat32bppPARGB);
     if (preview.GetLastStatus() != Gdiplus::Ok) return false;
     Gdiplus::Graphics graphics(&preview);
@@ -3225,85 +3421,34 @@ bool createFileImagePreview(const std::wstring& path, int boundsWidth, int bound
     return true;
 }
 
-// 从已解码文件原图按当前缩放和偏移渲染固定大小的预览视口。
-bool createFileImageView(Gdiplus::Image& image, int boundsWidth, int boundsHeight,
-                         float zoom, float panX, float panY, COLORREF background,
-                         HBITMAP& bitmap, int& width, int& height,
-                         int& sourceWidth, int& sourceHeight) {
-    if (image.GetLastStatus() != Gdiplus::Ok || image.GetWidth() == 0 || image.GetHeight() == 0 ||
-        boundsWidth <= 0 || boundsHeight <= 0) return false;
-    sourceWidth = static_cast<int>(image.GetWidth());
-    sourceHeight = static_cast<int>(image.GetHeight());
-    const float fitScale = std::min(static_cast<float>(boundsWidth) / sourceWidth,
-                                    static_cast<float>(boundsHeight) / sourceHeight);
-    const float scale = fitScale * std::clamp(zoom, kPopupDetailPreviewMinZoom,
-                                               kPopupDetailPreviewMaxZoom);
-    const float scaledWidth = sourceWidth * scale;
-    const float scaledHeight = sourceHeight * scale;
-    BITMAPINFO outputInfo{};
-    outputInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    outputInfo.bmiHeader.biWidth = boundsWidth;
-    outputInfo.bmiHeader.biHeight = -boundsHeight;
-    outputInfo.bmiHeader.biPlanes = 1;
-    outputInfo.bmiHeader.biBitCount = 32;
-    outputInfo.bmiHeader.biCompression = BI_RGB;
-    void* bits = nullptr;
-    bitmap = CreateDIBSection(nullptr, &outputInfo, DIB_RGB_COLORS, &bits, nullptr, 0);
-    if (!bitmap || !bits) {
-        if (bitmap) DeleteObject(bitmap);
-        bitmap = nullptr;
-        return false;
-    }
-    HDC dc = CreateCompatibleDC(nullptr);
-    if (!dc) {
-        DeleteObject(bitmap);
-        bitmap = nullptr;
-        return false;
-    }
-    HGDIOBJ previous = SelectObject(dc, bitmap);
-    HBRUSH brush = CreateSolidBrush(background);
-    const RECT fillRect{0, 0, boundsWidth, boundsHeight};
-    FillRect(dc, &fillRect, brush);
-    DeleteObject(brush);
-    Gdiplus::Graphics graphics(dc);
-    configureGdiGraphics(graphics);
-    graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-    const float left = boundsWidth / 2.0f + panX - scaledWidth / 2.0f;
-    const float top = boundsHeight / 2.0f + panY - scaledHeight / 2.0f;
-    const Gdiplus::Status status = graphics.DrawImage(
-        &image, Gdiplus::RectF(left, top, scaledWidth, scaledHeight));
-    SelectObject(dc, previous);
-    DeleteDC(dc);
-    if (status != Gdiplus::Ok) {
-        DeleteObject(bitmap);
-        bitmap = nullptr;
-        return false;
-    }
-    width = boundsWidth;
-    height = boundsHeight;
-    return true;
-}
-
-// 从文件路径读取原图并生成一次详情预览视口。
-bool createFileImageView(const std::wstring& path, int boundsWidth, int boundsHeight,
-                         float zoom, float panX, float panY, COLORREF background,
-                         HBITMAP& bitmap, int& width, int& height,
-                         int& sourceWidth, int& sourceHeight) {
-    Gdiplus::Image image(path.c_str(), FALSE);
-    return createFileImageView(image, boundsWidth, boundsHeight, zoom, panX, panY,
-                               background, bitmap, width, height, sourceWidth, sourceHeight);
+bool createFileImagePreview(const std::wstring& path, int boundsWidth, int boundsHeight,
+                            COLORREF background, HBITMAP& bitmap, int& width, int& height,
+                            int* sourceWidth = nullptr, int* sourceHeight = nullptr,
+                            bool fullResolution = false,
+                            const std::atomic<std::uint64_t>* generation = nullptr,
+                            std::uint64_t expected = 0) {
+    if (createFileImagePreviewWic(path, boundsWidth, boundsHeight, background, bitmap, width, height,
+                                  sourceWidth, sourceHeight, fullResolution, generation, expected)) return true;
+    if (previewJobCancelled(generation, expected)) return false;
+    return createFileImagePreviewGdi(path, boundsWidth, boundsHeight, background, bitmap, width, height,
+                                     sourceWidth, sourceHeight, fullResolution, generation, expected);
 }
 
 bool createDibImagePreview(const std::string& payload, int boundsWidth, int boundsHeight,
-                           HBITMAP& bitmap, int& width, int& height) {
+                           HBITMAP& bitmap, int& width, int& height,
+                           bool fullResolution = false) {
     DibLayout layout{};
     if (!validateDibPayload(payload, &layout)) return false;
     BITMAPINFOHEADER header{};
     std::memcpy(&header, payload.data(), sizeof(header));
     const float imageWidth = static_cast<float>(header.biWidth);
     const float imageHeight = static_cast<float>(std::llabs(static_cast<long long>(header.biHeight)));
-    const float scale = std::min(static_cast<float>(boundsWidth) / imageWidth,
-                                 static_cast<float>(boundsHeight) / imageHeight);
+    if (imageWidth <= 0.0f || imageHeight <= 0.0f ||
+        static_cast<std::uint64_t>(imageWidth) * static_cast<std::uint64_t>(imageHeight) >
+            kPopupPreviewMaxPixels) return false;
+    const float scale = fullResolution ? 1.0f :
+        std::min(static_cast<float>(boundsWidth) / imageWidth,
+                 static_cast<float>(boundsHeight) / imageHeight);
     width = std::max(1, static_cast<int>(imageWidth * scale + 0.5f));
     height = std::max(1, static_cast<int>(imageHeight * scale + 0.5f));
 
@@ -3430,7 +3575,8 @@ bool pngEncoderClsid(CLSID& clsid) {
 }
 
 bool encodeBitmapToPng(HBITMAP bitmap, std::string& data) {
-    if (!bitmap) return false;
+    std::lock_guard<std::recursive_mutex> lock(g_gdiplusMutex);
+    if (!bitmap || !ensureGdiplus()) return false;
     CLSID encoder{};
     if (!pngEncoderClsid(encoder)) return false;
     HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, 0);
@@ -3462,7 +3608,8 @@ bool encodeBitmapToPng(HBITMAP bitmap, std::string& data) {
 
 bool decodePngToBitmap(const std::string& data, COLORREF background,
                        HBITMAP& bitmap, int& width, int& height) {
-    if (data.empty()) return false;
+    std::lock_guard<std::recursive_mutex> lock(g_gdiplusMutex);
+    if (data.empty() || !ensureGdiplus()) return false;
     HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, data.size());
     if (!memory) return false;
     void* destination = GlobalLock(memory);
@@ -3545,36 +3692,41 @@ void postPopupPreviewResult(const PopupPreviewJob& job, HBITMAP bitmap,
 
 // 将详情预览后台结果安全地投递回主线程。
 void postPopupDetailPreviewResult(const PopupPreviewJob& job, HBITMAP bitmap,
-                                  int width, int height, int sourceWidth, int sourceHeight,
-                                  std::uint64_t imageBytes,
-                                  std::wstring imageFormat,
-                                  std::string imagePayload,
-                                  std::shared_ptr<Gdiplus::Image> imageSource,
-                                  std::wstring text, bool success) {
+                                  HBITMAP sourceBitmap,
+                                   int sourceBitmapWidth, int sourceBitmapHeight,
+                                   int width, int height, int sourceWidth, int sourceHeight,
+                                   std::uint64_t imageBytes,
+                                   std::wstring imageFormat,
+                                   std::wstring text, bool success) {
     bool stopping = false;
     if (g_app) {
         std::lock_guard<std::mutex> lock(g_app->previewMutex);
         stopping = g_app->previewWorkerStop;
     }
-    if (!g_app || !g_app->hidden || stopping) {
+    const bool stale = !g_app ||
+        g_app->detailPreviewGeneration->load(std::memory_order_acquire) != job.generation;
+    if (!g_app || !g_app->hidden || stopping || stale) {
         if (bitmap) DeleteObject(bitmap);
+        if (sourceBitmap) DeleteObject(sourceBitmap);
         return;
     }
     try {
         auto result = std::make_unique<PopupDetailPreviewResult>(
             PopupDetailPreviewResult{job.popup, job.storeRevision, job.generation, job.itemIndex,
-                                     job.item.recordId, bitmap, width, height, sourceWidth, sourceHeight,
-                                     imageBytes, std::move(imageFormat), job.zoom, job.panX, job.panY,
-                                     std::move(imagePayload), std::move(imageSource),
-                                     std::move(text), success});
+                                     job.item.recordId, bitmap, sourceBitmap, sourceBitmapWidth,
+                                     sourceBitmapHeight, width, height, sourceWidth, sourceHeight,
+                                     imageBytes, std::move(imageFormat), std::move(text),
+                                     job.highQuality, success});
         if (!PostMessageW(g_app->hidden, kPopupDetailPreviewLoadedMessage,
                           reinterpret_cast<WPARAM>(result.get()), 0)) {
             if (result->bitmap) DeleteObject(result->bitmap);
+            if (result->sourceBitmap) DeleteObject(result->sourceBitmap);
             return;
         }
         result.release();
     } catch (...) {
         if (bitmap) DeleteObject(bitmap);
+        if (sourceBitmap) DeleteObject(sourceBitmap);
     }
 }
 
@@ -3596,7 +3748,7 @@ void previewWorkerLoop(AppState* app) {
             : app->previewGeneration->load(std::memory_order_acquire);
         if (currentGeneration != job.generation) {
             if (job.detail) {
-                postPopupDetailPreviewResult(job, nullptr, 0, 0, 0, 0, 0, {}, {}, {}, {}, false);
+                postPopupDetailPreviewResult(job, nullptr, nullptr, 0, 0, 0, 0, 0, 0, 0, {}, {}, false);
             } else {
                 postPopupPreviewResult(job, nullptr, 0, 0, false);
             }
@@ -3604,6 +3756,9 @@ void previewWorkerLoop(AppState* app) {
         }
 
         HBITMAP bitmap = nullptr;
+        HBITMAP sourceBitmap = nullptr;
+        int sourceBitmapWidth = 0;
+        int sourceBitmapHeight = 0;
         int width = 0;
         int height = 0;
         int sourceWidth = 0;
@@ -3612,20 +3767,33 @@ void previewWorkerLoop(AppState* app) {
         std::wstring imageFormat;
         std::string encoded;
         bool success = false;
-        std::string imagePayload;
-        std::shared_ptr<Gdiplus::Image> imageSource;
         std::wstring text;
         if (job.detail) {
+            const int sourceLimit = kPopupDetailPreviewSourceLimit;
             std::string payload;
             success = app->store.readPayloadSnapshot(job.historyPath, job.item, payload);
+            if (app->detailPreviewGeneration->load(std::memory_order_acquire) != job.generation) {
+                continue;
+            }
             if (success && job.kind == PopupPreviewKind::Dib) {
-                imagePayload = payload;
                 imageBytes = payload.size();
                 imageFormat = L"DIB";
-                success = createDibImageView(payload, job.width, job.height, job.zoom, job.panX, job.panY,
-                                             job.background, bitmap, width, height, sourceWidth, sourceHeight);
+                DibLayout layout{};
+                BITMAPINFOHEADER header{};
+                success = validateDibPayload(payload, &layout);
+                if (success) {
+                    std::memcpy(&header, payload.data(), sizeof(header));
+                    sourceWidth = header.biWidth;
+                    sourceHeight = static_cast<int>(std::llabs(static_cast<long long>(header.biHeight)));
+                    success = createDibImagePreview(payload, sourceLimit, sourceLimit, sourceBitmap,
+                                                    sourceBitmapWidth, sourceBitmapHeight,
+                                                    job.highQuality);
+                }
+                if (!success && sourceBitmap) {
+                    DeleteObject(sourceBitmap);
+                    sourceBitmap = nullptr;
+                }
             } else if (success && job.kind == PopupPreviewKind::File) {
-                imageSource = std::make_shared<Gdiplus::Image>(job.filePath.c_str(), FALSE);
                 const std::size_t extensionStart = job.filePath.find_last_of(L'.');
                 imageFormat = extensionStart == std::wstring::npos
                     ? L"IMAGE" : job.filePath.substr(extensionStart + 1);
@@ -3641,9 +3809,14 @@ void previewWorkerLoop(AppState* app) {
                     fileSize.HighPart = fileData.nFileSizeHigh;
                     imageBytes = fileSize.QuadPart;
                 }
-                success = imageSource->GetLastStatus() == Gdiplus::Ok &&
-                    createFileImageView(*imageSource, job.width, job.height, job.zoom, job.panX, job.panY,
-                                              job.background, bitmap, width, height, sourceWidth, sourceHeight);
+                success = createFileImagePreview(job.filePath, sourceLimit, sourceLimit, job.background,
+                                                  sourceBitmap, sourceBitmapWidth, sourceBitmapHeight,
+                                                  &sourceWidth, &sourceHeight, job.highQuality,
+                                                  app->detailPreviewGeneration.get(), job.generation);
+                if (!success && sourceBitmap) {
+                    DeleteObject(sourceBitmap);
+                    sourceBitmap = nullptr;
+                }
             } else if (success) {
                 constexpr std::size_t kDetailTextLimit = 128u * 1024u;
                 const std::string source = job.item.type == ClipType::Html
@@ -3654,11 +3827,14 @@ void previewWorkerLoop(AppState* app) {
                     text += L"\n...";
                 }
             }
-            postPopupDetailPreviewResult(job, bitmap, width, height, sourceWidth, sourceHeight,
-                                          imageBytes,
-                                          std::move(imageFormat),
-                                          std::move(imagePayload), std::move(imageSource),
-                                          std::move(text), success);
+            if (app->detailPreviewGeneration->load(std::memory_order_acquire) != job.generation) {
+                if (bitmap) DeleteObject(bitmap);
+                if (sourceBitmap) DeleteObject(sourceBitmap);
+                continue;
+            }
+            postPopupDetailPreviewResult(job, bitmap, sourceBitmap, sourceBitmapWidth, sourceBitmapHeight,
+                                          width, height, sourceWidth, sourceHeight,
+                                          imageBytes, std::move(imageFormat), std::move(text), success);
             continue;
         }
         success = app->thumbnailCache.read(job.cacheKey, job.encrypted, encoded) &&
@@ -3702,6 +3878,17 @@ bool startPreviewWorker() {
     }
 }
 
+void stopPreviewWorker() {
+    if (!g_app) return;
+    {
+        std::lock_guard<std::mutex> lock(g_app->previewMutex);
+        g_app->previewWorkerStop = true;
+        g_app->previewJobs.clear();
+    }
+    g_app->previewCondition.notify_all();
+    if (g_app->previewWorker.joinable()) g_app->previewWorker.join();
+}
+
 // 判断鼠标是否位于独立预览窗口内。
 bool detailPreviewContainsPoint(POINT point) {
     if (!g_app || !g_app->detailPreview || !IsWindowVisible(g_app->detailPreview)) return false;
@@ -3717,6 +3904,29 @@ void clearDetailPreviewBitmap() {
     g_app->detailPreviewState.bitmap = nullptr;
     g_app->detailPreviewState.width = 0;
     g_app->detailPreviewState.height = 0;
+}
+
+void clearDetailPreviewSourceBitmap() {
+    if (!g_app) return;
+    if (g_app->detailPreviewRenderer) g_app->detailPreviewRenderer->clearSource();
+    if (g_app->detailPreviewState.sourceBitmap) DeleteObject(g_app->detailPreviewState.sourceBitmap);
+    g_app->detailPreviewState.sourceBitmap = nullptr;
+    g_app->detailPreviewState.sourceBitmapWidth = 0;
+    g_app->detailPreviewState.sourceBitmapHeight = 0;
+}
+
+void scheduleDetailPreviewRender() {
+    if (!g_app || !g_app->popup || !g_app->detailPreview ||
+        (g_app->detailPreviewState.loading && !g_app->detailPreviewState.sourceBitmap) ||
+        g_app->detailPreviewState.recordId == 0) return;
+    KillTimer(g_app->popup, kPopupDetailRenderTimer);
+    SetTimer(g_app->popup, kPopupDetailRenderTimer, 16, nullptr);
+    if (g_app->detailPreviewRenderer) {
+        g_app->detailPreviewRenderer->setTransform(
+            g_app->detailPreviewState.zoom,
+            g_app->detailPreviewState.panX,
+            g_app->detailPreviewState.panY);
+    }
 }
 
 // 取消排队中的详情预览任务并推进任务代次。
@@ -3737,17 +3947,21 @@ void hideDetailPreview() {
     if (!g_app) return;
     KillTimer(g_app->popup, kPopupPreviewHoverTimer);
     KillTimer(g_app->popup, kPopupPreviewHideTimer);
+    KillTimer(g_app->popup, kPopupDetailRenderTimer);
     if (g_app->detailPreviewDragging && GetCapture() == g_app->detailPreview) {
         ReleaseCapture();
     }
     g_app->detailPreviewDragging = false;
     g_app->detailPreviewVisible = false;
     g_app->detailPreviewHeld = false;
+    g_app->detailPreviewHighQuality = false;
+    g_app->detailPreviewUpgradeFailed = false;
     g_app->detailPreviewPendingRow = -1;
     g_app->detailPreviewHoverRow = -1;
     cancelDetailPreviewWork();
     clearDetailPreviewBitmap();
-    g_app->detailPreviewState.text.clear();
+    clearDetailPreviewSourceBitmap();
+    std::wstring().swap(g_app->detailPreviewState.text);
     g_app->detailPreviewState.itemIndex = 0;
     g_app->detailPreviewState.recordId = 0;
     g_app->detailPreviewState.storeRevision = 0;
@@ -3757,20 +3971,15 @@ void hideDetailPreview() {
     g_app->detailPreviewState.zoom = 1.0f;
     g_app->detailPreviewState.panX = 0.0f;
     g_app->detailPreviewState.panY = 0.0f;
-    g_app->detailPreviewState.bitmapZoom = 1.0f;
-    g_app->detailPreviewState.bitmapPanX = 0.0f;
-    g_app->detailPreviewState.bitmapPanY = 0.0f;
     g_app->detailPreviewState.sourceWidth = 0;
     g_app->detailPreviewState.sourceHeight = 0;
     g_app->detailPreviewState.imageBytes = 0;
     g_app->detailPreviewState.imageFormat.clear();
-    g_app->detailPreviewState.imagePayload.clear();
-    g_app->detailPreviewState.imageSource.reset();
     if (g_app->detailPreviewTextEdit) ShowWindow(g_app->detailPreviewTextEdit, SW_HIDE);
     if (g_app->detailPreview) ShowWindow(g_app->detailPreview, SW_HIDE);
 }
 
-// 销毁详情预览窗口及其资源。
+// 历史窗口关闭时才销毁可复用的详情预览窗口。
 void destroyDetailPreview() {
     if (!g_app) return;
     hideDetailPreview();
@@ -3778,6 +3987,7 @@ void destroyDetailPreview() {
         DestroyWindow(g_app->detailPreview);
         g_app->detailPreview = nullptr;
     }
+    g_app->detailPreviewRenderer.reset();
     g_app->detailPreviewTextEdit = nullptr;
     if (g_app->richEditModule) {
         FreeLibrary(g_app->richEditModule);
@@ -3796,6 +4006,10 @@ bool ensureDetailPreviewWindow() {
         ui(kPopupDetailPreviewHeight), g_app->popup, nullptr,
         GetModuleHandleW(nullptr), nullptr);
     if (g_app->detailPreview) {
+        g_app->detailPreviewRenderer = std::make_unique<PopupPreviewRenderer>();
+        if (!g_app->detailPreviewRenderer->attach(g_app->detailPreview)) {
+            g_app->detailPreviewRenderer.reset();
+        }
         const int width = ui(kPopupDetailPreviewWidth);
         const int height = ui(kPopupDetailPreviewHeight);
         HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, ui(16), ui(16));
@@ -3867,15 +4081,23 @@ void positionDetailPreview(int row) {
     y = std::clamp(y, static_cast<int>(info.rcWork.top),
                    static_cast<int>(info.rcWork.bottom) - height);
     SetWindowPos(g_app->detailPreview, HWND_TOPMOST, x, y, width, height,
-                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                  SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    if (g_app->detailPreviewRenderer) {
+        g_app->detailPreviewRenderer->resize(detailPreviewContentRect(g_app->detailPreview));
+    }
     const bool showText = !g_app->detailPreviewState.loading &&
-        !g_app->detailPreviewState.failed && !g_app->detailPreviewState.bitmap;
+        !g_app->detailPreviewState.failed && !g_app->detailPreviewState.sourceBitmap;
     positionDetailPreviewTextEdit(showText);
 }
 
 // 为指定历史记录请求一次原始内容预览。
-void requestDetailPreview(int row) {
-    if (!g_app || !g_app->popup || row < 0 ||
+void requestDetailPreview(int row, bool upgrade) {
+    if (!g_app || !g_app->popup) return;
+    if (g_app->filterMenuOpen) {
+        hideDetailPreview();
+        return;
+    }
+    if (row < 0 ||
         row >= static_cast<int>(g_app->visible.size())) {
         hideDetailPreview();
         return;
@@ -3890,7 +4112,7 @@ void requestDetailPreview(int row) {
     const bool sameRecord = g_app->detailPreviewState.recordId == item.recordId &&
         g_app->detailPreviewState.storeRevision == g_app->store.revision() &&
         !g_app->detailPreviewState.failed;
-    if (sameRecord) {
+    if (sameRecord && !upgrade) {
         g_app->detailPreviewVisible = true;
         positionDetailPreview(row);
         InvalidateRect(g_app->detailPreview, nullptr, FALSE);
@@ -3898,22 +4120,22 @@ void requestDetailPreview(int row) {
     }
 
     if (!sameRecord) {
+        g_app->detailPreviewHighQuality = false;
+        g_app->detailPreviewUpgradeFailed = false;
         g_app->detailPreviewState.zoom = 1.0f;
         g_app->detailPreviewState.panX = 0.0f;
         g_app->detailPreviewState.panY = 0.0f;
-        g_app->detailPreviewState.bitmapZoom = 1.0f;
-        g_app->detailPreviewState.bitmapPanX = 0.0f;
-        g_app->detailPreviewState.bitmapPanY = 0.0f;
         g_app->detailPreviewState.sourceWidth = 0;
         g_app->detailPreviewState.sourceHeight = 0;
         g_app->detailPreviewState.imageBytes = 0;
         g_app->detailPreviewState.imageFormat.clear();
-        g_app->detailPreviewState.imagePayload.clear();
-        g_app->detailPreviewState.imageSource.reset();
     }
     cancelDetailPreviewWork();
-    clearDetailPreviewBitmap();
-    g_app->detailPreviewState.text.clear();
+    if (!upgrade) {
+        clearDetailPreviewBitmap();
+        clearDetailPreviewSourceBitmap();
+        g_app->detailPreviewState.text.clear();
+    }
     g_app->detailPreviewState.itemIndex = itemIndex;
     g_app->detailPreviewState.recordId = item.recordId;
     g_app->detailPreviewState.storeRevision = g_app->store.revision();
@@ -3938,9 +4160,7 @@ void requestDetailPreview(int row) {
     job.background = settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
     job.encrypted = item.encrypted;
     job.detail = true;
-    job.zoom = g_app->detailPreviewState.zoom;
-    job.panX = g_app->detailPreviewState.panX;
-    job.panY = g_app->detailPreviewState.panY;
+    job.highQuality = g_app->detailPreviewHeld || g_app->detailPreviewHighQuality;
     if (isImageType(item.type)) {
         job.kind = PopupPreviewKind::Dib;
     } else if (item.type == ClipType::Files) {
@@ -3957,7 +4177,11 @@ void requestDetailPreview(int row) {
     }
     if (!startPreviewWorker()) {
         g_app->detailPreviewState.loading = false;
-        g_app->detailPreviewState.failed = true;
+        g_app->detailPreviewState.failed = !g_app->detailPreviewState.sourceBitmap;
+        if (upgrade) {
+            g_app->detailPreviewHighQuality = false;
+            g_app->detailPreviewUpgradeFailed = true;
+        }
         updateDetailPreviewTextEdit();
         InvalidateRect(g_app->detailPreview, nullptr, FALSE);
         return;
@@ -3968,14 +4192,7 @@ void requestDetailPreview(int row) {
             std::remove_if(g_app->previewJobs.begin(), g_app->previewJobs.end(),
                            [](const PopupPreviewJob& queued) { return queued.detail; }),
             g_app->previewJobs.end());
-        if (g_app->previewJobs.size() >= 12) {
-            g_app->detailPreviewState.loading = false;
-            g_app->detailPreviewState.failed = true;
-            updateDetailPreviewTextEdit();
-            InvalidateRect(g_app->detailPreview, nullptr, FALSE);
-            return;
-        }
-        g_app->previewJobs.push_back(std::move(job));
+        g_app->previewJobs.push_front(std::move(job));
     }
     g_app->previewCondition.notify_one();
 }
@@ -3983,6 +4200,11 @@ void requestDetailPreview(int row) {
 // 延迟处理自动预览，避免鼠标快速经过列表时频繁读取原图。
 void scheduleDetailPreview(int row) {
     if (!g_app || !g_app->popup || !g_app->settingsData.previewAutomatic) return;
+    if (g_app->filterMenuOpen) {
+        KillTimer(g_app->popup, kPopupPreviewHoverTimer);
+        KillTimer(g_app->popup, kPopupPreviewHideTimer);
+        return;
+    }
     g_app->detailPreviewPendingRow = row;
     KillTimer(g_app->popup, kPopupPreviewHideTimer);
     KillTimer(g_app->popup, kPopupPreviewHoverTimer);
@@ -4072,7 +4294,7 @@ void updateDetailPreviewTextEdit() {
     if (!g_app || !g_app->detailPreviewTextEdit) return;
     refreshDetailPreviewTextEditAppearance();
     const bool show = !g_app->detailPreviewState.loading &&
-        !g_app->detailPreviewState.failed && !g_app->detailPreviewState.bitmap;
+        !g_app->detailPreviewState.failed && !g_app->detailPreviewState.sourceBitmap;
     if (!show) {
         positionDetailPreviewTextEdit(false);
         return;
@@ -4090,136 +4312,55 @@ float detailImageFitScale(const RECT& content) {
         g_app->detailPreviewState.sourceHeight <= 0) return 1.0f;
     return std::min(static_cast<float>(content.right - content.left) /
                         g_app->detailPreviewState.sourceWidth,
-                    static_cast<float>(content.bottom - content.top) /
-                        g_app->detailPreviewState.sourceHeight);
+                     static_cast<float>(content.bottom - content.top) /
+                         g_app->detailPreviewState.sourceHeight);
 }
 
-// 限制拖拽偏移，避免放大图片拖出过大的空白区域。
-void clampDetailImagePan(const RECT& content) {
-    if (!g_app) return;
-    const float scale = detailImageFitScale(content) * g_app->detailPreviewState.zoom;
-    const float imageWidth = g_app->detailPreviewState.sourceWidth * scale;
-    const float imageHeight = g_app->detailPreviewState.sourceHeight * scale;
-    const float maxX = std::max(0.0f, (imageWidth - (content.right - content.left)) / 2.0f);
-    const float maxY = std::max(0.0f, (imageHeight - (content.bottom - content.top)) / 2.0f);
-    g_app->detailPreviewState.panX = std::clamp(g_app->detailPreviewState.panX, -maxX, maxX);
-    g_app->detailPreviewState.panY = std::clamp(g_app->detailPreviewState.panY, -maxY, maxY);
-}
-
-// 从当前保留的原图源渲染固定大小的预览缓冲区。
-bool renderDetailPreviewImage() {
+void fitDetailPreviewImage() {
     if (!g_app || !g_app->detailPreview ||
-        (g_app->detailPreviewState.imagePayload.empty() &&
-         !g_app->detailPreviewState.imageSource)) return false;
+        g_app->detailPreviewState.sourceWidth <= 0 ||
+        g_app->detailPreviewState.sourceHeight <= 0) return;
     const RECT content = detailPreviewContentRect(g_app->detailPreview);
-    const int width = content.right - content.left;
-    const int height = content.bottom - content.top;
-    if (width <= 0 || height <= 0) return false;
-    if (!g_app->detailPreviewState.bitmap || g_app->detailPreviewState.width != width ||
-        g_app->detailPreviewState.height != height) {
-        HBITMAP replacement = nullptr;
-        BITMAPINFO outputInfo{};
-        outputInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        outputInfo.bmiHeader.biWidth = width;
-        outputInfo.bmiHeader.biHeight = -height;
-        outputInfo.bmiHeader.biPlanes = 1;
-        outputInfo.bmiHeader.biBitCount = 32;
-        outputInfo.bmiHeader.biCompression = BI_RGB;
-        void* bits = nullptr;
-        replacement = CreateDIBSection(nullptr, &outputInfo, DIB_RGB_COLORS,
-                                       &bits, nullptr, 0);
-        if (!replacement || !bits) {
-            if (replacement) DeleteObject(replacement);
-            return false;
-        }
-        clearDetailPreviewBitmap();
-        g_app->detailPreviewState.bitmap = replacement;
-        g_app->detailPreviewState.width = width;
-        g_app->detailPreviewState.height = height;
+    g_app->detailPreviewState.zoom = detailImageFitScale(content);
+    g_app->detailPreviewState.panX = 0.0f;
+    g_app->detailPreviewState.panY = 0.0f;
+    if (g_app->detailPreviewRenderer) {
+        g_app->detailPreviewRenderer->setTransform(
+            g_app->detailPreviewState.zoom, 0.0f, 0.0f);
     }
-    HDC dc = CreateCompatibleDC(nullptr);
-    if (!dc) return false;
-    HGDIOBJ previous = SelectObject(dc, g_app->detailPreviewState.bitmap);
-    const COLORREF background = settingsThemeColor(RGB(248, 250, 252), RGB(37, 44, 54));
-    HBRUSH brush = CreateSolidBrush(background);
-    const RECT localRect{0, 0, width, height};
-    FillRect(dc, &localRect, brush);
-    DeleteObject(brush);
-    const float scale = detailImageFitScale(content) *
-        std::clamp(g_app->detailPreviewState.zoom, kPopupDetailPreviewMinZoom,
-                   kPopupDetailPreviewMaxZoom);
-    const int scaledWidth = std::max(1, static_cast<int>(std::lround(
-        g_app->detailPreviewState.sourceWidth * scale)));
-    const int scaledHeight = std::max(1, static_cast<int>(std::lround(
-        g_app->detailPreviewState.sourceHeight * scale)));
-    const int left = static_cast<int>(std::lround(width / 2.0f +
-        g_app->detailPreviewState.panX - scaledWidth / 2.0f));
-    const int top = static_cast<int>(std::lround(height / 2.0f +
-        g_app->detailPreviewState.panY - scaledHeight / 2.0f));
-    bool drawn = false;
-    if (!g_app->detailPreviewState.imagePayload.empty()) {
-        DibLayout layout{};
-        if (validateDibPayload(g_app->detailPreviewState.imagePayload, &layout)) {
-            BITMAPINFOHEADER header{};
-            std::memcpy(&header, g_app->detailPreviewState.imagePayload.data(), sizeof(header));
-            SetStretchBltMode(dc, HALFTONE);
-            POINT origin{};
-            SetBrushOrgEx(dc, 0, 0, &origin);
-            const int result = StretchDIBits(
-                dc, left, top, scaledWidth, scaledHeight, 0, 0, header.biWidth,
-                static_cast<int>(std::llabs(static_cast<long long>(header.biHeight))),
-                g_app->detailPreviewState.imagePayload.data() + layout.bitsOffset,
-                reinterpret_cast<const BITMAPINFO*>(g_app->detailPreviewState.imagePayload.data()),
-                DIB_RGB_COLORS, SRCCOPY);
-            SetBrushOrgEx(dc, origin.x, origin.y, nullptr);
-            drawn = result > 0 && result != GDI_ERROR;
-        }
-    } else if (g_app->detailPreviewState.imageSource) {
-        Gdiplus::Graphics graphics(dc);
-        configureGdiGraphics(graphics);
-        graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-        drawn = graphics.DrawImage(&*g_app->detailPreviewState.imageSource,
-            Gdiplus::RectF(static_cast<float>(left), static_cast<float>(top),
-                           static_cast<float>(scaledWidth), static_cast<float>(scaledHeight))) ==
-            Gdiplus::Ok;
-    }
-    SelectObject(dc, previous);
-    DeleteDC(dc);
-    if (!drawn) return false;
-    g_app->detailPreviewState.bitmapZoom = g_app->detailPreviewState.zoom;
-    g_app->detailPreviewState.bitmapPanX = g_app->detailPreviewState.panX;
-    g_app->detailPreviewState.bitmapPanY = g_app->detailPreviewState.panY;
-    return true;
 }
 
 // 以鼠标位置为锚点设置目标缩放比例。
 bool zoomDetailPreviewAt(POINT cursor, int wheelDelta) {
-    if (!g_app || !g_app->detailPreview || !g_app->detailPreviewState.bitmap ||
+    if (!g_app || !g_app->detailPreview || !g_app->detailPreviewState.sourceBitmap ||
         g_app->detailPreviewState.sourceWidth <= 0 ||
         g_app->detailPreviewState.sourceHeight <= 0) return false;
     const RECT content = detailPreviewContentRect(g_app->detailPreview);
     if (!PtInRect(&content, cursor)) return false;
-    const float oldZoom = g_app->detailPreviewState.bitmapZoom;
-    const float oldPanX = g_app->detailPreviewState.bitmapPanX;
-    const float oldPanY = g_app->detailPreviewState.bitmapPanY;
-    const float factor = std::pow(1.2f, static_cast<float>(wheelDelta) / WHEEL_DELTA);
+    const float oldZoom = g_app->detailPreviewState.zoom;
+    const float oldPanX = g_app->detailPreviewState.panX;
+    const float oldPanY = g_app->detailPreviewState.panY;
+    const float factor = std::pow(wheelDelta > 0 ? 1.1f : 0.9f,
+                                  std::abs(wheelDelta) / static_cast<float>(WHEEL_DELTA));
     const float newZoom = std::clamp(oldZoom * factor, kPopupDetailPreviewMinZoom,
                                      kPopupDetailPreviewMaxZoom);
     if (newZoom == oldZoom) return false;
-    const float oldScale = detailImageFitScale(content) * oldZoom;
-    const float newScale = detailImageFitScale(content) * newZoom;
-    const float centerX = (content.left + content.right) / 2.0f;
-    const float centerY = (content.top + content.bottom) / 2.0f;
-    const float imageX = (cursor.x - centerX - oldPanX) / oldScale +
+    // 缩放计算使用 D2D 子窗口的客户区坐标，父窗口坐标会包含标题栏和边距。
+    const POINT localCursor{cursor.x - content.left, cursor.y - content.top};
+    const float oldScale = oldZoom;
+    const float newScale = newZoom;
+    const float centerX = (content.right - content.left) / 2.0f;
+    const float centerY = (content.bottom - content.top) / 2.0f;
+    const float imageX = (localCursor.x - centerX - oldPanX) / oldScale +
         g_app->detailPreviewState.sourceWidth / 2.0f;
-    const float imageY = (cursor.y - centerY - oldPanY) / oldScale +
+    const float imageY = (localCursor.y - centerY - oldPanY) / oldScale +
         g_app->detailPreviewState.sourceHeight / 2.0f;
     g_app->detailPreviewState.zoom = newZoom;
-    g_app->detailPreviewState.panX = cursor.x - centerX -
+    g_app->detailPreviewState.panX = localCursor.x - centerX -
         (imageX - g_app->detailPreviewState.sourceWidth / 2.0f) * newScale;
-    g_app->detailPreviewState.panY = cursor.y - centerY -
+    g_app->detailPreviewState.panY = localCursor.y - centerY -
         (imageY - g_app->detailPreviewState.sourceHeight / 2.0f) * newScale;
-    return renderDetailPreviewImage();
+    return true;
 }
 
 // 使用双缓冲绘制独立详情预览窗口。
@@ -4285,20 +4426,37 @@ void paintDetailPreview(HWND hwnd, HDC dc) {
     RECT metaRect{width / 2, ui(10), width - ui(16), ui(34)};
     DrawTextW(buffer, meta.c_str(), -1, &metaRect,
               DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if (g_app->detailPreviewState.sourceBitmap) {
+        wchar_t zoom[24]{};
+        swprintf_s(zoom, L"%.2fx", static_cast<double>(g_app->detailPreviewState.zoom));
+        RECT zoomRect{width - ui(110), ui(33), width - ui(16), ui(47)};
+        DrawTextW(buffer, zoom, -1, &zoomRect,
+                  DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        const wchar_t* status = nullptr;
+        if (g_app->detailPreviewHighQuality && g_app->detailPreviewState.loading) {
+            status = tr(L"Loading original image...", L"正在加载原图...");
+        } else if (g_app->detailPreviewUpgradeFailed) {
+            status = tr(L"Original image failed; showing preview", L"原图加载失败，仍显示预览图");
+        } else if (g_app->detailPreviewHighQuality &&
+                   g_app->detailPreviewState.sourceBitmapWidth ==
+                       g_app->detailPreviewState.sourceWidth &&
+                   g_app->detailPreviewState.sourceBitmapHeight ==
+                       g_app->detailPreviewState.sourceHeight) {
+            status = tr(L"Original image loaded", L"原图已加载");
+        }
+        if (status) {
+            RECT statusRect{ui(16), ui(33), zoomRect.left - ui(4), ui(47)};
+            DrawTextW(buffer, status, -1, &statusRect,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+    }
     drawGdiLine(buffer, ui(16), ui(48), width - ui(16), ui(48), divider, 1.0f);
     RECT content = detailPreviewContentRect(hwnd);
     HBRUSH contentBrush = CreateSolidBrush(contentBackground);
     FillRect(buffer, &content, contentBrush);
     DeleteObject(contentBrush);
-    if (g_app->detailPreviewState.bitmap) {
-        HDC source = CreateCompatibleDC(buffer);
-        if (source) {
-            HGDIOBJ oldBitmap = SelectObject(source, g_app->detailPreviewState.bitmap);
-            BitBlt(buffer, content.left, content.top, content.right - content.left,
-                   content.bottom - content.top, source, 0, 0, SRCCOPY);
-            SelectObject(source, oldBitmap);
-            DeleteDC(source);
-        }
+    if (g_app->detailPreviewState.sourceBitmap) {
+        // The D2D canvas child owns the image content.
     } else if (g_app->detailPreviewState.loading) {
         DrawTextW(buffer, settingsLocale().previewLoading, -1, &content,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -4439,23 +4597,10 @@ void preloadPopupImageScreens(HWND hwnd) {
             continue;
         }
         if (item.type != ClipType::Image && item.type != ClipType::ImageV5) continue;
-        std::string encoded;
-        HBITMAP bitmap = nullptr;
-        int width = 0;
-        int height = 0;
-        if (!g_app->thumbnailCache.read(normalPreviewCacheKey(item),
-                                        g_app->settingsData.encryptData, encoded) ||
-            !decodePngToBitmap(encoded, settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48)),
-                               bitmap, width, height)) {
-            if (bitmap) DeleteObject(bitmap);
-            if (!startDibImagePreviewLoad(g_app->popup, itemIndex, item, previewRect)) continue;
-            trimPopupImagePreviewCache();
-            g_app->imagePreviews.push_back(PopupImagePreview{itemIndex, nullptr, 0, 0, false, true,
-                                                               g_app->imagePreviewGeneration, 0});
-            continue;
-        }
+        if (!startDibImagePreviewLoad(g_app->popup, itemIndex, item, previewRect)) continue;
         trimPopupImagePreviewCache();
-        g_app->imagePreviews.push_back(PopupImagePreview{itemIndex, bitmap, width, height});
+        g_app->imagePreviews.push_back(PopupImagePreview{itemIndex, nullptr, 0, 0, false, true,
+                                                           g_app->imagePreviewGeneration, 0});
         }
     };
     const int currentEnd = std::min(static_cast<int>(g_app->visible.size()), firstRow + rows);
@@ -4807,7 +4952,14 @@ void closePopup() {
     cancelPopupSearch();
     closeFilterMenu();
     destroyDetailPreview();
+    stopPreviewWorker();
+    clearPopupImagePreviews();
+    clearPopupSurfaceCache();
     clearPopupSourceIcons();
+    g_app->thumbnailCache.unloadIndex();
+    std::vector<FileAvailability>().swap(g_app->fileAvailability);
+    std::vector<std::size_t>().swap(g_app->searchCandidates);
+    std::vector<std::size_t>().swap(g_app->visible);
     const HWND target = g_app->targetWindow;
     if (g_app->popupMouseHook) {
         UnhookWindowsHookEx(g_app->popupMouseHook);
@@ -4824,6 +4976,7 @@ void closePopup() {
         KillTimer(g_app->popup, kPopupScrollAnimationTimer);
         KillTimer(g_app->popup, kPopupPreviewHoverTimer);
         KillTimer(g_app->popup, kPopupPreviewHideTimer);
+        KillTimer(g_app->popup, kPopupDetailRenderTimer);
         DestroyWindow(g_app->popup);
     }
     g_app->popup = nullptr;
@@ -4837,6 +4990,9 @@ void closePopup() {
     g_app->popupOpenedByWinV = false;
     g_app->filterMenuOpen = false;
     g_app->popupOpenInputTick = 0;
+    shutdownGdiplusIfIdle();
+    SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1),
+                             static_cast<SIZE_T>(-1));
     if (IsWindow(target)) restorePasteTargetFocus(target);
 }
 
@@ -7840,7 +7996,7 @@ void clearPopupSourceIcons() {
     for (const PopupSourceIcon& source : g_app->sourceIcons) {
         if (source.icon) DestroyIcon(source.icon);
     }
-    g_app->sourceIcons.clear();
+    std::vector<PopupSourceIcon>().swap(g_app->sourceIcons);
 }
 
 int filterSubmenuOptionCount(int submenu) {
@@ -8076,10 +8232,12 @@ bool filterMenuContainsPoint(POINT point) {
 
 void closeFilterMenu() {
     if (!g_app) return;
+    if (g_app->filterMenuWindow) KillTimer(g_app->filterMenuWindow, kFilterSubmenuHoverTimer);
     if (g_app->filterSubmenuDragging) ReleaseCapture();
     g_app->filterSubmenuDragging = false;
     g_app->filterMenuOpen = false;
     g_app->filterMenuSubmenu = -1;
+    g_app->filterMenuPendingSubmenu = -1;
     g_app->filterMenuHover = -1;
     g_app->filterSubmenuHover = -1;
     if (g_app->filterSubmenuWindow) DestroyWindow(g_app->filterSubmenuWindow);
@@ -8108,6 +8266,8 @@ void positionFilterSubmenu() {
 
 void openFilterSubmenu(int submenu) {
     if (!g_app || !g_app->filterMenuWindow || submenu < 0 || submenu > 3) return;
+    KillTimer(g_app->filterMenuWindow, kFilterSubmenuHoverTimer);
+    g_app->filterMenuPendingSubmenu = -1;
     if (g_app->filterSubmenuDragging) ReleaseCapture();
     g_app->filterSubmenuDragging = false;
     g_app->filterMenuSubmenu = submenu;
@@ -8129,6 +8289,7 @@ void showPopupFilterMenu(HWND hwnd) {
         closeFilterMenu();
         return;
     }
+    hideDetailPreview();
     RECT buttonRect{ui(kPopupFilterButtonLeft), ui(12),
                     ui(kPopupFilterButtonRight), ui(46)};
     POINT point{buttonRect.right, buttonRect.bottom};
@@ -9874,6 +10035,7 @@ void subclassSettingsControls(HWND hwnd) {
 }
 
 LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message == WM_PAINT && !g_supportProcessMode) ensureGdiplus();
     if (!g_app) return DefWindowProcW(hwnd, message, wParam, lParam);
     // UI 线程读取索引时与存储 worker 共用这把锁，避免快照之外的旧 UI 路径产生竞态。
     std::lock_guard<std::recursive_mutex> storeLock(g_app->storeMutex);
@@ -9950,15 +10112,47 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 hover = value;
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
-            if (!submenu && value >= 0 && value < 4 && value != g_app->filterMenuSubmenu) {
-                openFilterSubmenu(value);
+            if (!submenu) {
+                if (value >= 0 && value < 4 && value != g_app->filterMenuSubmenu) {
+                    if (value != g_app->filterMenuPendingSubmenu) {
+                        g_app->filterMenuPendingSubmenu = value;
+                        KillTimer(hwnd, kFilterSubmenuHoverTimer);
+                        SetTimer(hwnd, kFilterSubmenuHoverTimer,
+                                 kFilterSubmenuHoverDelayMs, nullptr);
+                    }
+                } else {
+                    g_app->filterMenuPendingSubmenu = -1;
+                    KillTimer(hwnd, kFilterSubmenuHoverTimer);
+                }
+            }
+            return 0;
+        }
+        if (message == WM_TIMER && wParam == kFilterSubmenuHoverTimer) {
+            KillTimer(hwnd, kFilterSubmenuHoverTimer);
+            const int pending = g_app->filterMenuPendingSubmenu;
+            POINT cursor{};
+            GetCursorPos(&cursor);
+            ScreenToClient(hwnd, &cursor);
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            if (g_app->filterMenuOpen && hwnd == g_app->filterMenuWindow &&
+                pending >= 0 && pending < 4 &&
+                PtInRect(&client, cursor) &&
+                filterMenuMainRowAt(cursor.y) == pending) {
+                openFilterSubmenu(pending);
                 InvalidateRect(hwnd, nullptr, FALSE);
+            } else {
+                g_app->filterMenuPendingSubmenu = -1;
             }
             return 0;
         }
         if (message == WM_MOUSELEAVE) {
             if (submenu) g_app->filterSubmenuHover = -1;
-            else g_app->filterMenuHover = -1;
+            else {
+                g_app->filterMenuHover = -1;
+                g_app->filterMenuPendingSubmenu = -1;
+                KillTimer(hwnd, kFilterSubmenuHoverTimer);
+            }
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
@@ -10340,6 +10534,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     if (message == WM_DESTROY && hwnd == g_app->popup) {
         cancelPopupSearch();
         destroyDetailPreview();
+        stopPreviewWorker();
         clearDetailPreviewBitmap();
         clearPopupImagePreviews();
         clearPopupSourceIcons();
@@ -10354,6 +10549,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         KillTimer(hwnd, kPopupPreviewResumeTimer);
         KillTimer(hwnd, kPopupPreviewHoverTimer);
         KillTimer(hwnd, kPopupPreviewHideTimer);
+        KillTimer(hwnd, kPopupDetailRenderTimer);
         if (g_app->popupMouseHook) {
             UnhookWindowsHookEx(g_app->popupMouseHook);
             g_app->popupMouseHook = nullptr;
@@ -10368,6 +10564,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         g_app->popupActivated = false;
         g_app->popupOpenedByWinV = false;
         g_app->popupOpenInputTick = 0;
+        shutdownGdiplusIfIdle();
     }
     if (message == WM_DESTROY && hwnd == g_app->settings) {
         if (g_app->settingsScrollDragging) {
@@ -10404,6 +10601,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         g_app->settingsThemeAnimating = false;
         g_app->shortcutCaptureControl = nullptr;
         g_app->languageDropdown = nullptr;
+        shutdownGdiplusIfIdle();
     }
     if (g_taskbarCreated != 0 && message == g_taskbarCreated &&
         hwnd == g_app->taskbarWindow) {
@@ -10468,7 +10666,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (cached == g_app->imagePreviews.end() || !cached->loading ||
                 cached->loadGeneration != result->generation) {
                 if (result->bitmap) DeleteObject(result->bitmap);
-                invalidatePopupList(g_app->popup);
+                invalidatePopupImageRow(g_app->popup, itemIndex);
                 return 0;
             }
             cached->loading = false;
@@ -10481,7 +10679,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 cached->width = result->width;
                 cached->height = result->height;
             }
-            invalidatePopupList(g_app->popup);
+            invalidatePopupImageRow(g_app->popup, itemIndex);
             return 0;
         }
         if (message == kPopupDetailPreviewLoadedMessage) {
@@ -10494,37 +10692,58 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 result->recordId != g_app->detailPreviewState.recordId;
             if (stale) {
                 if (result->bitmap) DeleteObject(result->bitmap);
+                if (result->sourceBitmap) DeleteObject(result->sourceBitmap);
                 return 0;
             }
             g_app->detailPreviewState.loading = false;
             if (result->success) {
+                g_app->detailPreviewUpgradeFailed = false;
                 clearDetailPreviewBitmap();
+                clearDetailPreviewSourceBitmap();
                 g_app->detailPreviewState.failed = false;
                 g_app->detailPreviewState.text = std::move(result->text);
                 g_app->detailPreviewState.sourceWidth = result->sourceWidth;
                 g_app->detailPreviewState.sourceHeight = result->sourceHeight;
                 g_app->detailPreviewState.imageBytes = result->imageBytes;
                 g_app->detailPreviewState.imageFormat = std::move(result->imageFormat);
-                g_app->detailPreviewState.imagePayload = std::move(result->imagePayload);
-                g_app->detailPreviewState.imageSource = std::move(result->imageSource);
-                g_app->detailPreviewState.bitmap = result->bitmap;
+                g_app->detailPreviewState.sourceBitmap = result->sourceBitmap;
+                g_app->detailPreviewState.sourceBitmapWidth = result->sourceBitmapWidth;
+                g_app->detailPreviewState.sourceBitmapHeight = result->sourceBitmapHeight;
                 g_app->detailPreviewState.width = result->width;
                 g_app->detailPreviewState.height = result->height;
-                g_app->detailPreviewState.bitmapZoom = result->zoom;
-                g_app->detailPreviewState.bitmapPanX = result->panX;
-                g_app->detailPreviewState.bitmapPanY = result->panY;
-                if (g_app->detailPreviewState.sourceWidth > 0 &&
-                    !renderDetailPreviewImage() && g_app->detailPreviewState.bitmap) {
-                    g_app->detailPreviewState.failed = true;
+                if (!result->highQuality || !g_app->detailPreviewHighQuality) {
+                    fitDetailPreviewImage();
                 }
+                if (g_app->detailPreviewRenderer && g_app->detailPreviewState.sourceBitmap) {
+                    g_app->detailPreviewRenderer->setSource(
+                        g_app->detailPreviewState.sourceBitmap,
+                        g_app->detailPreviewState.sourceBitmapWidth,
+                        g_app->detailPreviewState.sourceBitmapHeight,
+                        g_app->detailPreviewState.sourceWidth,
+                        g_app->detailPreviewState.sourceHeight,
+                        result->itemIndex < g_app->store.items().size() &&
+                            g_app->store.items()[result->itemIndex].type == ClipType::Files);
+                    g_app->detailPreviewRenderer->setTransform(
+                        g_app->detailPreviewState.zoom,
+                        g_app->detailPreviewState.panX,
+                        g_app->detailPreviewState.panY);
+                }
+                if (result->bitmap) DeleteObject(result->bitmap);
                 updateDetailPreviewTextEdit();
             } else {
-                g_app->detailPreviewState.failed = true;
-                g_app->detailPreviewState.text.clear();
+                g_app->detailPreviewUpgradeFailed =
+                    g_app->detailPreviewHighQuality &&
+                    g_app->detailPreviewState.sourceBitmap != nullptr;
+                g_app->detailPreviewHighQuality = false;
+                g_app->detailPreviewState.failed = !g_app->detailPreviewState.sourceBitmap;
+                if (g_app->detailPreviewState.failed) g_app->detailPreviewState.text.clear();
                 updateDetailPreviewTextEdit();
             }
             if (!result->success && result->bitmap) {
                 DeleteObject(result->bitmap);
+            }
+            if (!result->success && result->sourceBitmap) {
+                DeleteObject(result->sourceBitmap);
             }
             if (g_app->detailPreview) InvalidateRect(g_app->detailPreview, nullptr, FALSE);
             return 0;
@@ -10671,6 +10890,14 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     if (hwnd == g_app->detailPreview) {
         if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
         if (message == WM_ERASEBKGND) return 1;
+        if (message == WM_DPICHANGED) {
+            g_uiDpi = LOWORD(wParam);
+            const int row = g_app->detailPreviewHoverRow >= 0
+                ? g_app->detailPreviewHoverRow : g_app->selected;
+            positionDetailPreview(row);
+            if (g_app->detailPreviewState.sourceBitmap) fitDetailPreviewImage();
+            return 0;
+        }
         if (message == WM_SETCURSOR) {
             SetCursor(LoadCursorW(nullptr,
                                   g_app->detailPreviewDragging ? IDC_SIZEALL : IDC_ARROW));
@@ -10681,17 +10908,14 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};
             TrackMouseEvent(&tracking);
             if (g_app->detailPreviewDragging) {
-                const RECT content = detailPreviewContentRect(hwnd);
                 const POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
                 g_app->detailPreviewState.panX = g_app->detailPreviewDragPanX +
                     point.x - g_app->detailPreviewDragStart.x;
                 g_app->detailPreviewState.panY = g_app->detailPreviewDragPanY +
                     point.y - g_app->detailPreviewDragStart.y;
-                clampDetailImagePan(content);
-                if (renderDetailPreviewImage()) {
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                    UpdateWindow(hwnd);
-                }
+                const RECT content = detailPreviewContentRect(hwnd);
+                InvalidateRect(hwnd, &content, FALSE);
+                scheduleDetailPreviewRender();
             }
             return 0;
         }
@@ -10699,12 +10923,31 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
             POINT cursor{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             ScreenToClient(hwnd, &cursor);
-            if (g_app->detailPreviewState.bitmap) {
+            if (g_app->detailPreviewState.sourceBitmap) {
                 const RECT content = detailPreviewContentRect(hwnd);
                 if (PtInRect(&content, cursor)) {
                     if (zoomDetailPreviewAt(cursor, delta)) {
+                        const float sourceRatio =
+                            g_app->detailPreviewState.sourceWidth > 0
+                                ? static_cast<float>(g_app->detailPreviewState.sourceBitmapWidth) /
+                                    g_app->detailPreviewState.sourceWidth
+                                : 1.0f;
+                        if (!g_app->detailPreviewHighQuality &&
+                            !g_app->detailPreviewUpgradeFailed &&
+                            g_app->detailPreviewState.sourceWidth >
+                                g_app->detailPreviewState.sourceBitmapWidth &&
+                            g_app->detailPreviewState.zoom > sourceRatio) {
+                            const auto found = std::find(
+                                g_app->visible.begin(), g_app->visible.end(),
+                                g_app->detailPreviewState.itemIndex);
+                            if (found != g_app->visible.end()) {
+                                g_app->detailPreviewHighQuality = true;
+                                requestDetailPreview(static_cast<int>(
+                                    found - g_app->visible.begin()), true);
+                            }
+                        }
                         InvalidateRect(hwnd, nullptr, FALSE);
-                        UpdateWindow(hwnd);
+                        scheduleDetailPreviewRender();
                     }
                 }
             }
@@ -10713,7 +10956,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == WM_LBUTTONDOWN) {
             const POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             const RECT content = detailPreviewContentRect(hwnd);
-            if (g_app->detailPreviewState.bitmap && PtInRect(&content, point)) {
+            if (g_app->detailPreviewState.sourceBitmap && PtInRect(&content, point)) {
                 g_app->detailPreviewDragging = true;
                 g_app->detailPreviewDragStart = point;
                 g_app->detailPreviewDragPanX = g_app->detailPreviewState.panX;
@@ -11099,6 +11342,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             DestroyWindow(hwnd);
             g_app->settings = nullptr;
             g_app->settingsClosing = false;
+            shutdownGdiplusIfIdle();
             return 0;
         }
     }
@@ -11266,6 +11510,17 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             KillTimer(hwnd, kPopupPreviewHoverTimer);
             if (g_app->popup == hwnd && g_app->settingsData.previewAutomatic) {
                 requestDetailPreview(g_app->detailPreviewPendingRow);
+            }
+            return 0;
+        }
+        if (message == WM_TIMER && wParam == kPopupDetailRenderTimer) {
+            KillTimer(hwnd, kPopupDetailRenderTimer);
+            if (g_app->detailPreviewRenderer) {
+                g_app->detailPreviewRenderer->setTransform(
+                    g_app->detailPreviewState.zoom,
+                    g_app->detailPreviewState.panX,
+                    g_app->detailPreviewState.panY);
+                InvalidateRect(g_app->detailPreviewRenderer->window(), nullptr, FALSE);
             }
             return 0;
         }
@@ -11841,7 +12096,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         !app.store.setDataDirectory(utf8ToWide(app.settingsData.dataDirectory))) {
         app.settingsData.dataDirectory.clear();
     }
-    HANDLE mutex = CreateMutexW(nullptr, TRUE, L"ClipLite.SingleInstance");
+    HANDLE mutex = createSingleInstanceMutex();
     DWORD mutexError = GetLastError();
     if (!mutex) {
         appendDiagnosticLog("ERROR", "startup: single-instance lock creation failed", mutexError);
@@ -11853,7 +12108,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         mutex = nullptr;
         for (int attempt = 0; attempt < 50; ++attempt) {
             Sleep(100);
-            mutex = CreateMutexW(nullptr, TRUE, L"ClipLite.SingleInstance");
+            mutex = createSingleInstanceMutex();
             if (!mutex) break;
             mutexError = GetLastError();
             if (mutexError != ERROR_ALREADY_EXISTS) break;
@@ -11879,15 +12134,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
                 GetWindowThreadProcessId(existing, &processId);
                 HANDLE process = processId != 0
                     ? OpenProcess(SYNCHRONIZE, FALSE, processId) : nullptr;
-                PostMessageW(existing, kExitMessage, 0, 0);
+                const bool posted = PostMessageW(existing, kExitMessage, 0, 0) != FALSE;
                 // 卸载器必须等主程序真正退出，否则安装目录中的 exe 仍可能被占用。
                 if (process) {
-                    WaitForSingleObject(process, INFINITE);
+                    WaitForSingleObject(process, 5000);
                     CloseHandle(process);
                 } else {
-                    // 管理员模式下可能无法打开进程句柄，隐藏窗口消失同样表示进程已退出。
-                    while (IsWindow(existing)) Sleep(50);
+                    // 管理员模式下可能无法打开进程句柄，最多等待五秒。
+                    const ULONGLONG deadline = GetTickCount64() + 5000;
+                    while (IsWindow(existing) && GetTickCount64() < deadline) Sleep(50);
                 }
+                if (!posted) appendDiagnosticLog("WARN", "startup: unable to post exit command", GetLastError());
             } else if (commandHistory) {
                 PostMessageW(existing, kShowPopupMessage, 0, 0);
             } else if (commandSettings || app.settingsData.showSettingsOnStartup) {
@@ -11937,7 +12194,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         recordInstalledDataDirectory(dataDirectoryFromStorePath(app.store.path()));
     }
     app.thumbnailCache.setDirectory(dataDirectoryFromStorePath(app.store.path()));
-    app.thumbnailCache.prune(32u * 1024u * 1024u, 5000);
     app.store.pruneExpired(nowUnix());
     const std::uint64_t cutoff = app.settingsData.retentionDays > 0
         ? nowUnix() - static_cast<std::uint64_t>(app.settingsData.retentionDays) * 86400ULL
@@ -12012,6 +12268,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         CloseHandle(mutex);
         return 1;
     }
+    ChangeWindowMessageFilterEx(app.hidden, kExitMessage, MSGFLT_ALLOW, nullptr);
+    ChangeWindowMessageFilterEx(app.hidden, kShowPopupMessage, MSGFLT_ALLOW, nullptr);
+    ChangeWindowMessageFilterEx(app.hidden, kShowSettingsMessage, MSGFLT_ALLOW, nullptr);
     // 消息专用窗口不会收到 Explorer 广播，使用不可见顶层窗口监听 TaskbarCreated。
     app.taskbarWindow = CreateWindowExW(WS_EX_TOOLWINDOW, L"ClipLiteTaskbar", L"ClipLiteTaskbar",
                                         0, 0, 0, 0, 0, nullptr, nullptr, instance, nullptr);
@@ -12031,10 +12290,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         ReleaseMutex(mutex);
         CloseHandle(mutex);
         return 1;
-    }
-    Gdiplus::GdiplusStartupInput gdiplusInput;
-    if (Gdiplus::GdiplusStartup(&app.gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
-        app.gdiplusToken = 0;
     }
     SetTimer(app.hidden, kExpiryTimer, 60000, nullptr);
     if (!AddClipboardFormatListener(app.hidden)) {

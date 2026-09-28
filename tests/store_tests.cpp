@@ -87,6 +87,12 @@ int main() {
     if (!thumbnailCache.write(2, true, thumbnailData)) return 5;
     restoredThumbnail.clear();
     if (!thumbnailCache.read(2, true, restoredThumbnail) || restoredThumbnail != thumbnailData) return 6;
+    thumbnailCache.unloadIndex();
+    restoredThumbnail.clear();
+    if (!thumbnailCache.read(1, false, restoredThumbnail) || restoredThumbnail != thumbnailData) return 48;
+    thumbnailCache.unloadIndex();
+    restoredThumbnail.clear();
+    if (!thumbnailCache.read(2, true, restoredThumbnail) || restoredThumbnail != thumbnailData) return 49;
     if (GetFileAttributesW((testData.path + L"\\thumbnails.bin").c_str()) == INVALID_FILE_ATTRIBUTES) {
         return 7;
     }
@@ -108,6 +114,20 @@ int main() {
     }
     for (std::thread& worker : cacheWorkers) worker.join();
     if (concurrentCacheFailure.load(std::memory_order_relaxed)) return 8;
+    std::FILE* damagedThumbnail = nullptr;
+    _wfopen_s(&damagedThumbnail, (testData.path + L"\\thumbnails.bin").c_str(), L"ab");
+    if (!damagedThumbnail) return 50;
+    const char incompleteHeader[] = "bad";
+    const bool wroteTail = std::fwrite(incompleteHeader, 1, sizeof(incompleteHeader),
+                                       damagedThumbnail) == sizeof(incompleteHeader);
+    std::fclose(damagedThumbnail);
+    if (!wroteTail) return 51;
+    thumbnailCache.unloadIndex();
+    restoredThumbnail.clear();
+    if (!thumbnailCache.read(2, true, restoredThumbnail) || restoredThumbnail != thumbnailData) return 52;
+    thumbnailCache.unloadIndex();
+    restoredThumbnail.clear();
+    if (!thumbnailCache.read(1, false, restoredThumbnail) || restoredThumbnail != thumbnailData) return 53;
     const std::wstring tempPath = store.path() + L".tmp";
     std::FILE* tempFile = nullptr;
     _wfopen_s(&tempFile, tempPath.c_str(), L"wb");

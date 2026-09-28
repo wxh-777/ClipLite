@@ -88,9 +88,10 @@ bool ThumbnailCache::setDirectory(const std::wstring& directory) {
     if (directory.empty() || !ensureDirectory(directory)) return false;
     directory_ = directory;
     path_ = directory_ + L"\\thumbnails.bin";
-    entries_.clear();
+    std::unordered_map<std::uint64_t, Entry>().swap(entries_);
     diskBytes_ = 0;
-    return loadIndex();
+    indexLoaded_ = false;
+    return true;
 }
 
 bool ThumbnailCache::moveDirectory(const std::wstring& from, const std::wstring& to) {
@@ -107,6 +108,8 @@ bool ThumbnailCache::moveDirectory(const std::wstring& from, const std::wstring&
 }
 
 bool ThumbnailCache::loadIndex() const {
+    entries_.clear();
+    diskBytes_ = 0;
     std::FILE* file = nullptr;
     _wfopen_s(&file, path_.c_str(), L"rb");
     if (!file) return true;
@@ -114,12 +117,17 @@ bool ThumbnailCache::loadIndex() const {
         std::fclose(file);
         return false;
     }
-    const std::uint64_t fileSize = static_cast<std::uint64_t>(_ftelli64(file));
-    _fseeki64(file, 0, SEEK_SET);
+    const auto length = _ftelli64(file);
+    if (length < 0 || _fseeki64(file, 0, SEEK_SET) != 0) {
+        std::fclose(file);
+        return false;
+    }
+    const std::uint64_t fileSize = static_cast<std::uint64_t>(length);
     std::uint64_t validBytes = 0;
     while (validBytes < fileSize) {
         DiskHeader header{};
-        if (std::fread(&header, sizeof(header), 1, file) != 1 ||
+        if (fileSize - validBytes < sizeof(header) ||
+            std::fread(&header, sizeof(header), 1, file) != 1 ||
             header.magic != kMagic || header.version != kVersion ||
             header.dataSize == 0 || header.dataSize > kMaxThumbnailBytes ||
             header.dataSize > fileSize - validBytes - sizeof(header)) {
@@ -146,6 +154,13 @@ bool ThumbnailCache::loadIndex() const {
     return true;
 }
 
+bool ThumbnailCache::ensureIndexLoaded() const {
+    if (indexLoaded_) return true;
+    const bool loaded = loadIndex();
+    indexLoaded_ = loaded;
+    return loaded;
+}
+
 bool ThumbnailCache::readStored(const Entry& entry, std::string& data) const {
     std::FILE* file = nullptr;
     _wfopen_s(&file, path_.c_str(), L"rb");
@@ -169,6 +184,7 @@ bool ThumbnailCache::readStored(const Entry& entry, std::string& data) const {
 bool ThumbnailCache::read(std::uint64_t key, bool encrypted, std::string& data) const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     (void)encrypted;
+    if (!ensureIndexLoaded()) return false;
     const auto found = entries_.find(key);
     if (found == entries_.end() || !readStored(found->second, data)) return false;
     auto& entry = entries_[key];
@@ -179,6 +195,7 @@ bool ThumbnailCache::read(std::uint64_t key, bool encrypted, std::string& data) 
 bool ThumbnailCache::write(std::uint64_t key, bool encrypted, const std::string& data) const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (directory_.empty() || data.empty() || data.size() > kMaxThumbnailBytes) return false;
+    if (!ensureIndexLoaded()) return false;
     std::string stored;
     if (encrypted && !protectData(data, stored)) return false;
     if (!encrypted) stored = data;
@@ -192,13 +209,22 @@ bool ThumbnailCache::write(std::uint64_t key, bool encrypted, const std::string&
         std::fwrite(stored.data(), 1, stored.size(), file) == stored.size();
     const bool flushed = written && std::fflush(file) == 0;
     const bool closed = std::fclose(file) == 0;
-    if (!written || !flushed || !closed) return false;
+    if (!written || !flushed || !closed) {
+        std::FILE* repair = nullptr;
+        _wfopen_s(&repair, path_.c_str(), L"r+b");
+        if (repair) {
+            _chsize_s(_fileno(repair), static_cast<__int64>(offset));
+            std::fclose(repair);
+        }
+        return false;
+    }
     entries_[key] = Entry{offset, header.dataSize, header.flags, header.lastAccess};
     diskBytes_ += sizeof(header) + header.dataSize;
     return true;
 }
 
 bool ThumbnailCache::compact() const {
+    if (!ensureIndexLoaded()) return false;
     const std::wstring tempPath = path_ + L".tmp";
     std::FILE* out = nullptr;
     _wfopen_s(&out, tempPath.c_str(), L"wb");
@@ -233,6 +259,7 @@ bool ThumbnailCache::compact() const {
 
 void ThumbnailCache::prune(std::uint64_t maxBytes, std::size_t maxItems) const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (!ensureIndexLoaded()) return;
     std::uint64_t totalBytes = 0;
     for (const auto& pair : entries_) totalBytes += sizeof(DiskHeader) + pair.second.storedSize;
     if (entries_.size() <= maxItems && totalBytes <= maxBytes && diskBytes_ <= maxBytes * 2) return;
@@ -256,8 +283,16 @@ void ThumbnailCache::prune(std::uint64_t maxBytes, std::size_t maxItems) const {
 
 void ThumbnailCache::clear() const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    entries_.clear();
+    std::unordered_map<std::uint64_t, Entry>().swap(entries_);
     diskBytes_ = 0;
+    indexLoaded_ = false;
     DeleteFileW(path_.c_str());
     DeleteFileW((path_ + L".tmp").c_str());
+}
+
+void ThumbnailCache::unloadIndex() const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::unordered_map<std::uint64_t, Entry>().swap(entries_);
+    diskBytes_ = 0;
+    indexLoaded_ = false;
 }

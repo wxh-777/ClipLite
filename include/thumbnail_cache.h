@@ -15,6 +15,7 @@ public:
     bool write(std::uint64_t key, bool encrypted, const std::string& data) const;
     void prune(std::uint64_t maxBytes, std::size_t maxItems) const;
     void clear() const;
+    void unloadIndex() const;
 
 private:
     struct Entry {
@@ -25,12 +26,14 @@ private:
     };
 
     bool loadIndex() const;
+    bool ensureIndexLoaded() const;
     bool compact() const;
     bool readStored(const Entry& entry, std::string& data) const;
     std::wstring directory_;
     std::wstring path_;
     mutable std::unordered_map<std::uint64_t, Entry> entries_;
     mutable std::uint64_t diskBytes_ = 0;
+    mutable bool indexLoaded_ = false;
     mutable std::recursive_mutex mutex_;
 };
 

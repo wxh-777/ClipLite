@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.0] - 2026-09-28
+
+- Improved image detail previews with cursor-centered zoom, drag panning, and on-demand original-image loading.
+- Reduced large-image decoding overhead and released preview resources when the history window closes.
+- Fixed single-instance command forwarding across administrator and standard-user launches, and improved background task and thumbnail-cache reliability.
+- Disabled list previews while the filter menu is open; a submenu now opens only while its top-level option remains hovered, preventing accidental activation when passing over it.
+- Synchronized the application, installer, portable package, and bilingual documentation at version `1.4.0`.
+
 ## [1.3.0] - 2026-09-23
 
 - Register a per-user highest-privilege scheduled task after the first administrator authorization, so later normal launches do not repeat the UAC prompt; disabling the setting removes the task.
