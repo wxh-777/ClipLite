@@ -3,6 +3,7 @@
 #include <shlobj.h>
 #include <shellscalingapi.h>
 #include <commctrl.h>
+#include <commdlg.h>
 #include <dwmapi.h>
 #include <gdiplus.h>
 #include <richedit.h>
@@ -28,6 +29,7 @@
 #include <deque>
 #include <functional>
 #include <initializer_list>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -121,8 +123,10 @@ constexpr int kSettingSystemLightTheme = 71;
 constexpr int kSettingSystemDarkTheme = 72;
 constexpr int kSettingThemeDuplicate = 73;
 constexpr int kSettingThemeDelete = 74;
+constexpr int kSettingThemeSave = 75;
 constexpr int kSettingThemeName = 99;
 constexpr int kSettingThemeColorBase = 100;
+constexpr int kSettingThemeSwatchBase = 120;
 constexpr int kMenuPaste = 100;
 constexpr int kMenuDelete = 102;
 constexpr int kMenuPastePlain = 103;
@@ -246,6 +250,7 @@ constexpr int kSettingsTrackWidth = 36;
 constexpr int kSettingsTrackHeight = 20;
 constexpr int kSettingsThemeWidth = 102;
 constexpr int kSettingsThemeSegmentWidth = 32;
+constexpr int kSettingsThemeColumnGap = 56;
 constexpr int kSettingsAppearancePage = 1;
 constexpr int kSettingsShortcutPage = 2;
 constexpr int kSettingsStoragePage = 3;
@@ -485,6 +490,10 @@ struct AppState {
     float settingsThemeProgressValue = 1.0f;
     LONGLONG settingsThemeStartTicks = 0;
     HWND languageDropdown = nullptr;
+    int languageDropdownX = 0;
+    int languageDropdownY = 0;
+    int languageDropdownWidth = 0;
+    int languageDropdownHeight = 0;
     int themeDropdownControlId = 0;
     int languageDropdownHover = -1;
     LONGLONG languageDropdownStartTicks = 0;
@@ -531,6 +540,10 @@ struct AppState {
     ThemeRegistry themeRegistry;
     ThemePalette themePalette;
     std::string activeThemeId = "cliplite-light";
+    bool themeEditorDraftActive = false;
+    bool themeEditorDraftDirty = false;
+    bool themeEditorDraftNew = false;
+    ThemeDefinition themeEditorDraft;
     ClipStore store;
     std::vector<std::size_t> searchCandidates;
     std::vector<std::size_t> visible;
@@ -6263,6 +6276,8 @@ void paintSettingsEditBorders(HWND hwnd, HDC dc);
 
 struct SettingsRowLayout {
     const wchar_t* label = nullptr;
+    int themeColorStart = -1;
+    int themeColorCount = 0;
     int top = 0;
     int height = 0;
     std::vector<int> controlIds;
@@ -6301,7 +6316,53 @@ const wchar_t* themeColorLabel(std::size_t index) {
 }
 
 bool activeThemeIsCustom() {
-    return g_app && g_app->themeRegistry.hasCustomTheme(g_app->activeThemeId);
+    return g_app && (g_app->themeEditorDraftActive ||
+                     g_app->themeRegistry.hasCustomTheme(g_app->activeThemeId));
+}
+
+HWND settingsControl(HWND settings, int id);
+bool syncThemeEditorControls(HWND settings);
+void invalidateSettingsTheme(HWND settings);
+void updateSettingsTabControls(HWND settings, bool redraw = true);
+
+COLORREF themeEditorColor(HWND settings, std::size_t index) {
+    const ThemeDefinition* theme = g_app && g_app->themeEditorDraftActive
+        ? &g_app->themeEditorDraft
+        : (g_app ? g_app->themeRegistry.find(g_app->activeThemeId) : nullptr);
+    COLORREF fallback = theme ? themePaletteColor(theme->palette, index) : RGB(0, 0, 0);
+    if (!settings || !activeThemeIsCustom()) return fallback;
+    HWND edit = settingsControl(settings, kSettingThemeColorBase + static_cast<int>(index));
+    if (!edit) return fallback;
+    wchar_t value[16]{};
+    GetWindowTextW(edit, value, ARRAYSIZE(value));
+    std::string ascii;
+    for (const wchar_t ch : std::wstring(value)) {
+        if (ch > 0x7F) return fallback;
+        ascii.push_back(static_cast<char>(ch));
+    }
+    COLORREF parsed = 0;
+    return parseThemeColor(ascii, parsed) ? parsed : fallback;
+}
+
+bool chooseThemeColor(HWND settings, std::size_t index) {
+    if (!settings || !activeThemeIsCustom() || index >= kThemeColorCount) return false;
+    static COLORREF customColors[16]{};
+    CHOOSECOLORW chooser{};
+    chooser.lStructSize = sizeof(chooser);
+    chooser.hwndOwner = settings;
+    chooser.rgbResult = themeEditorColor(settings, index);
+    chooser.lpCustColors = customColors;
+    chooser.Flags = CC_FULLOPEN | CC_RGBINIT;
+    if (!ChooseColorW(&chooser)) return false;
+
+    const std::string ascii = themeColorToHex(chooser.rgbResult);
+    const std::wstring hex(ascii.begin(), ascii.end());
+    g_app->restoringSettingsControls = true;
+    SetWindowTextW(settingsControl(settings, kSettingThemeColorBase + static_cast<int>(index)),
+                   hex.c_str());
+    g_app->restoringSettingsControls = false;
+    g_app->themeEditorDraftDirty = true;
+    return syncThemeEditorControls(settings);
 }
 
 HWND findSettingsControl(HWND parent, int id) {
@@ -6441,13 +6502,28 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
                 {kSettingSystemDarkTheme}, {190}, {30}, contentWidth));
         }
         appearanceRows.push_back(makeSettingsRow(hwnd, nullptr,
-            {kSettingThemeDuplicate, kSettingThemeDelete}, {145, 145}, {30, 30}, contentWidth));
+            {kSettingThemeDuplicate, kSettingThemeSave, kSettingThemeDelete},
+            {108, 108, 108}, {30, 30, 30}, contentWidth));
         if (activeThemeIsCustom()) {
             appearanceRows.push_back(makeSettingsRow(hwnd, languageIsChinese() ? L"主题名称" : L"Theme name",
                 {kSettingThemeName}, {190}, {30}, contentWidth));
-            for (std::size_t i = 0; i < kThemeColorCount; ++i) {
-                appearanceRows.push_back(makeSettingsRow(hwnd, themeColorLabel(i),
-                    {kSettingThemeColorBase + static_cast<int>(i)}, {120}, {30}, contentWidth));
+            for (std::size_t i = 0; i < kThemeColorCount; i += 2) {
+                const std::size_t second = i + 1;
+                SettingsRowLayout row = second < kThemeColorCount
+                    ? makeSettingsRow(hwnd, nullptr,
+                        {kSettingThemeSwatchBase + static_cast<int>(i),
+                         kSettingThemeColorBase + static_cast<int>(i),
+                         kSettingThemeSwatchBase + static_cast<int>(second),
+                         kSettingThemeColorBase + static_cast<int>(second)},
+                        {30, 72, 30, 72}, {30, 30, 30, 30}, contentWidth)
+                    : makeSettingsRow(hwnd, nullptr,
+                        {kSettingThemeSwatchBase + static_cast<int>(i),
+                         kSettingThemeColorBase + static_cast<int>(i)},
+                        {30, 72}, {30, 30}, contentWidth);
+                row.themeColorStart = static_cast<int>(i);
+                row.themeColorCount = second < kThemeColorCount ? 2 : 1;
+                row.height = std::max(row.height, 50);
+                appearanceRows.push_back(std::move(row));
             }
         }
         makeCard(settingsLocale().appearanceCard, std::move(appearanceRows), 72);
@@ -6539,6 +6615,21 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
     const int controlRight = clientWidth - kSettingsBodyMargin - 14 - scrollbarReserve;
     for (SettingsCardLayout& card : layout.cards) {
         for (SettingsRowLayout& row : card.rows) {
+            if (row.themeColorStart >= 0) {
+                const int contentLeft = kSettingsSidebarWidth + kSettingsBodyMargin + 14;
+                const int contentRight = clientWidth - kSettingsBodyMargin - 14 - scrollbarReserve;
+                const int columnGap = kSettingsThemeColumnGap;
+                const int columnWidth = std::max(1, (contentRight - contentLeft - columnGap) / 2);
+                const int controlWidth = 30 + 8 + 72;
+                row.controlX.clear();
+                for (int column = 0; column < row.themeColorCount; ++column) {
+                    const int columnLeft = contentLeft + column * (columnWidth + columnGap);
+                    const int swatchX = columnLeft + columnWidth - controlWidth;
+                    row.controlX.push_back(swatchX);
+                    row.controlX.push_back(swatchX + 30 + 8);
+                }
+                continue;
+            }
             int totalWidth = 0;
             for (std::size_t i = 0; i < row.controlWidths.size(); ++i) {
                 totalWidth += row.controlWidths[i];
@@ -6857,6 +6948,29 @@ void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
                     contentRight - ui(14), settingsContentY(top + 27), line);
     };
     auto drawLayoutRow = [&](const SettingsRowLayout& row) {
+        if (row.themeColorStart >= 0) {
+            SelectObject(dc, bodyFont);
+            SetTextColor(dc, text);
+            const int columnGap = ui(kSettingsThemeColumnGap);
+            const int available = contentRight - contentLeft - ui(28);
+            const int columnWidth = std::max(1, (available - columnGap) / 2);
+            for (int column = 0; column < row.themeColorCount; ++column) {
+                const int index = row.themeColorStart + column;
+                const int left = contentLeft + ui(14) + column * (columnWidth + columnGap);
+                const int right = ui(row.controlX[static_cast<std::size_t>(column * 2)] -
+                                     kSettingsSidebarWidth - 8);
+                const int labelWidth = std::max(1, right - left);
+                const int labelHeight = settingsTextHeight(hwnd, themeColorLabel(index),
+                                                           MulDiv(labelWidth, 96,
+                                                                  static_cast<int>(g_uiDpi)));
+                const int labelTop = row.top + std::max(0, (row.height - labelHeight) / 2);
+                RECT label{left, settingsContentY(labelTop), right,
+                           settingsContentY(labelTop + labelHeight)};
+                drawSettingsText(dc, bodyFont, themeColorLabel(index), label, text,
+                                 DT_LEFT | DT_VCENTER | DT_WORDBREAK | DT_END_ELLIPSIS);
+            }
+            return;
+        }
         if (!row.label) return;
         SelectObject(dc, bodyFont);
         SetTextColor(dc, text);
@@ -6923,6 +7037,23 @@ void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
     }
     if (g_app->settingsTab == kSettingsAppearancePage && !layout.cards.empty()) {
         const SettingsCardLayout& card = layout.cards.front();
+        if (activeThemeIsCustom()) {
+            const auto firstColorRow = std::find_if(card.rows.begin(), card.rows.end(),
+                [](const SettingsRowLayout& row) { return row.themeColorStart >= 0; });
+            if (firstColorRow != card.rows.end()) {
+                const auto lastColorRow = std::find_if(card.rows.rbegin(), card.rows.rend(),
+                    [](const SettingsRowLayout& row) { return row.themeColorStart >= 0; });
+                const int available = contentRight - contentLeft - ui(28);
+                const int columnWidth = std::max(1,
+                    (available - ui(kSettingsThemeColumnGap)) / 2);
+                const int dividerX = contentLeft + ui(14) + columnWidth +
+                    ui(kSettingsThemeColumnGap) / 2;
+                const int dividerTop = settingsContentY(firstColorRow->top - 4);
+                const SettingsRowLayout& lastRow = *std::prev(lastColorRow.base());
+                const int dividerBottom = settingsContentY(lastRow.top + lastRow.height + 4);
+                drawGdiLine(dc, dividerX, dividerTop, dividerX, dividerBottom, line);
+            }
+        }
         const int sampleTop = settingsContentY(card.bottom - 52);
         const int sampleBottom = settingsContentY(card.bottom - 18);
         const int sampleLeft = contentLeft + ui(14);
@@ -7376,6 +7507,16 @@ int settingsLanguageSelection(HWND hwnd);
 void setSettingsLanguageSelection(HWND hwnd, int selection);
 void configureSettingsEdit(HWND hwnd);
 
+bool isSettingsThemeSwatch(int id) {
+    return id >= kSettingThemeSwatchBase &&
+           id < kSettingThemeSwatchBase + static_cast<int>(kThemeColorCount);
+}
+
+bool isSettingsThemeColorEdit(int id) {
+    return id >= kSettingThemeColorBase &&
+           id < kSettingThemeColorBase + static_cast<int>(kThemeColorCount);
+}
+
 bool isSettingsShortcut(int id) {
     return id >= kSettingShortcutPreview && id <= kSettingShortcutDelete;
 }
@@ -7656,8 +7797,9 @@ void refreshThemeCombos(HWND settings) {
 }
 
 void refreshThemeEditorControls(HWND settings) {
-    const ThemeDefinition* theme = g_app->themeRegistry.find(g_app->activeThemeId);
-    if (!theme || theme->builtIn) return;
+    const ThemeDefinition* theme = g_app->themeEditorDraftActive
+        ? &g_app->themeEditorDraft : g_app->themeRegistry.find(g_app->activeThemeId);
+    if (!theme || (!g_app->themeEditorDraftActive && theme->builtIn)) return;
     g_app->restoringSettingsControls = true;
     SetWindowTextW(settingsControl(settings, kSettingThemeName), theme->name.c_str());
     for (std::size_t i = 0; i < kThemeColorCount; ++i) {
@@ -7665,20 +7807,24 @@ void refreshThemeEditorControls(HWND settings) {
         const std::wstring hex(ascii.begin(), ascii.end());
         SetWindowTextW(settingsControl(settings, kSettingThemeColorBase + static_cast<int>(i)),
                        hex.c_str());
+        InvalidateRect(settingsControl(settings, kSettingThemeSwatchBase + static_cast<int>(i)),
+                       nullptr, FALSE);
     }
     g_app->restoringSettingsControls = false;
 }
 
 bool syncThemeEditorControls(HWND settings) {
+    if (!g_app || g_app->settingsTab != kSettingsAppearancePage) return true;
     const ThemeDefinition* active = g_app->themeRegistry.find(g_app->activeThemeId);
-    if (!active || active->builtIn || g_app->settingsTab != kSettingsAppearancePage) return true;
+    if (!g_app->themeEditorDraftActive && (!active || active->builtIn)) return true;
     const int nameLength = GetWindowTextLengthW(settingsControl(settings, kSettingThemeName));
     if (nameLength <= 0 || nameLength > 48) {
         setSettingsActionFeedback(settings,
             tr(L"Use a theme name and six-digit RGB colors.", L"请输入主题名称和六位 RGB 颜色值。"), false);
         return false;
     }
-    ThemeDefinition edited = *active;
+    ThemeDefinition edited = g_app->themeEditorDraftActive
+        ? g_app->themeEditorDraft : *active;
     edited.name.resize(static_cast<std::size_t>(nameLength) + 1);
     GetWindowTextW(settingsControl(settings, kSettingThemeName), edited.name.data(), nameLength + 1);
     edited.name.resize(static_cast<std::size_t>(nameLength));
@@ -7714,19 +7860,78 @@ bool syncThemeEditorControls(HWND settings) {
         setThemePaletteColor(edited.palette, i, color);
         edited.explicitColors[i] = true;
     }
-    if (!g_app->themeRegistry.saveCustomTheme(edited, themesPath())) {
+    g_app->themeEditorDraft = std::move(edited);
+    g_app->themeEditorDraftActive = true;
+    g_app->themePalette = g_app->themeEditorDraft.palette;
+    g_app->settingsData.dark = g_app->themeEditorDraft.appearance == ThemeAppearance::Dark;
+    g_app->settingsData.themeMode = g_app->settingsData.dark ? 2 : 1;
+    updateSettingsTabControls(settings, false);
+    InvalidateRect(settings, nullptr, FALSE);
+    return true;
+}
+
+void discardThemeEditorDraft(HWND settings) {
+    if (!g_app || !g_app->themeEditorDraftActive) return;
+    g_app->themeEditorDraftActive = false;
+    g_app->themeEditorDraftDirty = false;
+    g_app->themeEditorDraftNew = false;
+    g_app->themeEditorDraft = ThemeDefinition{};
+    resolveActiveTheme();
+    refreshThemeCombos(settings);
+    refreshThemeEditorControls(settings);
+    invalidateSettingsTheme(settings);
+    updateSettingsTabControls(settings);
+    InvalidateRect(settings, nullptr, FALSE);
+}
+
+bool saveThemeEditorDraft(HWND settings) {
+    if (!g_app || !g_app->themeEditorDraftActive) return true;
+    if (!syncThemeEditorControls(settings)) return false;
+    const ThemeDefinition draft = g_app->themeEditorDraft;
+    if (!g_app->themeRegistry.saveCustomTheme(draft, themesPath())) {
         appendDiagnosticLog("ERROR", "theme: unable to save custom theme");
+        setSettingsActionFeedback(settings,
+            tr(L"Unable to save the custom theme.", L"无法保存自定义主题。"), false);
         return false;
     }
-    refreshThemeCombos(settings);
+    if (g_app->themeEditorDraftNew) {
+        g_app->settingsData.themeSelection.followSystem = false;
+        g_app->settingsData.themeSelection.fixedThemeId = draft.id;
+    }
+    g_app->themeEditorDraftActive = false;
+    g_app->themeEditorDraftDirty = false;
+    g_app->themeEditorDraftNew = false;
+    g_app->themeEditorDraft = ThemeDefinition{};
     const bool wasDark = g_app->settingsData.dark;
     resolveActiveTheme();
     if (wasDark != g_app->settingsData.dark) {
         animateSettingsTheme(settings, wasDark, g_app->settingsData.dark);
     }
+    refreshThemeCombos(settings);
+    refreshThemeEditorControls(settings);
     invalidateSettingsTheme(settings);
-    InvalidateRect(settings, nullptr, FALSE);
+    updateSettingsTabControls(settings);
+    saveSettings(g_app->settingsData);
     return true;
+}
+
+bool confirmThemeEditorExit(HWND settings) {
+    if (!g_app || !g_app->themeEditorDraftActive) return true;
+    if (!g_app->themeEditorDraftDirty) {
+        discardThemeEditorDraft(settings);
+        return true;
+    }
+    const int result = MessageBoxW(settings,
+        tr(L"The theme has unsaved changes. Save them before leaving?",
+           L"当前主题有未保存的修改，离开前是否保存？"),
+        tr(L"Unsaved theme changes", L"未保存的主题修改"),
+        MB_YESNOCANCEL | MB_ICONWARNING | MB_DEFBUTTON1);
+    if (result == IDYES) return saveThemeEditorDraft(settings);
+    if (result == IDNO) {
+        discardThemeEditorDraft(settings);
+        return true;
+    }
+    return false;
 }
 
 void createSettingsControlsModern(HWND hwnd) {
@@ -7794,34 +7999,47 @@ void createSettingsControlsModern(HWND hwnd) {
     createThemeSelector(parent, kSettingSystemDarkTheme);
     CreateWindowW(L"BUTTON", settingsLocale().duplicateTheme,
                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                  ui(520 - kSettingsSidebarWidth), ui(217 - kSettingsHeaderHeight),
-                  ui(145), ui(30), parent,
+                  ui(450 - kSettingsSidebarWidth), ui(217 - kSettingsHeaderHeight),
+                  ui(108), ui(30), parent,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingThemeDuplicate)),
+                  GetModuleHandleW(nullptr), nullptr);
+    CreateWindowW(L"BUTTON", tr(L"Save theme", L"保存主题"),
+                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                  ui(566 - kSettingsSidebarWidth), ui(217 - kSettingsHeaderHeight),
+                  ui(108), ui(30), parent,
+                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingThemeSave)),
                   GetModuleHandleW(nullptr), nullptr);
     CreateWindowW(L"BUTTON", settingsLocale().deleteTheme,
                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                  ui(673 - kSettingsSidebarWidth), ui(217 - kSettingsHeaderHeight),
-                  ui(145), ui(30), parent,
+                  ui(682 - kSettingsSidebarWidth), ui(217 - kSettingsHeaderHeight),
+                  ui(108), ui(30), parent,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingThemeDelete)),
                   GetModuleHandleW(nullptr), nullptr);
     const ThemeDefinition* activeTheme = g_app->themeRegistry.find(g_app->activeThemeId);
     CreateWindowExW(0, L"EDIT", activeThemeIsCustom() && activeTheme
                         ? activeTheme->name.c_str() : L"",
-                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL,
                     ui(520 - kSettingsSidebarWidth), ui(252 - kSettingsHeaderHeight), ui(190), ui(30),
                     parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingThemeName)),
-                    GetModuleHandleW(nullptr), nullptr);
+                     GetModuleHandleW(nullptr), nullptr);
     for (std::size_t i = 0; i < kThemeColorCount; ++i) {
         const COLORREF color = activeTheme ? themePaletteColor(activeTheme->palette, i) : RGB(0, 0, 0);
         const std::wstring hex = [] (COLORREF value) {
             const std::string ascii = themeColorToHex(value);
             return std::wstring(ascii.begin(), ascii.end());
         }(color);
+        CreateWindowW(L"BUTTON", L"",
+                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                      ui(520 - kSettingsSidebarWidth),
+                      ui(287 + static_cast<int>(i) * 42 - kSettingsHeaderHeight),
+                      ui(30), ui(30), parent,
+                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingThemeSwatchBase + i)),
+                      GetModuleHandleW(nullptr), nullptr);
         CreateWindowExW(0, L"EDIT", hex.c_str(),
-                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-                        ui(520 - kSettingsSidebarWidth),
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL,
+                        ui(558 - kSettingsSidebarWidth),
                         ui(287 + static_cast<int>(i) * 42 - kSettingsHeaderHeight),
-                        ui(120), ui(30), parent,
+                         ui(72), ui(30), parent,
                         reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingThemeColorBase + i)),
                         GetModuleHandleW(nullptr), nullptr);
     }
@@ -7965,6 +8183,9 @@ void refreshSettingsLocalizedControls(HWND hwnd) {
     if (HWND duplicate = settingsControl(hwnd, kSettingThemeDuplicate)) {
         SetWindowTextW(duplicate, settingsLocale().duplicateTheme);
     }
+    if (HWND save = settingsControl(hwnd, kSettingThemeSave)) {
+        SetWindowTextW(save, tr(L"Save theme", L"保存主题"));
+    }
     if (HWND deleteTheme = settingsControl(hwnd, kSettingThemeDelete)) {
         SetWindowTextW(deleteTheme, settingsLocale().deleteTheme);
     }
@@ -7980,7 +8201,7 @@ void refreshSettingsLocalizedControls(HWND hwnd) {
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
-void updateSettingsTabControls(HWND hwnd, bool redraw = true) {
+void updateSettingsTabControls(HWND hwnd, bool redraw) {
     g_app->hoveredSettingsControl = 0;
     if (g_app->shortcutCaptureControl) cancelSettingsShortcutCapture(hwnd);
     g_app->settingsScrollOffset = std::clamp(g_app->settingsScrollOffset, 0, settingsScrollMax(hwnd));
@@ -7989,7 +8210,8 @@ void updateSettingsTabControls(HWND hwnd, bool redraw = true) {
         KillTimer(hwnd, kSettingsDropdownTimer);
     }
     const int ids[] = {kSettingDark, kSettingFixedTheme, kSettingSystemLightTheme,
-                           kSettingSystemDarkTheme, kSettingThemeDuplicate, kSettingThemeDelete,
+                            kSettingSystemDarkTheme, kSettingThemeDuplicate, kSettingThemeSave,
+                            kSettingThemeDelete,
                            kSettingWinV, kSettingLanguage, kSettingPause,
                           kSettingStartup, kSettingStartupSettings, kSettingStartupNotification,
                           kSettingRunAsAdministrator, kSettingSearchImeCompatibility,
@@ -8008,8 +8230,8 @@ void updateSettingsTabControls(HWND hwnd, bool redraw = true) {
                          kSettingShortcutDelete,
                         kSettingCategoryMaxBase, kSettingCategoryMaxBase + 1,
                         kSettingCategoryMaxBase + 2,
-                        kSettingCategoryDiskBase, kSettingCategoryDiskBase + 1,
-                        kSettingCategoryDiskBase + 2};
+                         kSettingCategoryDiskBase, kSettingCategoryDiskBase + 1,
+                         kSettingCategoryDiskBase + 2};
     const bool tabChanged = g_app->settingsControlsTab != g_app->settingsTab;
     if (tabChanged) {
         for (const int id : ids) {
@@ -8017,6 +8239,9 @@ void updateSettingsTabControls(HWND hwnd, bool redraw = true) {
         }
         if (HWND control = settingsControl(hwnd, kSettingThemeName)) ShowWindow(control, SW_HIDE);
         for (std::size_t i = 0; i < kThemeColorCount; ++i) {
+            if (HWND control = settingsControl(hwnd, kSettingThemeSwatchBase + static_cast<int>(i))) {
+                ShowWindow(control, SW_HIDE);
+            }
             if (HWND control = settingsControl(hwnd, kSettingThemeColorBase + static_cast<int>(i))) {
                 ShowWindow(control, SW_HIDE);
             }
@@ -8104,10 +8329,20 @@ void updateSettingsTabControls(HWND hwnd, bool redraw = true) {
     if (!appearancePage || !activeThemeIsCustom()) {
         if (HWND control = settingsControl(hwnd, kSettingThemeName)) ShowWindow(control, SW_HIDE);
         for (std::size_t i = 0; i < kThemeColorCount; ++i) {
+            if (HWND control = settingsControl(hwnd, kSettingThemeSwatchBase + static_cast<int>(i))) {
+                ShowWindow(control, SW_HIDE);
+            }
             if (HWND control = settingsControl(hwnd, kSettingThemeColorBase + static_cast<int>(i))) {
                 ShowWindow(control, SW_HIDE);
             }
         }
+    }
+    if (HWND save = settingsControl(hwnd, kSettingThemeSave)) {
+        ShowWindow(save, appearancePage && g_app->themeEditorDraftActive ? SW_SHOW : SW_HIDE);
+    }
+    if (HWND deleteTheme = settingsControl(hwnd, kSettingThemeDelete)) {
+        ShowWindow(deleteTheme, appearancePage && activeThemeIsCustom() &&
+                   !g_app->themeEditorDraftActive ? SW_SHOW : SW_HIDE);
     }
     if (defer) EndDeferWindowPos(defer);
     for (HWND control : changedControls) InvalidateRect(control, nullptr, FALSE);
@@ -9407,9 +9642,19 @@ void positionLanguageDropdown(HWND settings, float progress) {
     }();
     const int fullHeight = ui(rowCount * 30);
     const int height = std::max(1, static_cast<int>(fullHeight * progress + 0.5f));
+    if (g_app->languageDropdownX == topLeft.x && g_app->languageDropdownY == topLeft.y &&
+        g_app->languageDropdownWidth == width && g_app->languageDropdownHeight == height) {
+        return;
+    }
+    const bool resized = g_app->languageDropdownWidth != width ||
+        g_app->languageDropdownHeight != height;
     SetWindowPos(g_app->languageDropdown, HWND_TOP, topLeft.x, topLeft.y, width, height,
-                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    BringWindowToTop(g_app->languageDropdown);
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOREDRAW | SWP_NOSENDCHANGING);
+    g_app->languageDropdownX = topLeft.x;
+    g_app->languageDropdownY = topLeft.y;
+    g_app->languageDropdownWidth = width;
+    g_app->languageDropdownHeight = height;
+    if (resized) InvalidateRect(g_app->languageDropdown, nullptr, FALSE);
 }
 
 void animateLanguageDropdown(HWND settings, float target) {
@@ -9419,7 +9664,6 @@ void animateLanguageDropdown(HWND settings, float target) {
     g_app->languageDropdownStartTicks = settingsToggleClock();
     SetTimer(settings, kSettingsDropdownTimer, 8, nullptr);
     positionLanguageDropdown(settings, g_app->languageDropdownFrom);
-    InvalidateRect(g_app->languageDropdown, nullptr, FALSE);
 }
 
 void toggleSettingsDropdown(HWND settings, int controlId) {
@@ -9434,6 +9678,10 @@ void toggleSettingsDropdown(HWND settings, int controlId) {
     }
     g_app->themeDropdownControlId = controlId == kSettingLanguage ? 0 : controlId;
     g_app->languageDropdownHover = -1;
+    g_app->languageDropdownX = 0;
+    g_app->languageDropdownY = 0;
+    g_app->languageDropdownWidth = 0;
+    g_app->languageDropdownHeight = 0;
     g_app->languageDropdownFrom = 0.0f;
     g_app->languageDropdownTo = 1.0f;
     g_app->languageDropdownStartTicks = settingsToggleClock();
@@ -9452,8 +9700,11 @@ void toggleSettingsDropdown(HWND settings, int controlId) {
         return;
     }
     SetWindowPos(g_app->languageDropdown, HWND_TOP, topLeft.x, topLeft.y, width, 1,
-                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    BringWindowToTop(g_app->languageDropdown);
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOREDRAW | SWP_NOSENDCHANGING);
+    g_app->languageDropdownX = topLeft.x;
+    g_app->languageDropdownY = topLeft.y;
+    g_app->languageDropdownWidth = width;
+    g_app->languageDropdownHeight = 1;
     SetTimer(settings, kSettingsDropdownTimer, 8, nullptr);
 }
 
@@ -9576,7 +9827,7 @@ bool isSettingsActionButton(int id) {
            id == kSettingClearImage || id == kSettingClearFiles ||
            id == kSettingBrowseDataDirectory || id == kSettingOpenLog ||
            id == kSettingSupportAuthor || id == kSettingJoinQqGroup ||
-           id == kSettingThemeDuplicate || id == kSettingThemeDelete;
+            id == kSettingThemeDuplicate || id == kSettingThemeSave || id == kSettingThemeDelete;
 }
 
 bool isSettingsClearAction(int id) {
@@ -9659,7 +9910,7 @@ void setSettingsActionFeedback(HWND hwnd, const std::wstring& message, bool succ
 void drawSettingsButton(const DRAWITEMSTRUCT& item) {
     const int id = GetDlgCtrlID(item.hwndItem);
     const bool neutral = id == kSettingBrowseDataDirectory || id == kSettingOpenLog ||
-        id == kSettingThemeDuplicate || id == kSettingThemeDelete ||
+        id == kSettingThemeDuplicate || id == kSettingThemeSave || id == kSettingThemeDelete ||
         id == kSettingSupportAuthor || id == kSettingJoinQqGroup;
     const bool hovered = g_app->hoveredSettingsControl == id;
     const bool pressed = (item.itemState & ODS_SELECTED) != 0;
@@ -9699,6 +9950,20 @@ void drawSettingsButton(const DRAWITEMSTRUCT& item) {
         RECT focusRect = buttonRect;
         InflateRect(&focusRect, -ui(3), -ui(3));
         DrawFocusRect(item.hDC, &focusRect);
+    }
+}
+
+void drawSettingsThemeSwatch(const DRAWITEMSTRUCT& item) {
+    const int id = GetDlgCtrlID(item.hwndItem);
+    const std::size_t index = static_cast<std::size_t>(id - kSettingThemeSwatchBase);
+    const COLORREF color = themeEditorColor(g_app->settings, index);
+    const COLORREF border = highContrastEnabled() ? GetSysColor(COLOR_WINDOWTEXT) :
+        settingsThemeColor(RGB(200, 211, 222), RGB(74, 88, 104));
+    drawGdiRoundedSurface(item.hDC, item.rcItem, color, border, 5);
+    if (GetFocus() == item.hwndItem && !highContrastEnabled()) {
+        RECT focus = item.rcItem;
+        InflateRect(&focus, -ui(3), -ui(3));
+        DrawFocusRect(item.hDC, &focus);
     }
 }
 
@@ -9962,8 +10227,10 @@ void paintSettingsSelector(HWND hwnd, HDC dc) {
         Gdiplus::Graphics graphics(renderDc);
         graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
         graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
-        Gdiplus::SolidBrush backgroundBrush(makeColor(background));
-        graphics.FillRectangle(&backgroundBrush, 0, 0, width, height);
+        const COLORREF hostSurface = highContrast ? GetSysColor(COLOR_WINDOW) :
+            g_app->themePalette.surfaceBackground;
+        Gdiplus::SolidBrush hostBrush(makeColor(hostSurface));
+        graphics.FillRectangle(&hostBrush, 0, 0, width, height);
         const Gdiplus::RectF box(0.5f, 0.5f, static_cast<float>(width - 1),
                                  static_cast<float>(height - 1));
         Gdiplus::GraphicsPath boxPath;
@@ -10182,8 +10449,9 @@ void invalidateSettingsEditBorder(HWND edit) {
 }
 
 void paintSettingsEditBorders(HWND hwnd, HDC dc) {
-    const int ids[] = {kSettingMaxItems, kSettingRetentionDays, kSettingMaxDiskMb,
-                       kSettingMaxContentMb, kSettingIgnoredApps, kSettingSensitiveExpiry};
+    const int ids[] = {kSettingThemeName, kSettingMaxItems, kSettingRetentionDays,
+                       kSettingMaxDiskMb, kSettingMaxContentMb, kSettingIgnoredApps,
+                       kSettingSensitiveExpiry};
     const bool highContrast = highContrastEnabled();
     for (const int id : ids) {
         HWND edit = settingsControl(hwnd, id);
@@ -10229,6 +10497,8 @@ void configureSettingsEdit(HWND hwnd) {
     if (id == kSettingMaxItems || id >= kSettingCategoryMaxBase &&
         id < kSettingCategoryMaxBase + kStorageCategoryCount) {
         textLimit = 6;
+    } else if (isSettingsThemeColorEdit(id)) {
+        textLimit = 6;
     } else if (id == kSettingRetentionDays) {
         textLimit = 5;
     } else if (id == kSettingMaxDiskMb || id >= kSettingCategoryDiskBase &&
@@ -10238,6 +10508,8 @@ void configureSettingsEdit(HWND hwnd) {
         textLimit = 2;
     } else if (id == kSettingSensitiveExpiry) {
         textLimit = 3;
+    } else if (id == kSettingThemeName) {
+        textLimit = 48;
     }
     if (textLimit != 0) SendMessageW(hwnd, EM_LIMITTEXT, textLimit, 0);
     SendMessageW(hwnd, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
@@ -10306,7 +10578,8 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
         if (settings) SendMessageW(settings, message, wParam, lParam);
         return 0;
     }
-    if (std::wcscmp(className, L"Edit") == 0 && id != kSettingIgnoredApps) {
+    if (std::wcscmp(className, L"Edit") == 0 && id != kSettingIgnoredApps &&
+        id != kSettingThemeName && !isSettingsThemeColorEdit(id)) {
         if (message == WM_CHAR && wParam >= L'0' && wParam <= L'9') {
             wchar_t value[8]{};
             GetWindowTextW(hwnd, value, static_cast<int>(sizeof(value) / sizeof(value[0])));
@@ -10436,7 +10709,8 @@ void subclassSettingsControls(HWND hwnd) {
               (GetDlgCtrlID(child) == kSettingLanguage ||
                GetDlgCtrlID(child) == kSettingFixedTheme ||
                GetDlgCtrlID(child) == kSettingSystemLightTheme ||
-               GetDlgCtrlID(child) == kSettingSystemDarkTheme))) {
+               GetDlgCtrlID(child) == kSettingSystemDarkTheme)) &&
+            !isSettingsThemeSwatch(GetDlgCtrlID(child))) {
             continue;
         }
         if (GetPropW(child, L"ClipLiteOldProc")) continue;
@@ -10677,6 +10951,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
     if (hwnd == g_app->settings && message == WM_DRAWITEM) {
         const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
+        if (item && item->CtlType == ODT_BUTTON && isSettingsThemeSwatch(GetDlgCtrlID(item->hwndItem))) {
+            drawSettingsThemeSwatch(*item);
+            return TRUE;
+        }
         if (item && item->CtlType == ODT_BUTTON && isSettingsToggle(GetDlgCtrlID(item->hwndItem))) {
             drawSettingsToggle(*item);
             return TRUE;
@@ -10879,6 +11157,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         return 0;
     }
     if (hwnd == g_app->languageDropdown) {
+        if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
         if (message == WM_MOUSEMOVE) {
             RECT client{};
             GetClientRect(hwnd, &client);
@@ -10929,6 +11208,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                     scheduleSettingsSync(g_app->settings);
                 } else if (const ThemeDefinition* theme = themeDropdownThemeAt(row)) {
                     const int selectorId = g_app->themeDropdownControlId;
+                    if (!confirmThemeEditorExit(g_app->settings)) {
+                        animateLanguageDropdown(g_app->settings, 0.0f);
+                        return 0;
+                    }
                     KillTimer(g_app->settings, kSettingsSyncTimer);
                     if (selectorId == kSettingFixedTheme) {
                         g_app->settingsData.themeSelection.fixedThemeId = theme->id;
@@ -10964,6 +11247,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == WM_DESTROY) {
             g_app->languageDropdown = nullptr;
             g_app->languageDropdownHover = -1;
+            g_app->languageDropdownX = 0;
+            g_app->languageDropdownY = 0;
+            g_app->languageDropdownWidth = 0;
+            g_app->languageDropdownHeight = 0;
             g_app->themeDropdownControlId = 0;
             return 0;
         }
@@ -11050,7 +11337,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     if (hwnd == g_app->hidden) {
         if (message == WM_SETTINGCHANGE || message == WM_THEMECHANGED ||
             message == WM_SYSCOLORCHANGE) {
-            if (g_app->settingsData.themeSelection.followSystem) {
+            if (g_app->settingsData.themeSelection.followSystem &&
+                !g_app->themeEditorDraftActive) {
                 const bool wasDark = g_app->settingsData.dark;
                 resolveActiveTheme();
                 if (g_app->settings && wasDark != g_app->settingsData.dark) {
@@ -11457,6 +11745,11 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
     }
     if (hwnd == g_app->settings) {
+        if (message == WM_WINDOWPOSCHANGED) {
+            if (g_app->languageDropdown) {
+                positionLanguageDropdown(hwnd, languageDropdownProgress());
+            }
+        }
         if (message == WM_SIZE) {
             if (g_app->settingsScrollDragging) {
                 g_app->settingsScrollDragging = false;
@@ -11474,6 +11767,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                              SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW);
             }
             updateSettingsTabControls(hwnd);
+            if (g_app->languageDropdown) {
+                positionLanguageDropdown(hwnd, languageDropdownProgress());
+            }
             invalidatePopupList(hwnd);
             return 0;
         }
@@ -11493,7 +11789,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 KillTimer(hwnd, kSettingsDropdownTimer);
             } else {
                 positionLanguageDropdown(hwnd, languageDropdownProgress());
-                InvalidateRect(g_app->languageDropdown, nullptr, FALSE);
             }
             return 0;
         }
@@ -11649,6 +11944,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const int y = GET_Y_LPARAM(lParam);
             const int themeMode = settingsThemeModeAtPoint(hwnd, x, y);
             if (themeMode >= 0) {
+                if (!confirmThemeEditorExit(hwnd)) return 0;
                 setSettingsThemeMode(hwnd, themeMode);
                 return 0;
             }
@@ -11693,10 +11989,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             if (x >= ui(8) && x < ui(kSettingsSidebarWidth) &&
                 y >= ui(50) && y < ui(50 + 6 * 38)) {
-                if (g_app->settingsTab == kSettingsAppearancePage && activeThemeIsCustom()) {
-                    KillTimer(hwnd, kSettingsSyncTimer);
-                    syncThemeEditorControls(hwnd);
-                }
+                if (g_app->settingsTab == kSettingsAppearancePage &&
+                    !confirmThemeEditorExit(hwnd)) return 0;
                 g_app->settingsTab = std::clamp((y - ui(50)) / ui(38), 0, 5);
                 g_app->settingsScrollOffset = 0;
                 updateSettingsTabControls(hwnd);
@@ -11716,6 +12010,23 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 (themeControlId == kSettingThemeName ||
                  (themeControlId >= kSettingThemeColorBase &&
                   themeControlId < kSettingThemeColorBase + static_cast<int>(kThemeColorCount)))) {
+                if (themeControlId >= kSettingThemeColorBase) {
+                    InvalidateRect(settingsControl(hwnd,
+                        kSettingThemeSwatchBase + themeControlId - kSettingThemeColorBase),
+                        nullptr, FALSE);
+                }
+                if (!g_app->restoringSettingsControls) {
+                    if (!g_app->themeEditorDraftActive) {
+                        if (const ThemeDefinition* active =
+                                g_app->themeRegistry.find(g_app->activeThemeId)) {
+                            g_app->themeEditorDraft = *active;
+                            g_app->themeEditorDraftActive = true;
+                            g_app->themeEditorDraftNew = false;
+                        }
+                    }
+                    g_app->themeEditorDraftDirty = true;
+                    updateSettingsTabControls(hwnd, false);
+                }
                 if (!g_app->restoringSettingsControls) scheduleSettingsSync(hwnd);
                 return 0;
             }
@@ -11758,7 +12069,13 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 return 0;
             }
             const int actionId = LOWORD(wParam);
+            if (isSettingsThemeSwatch(actionId) && HIWORD(wParam) == BN_CLICKED) {
+                chooseThemeColor(hwnd,
+                                 static_cast<std::size_t>(actionId - kSettingThemeSwatchBase));
+                return 0;
+            }
             if (actionId == kSettingThemeDuplicate && HIWORD(wParam) == BN_CLICKED) {
+                if (!confirmThemeEditorExit(hwnd)) return 0;
                 const ThemeDefinition* active = g_app->themeRegistry.find(g_app->activeThemeId);
                 if (!active) return 0;
                 ThemeDefinition custom = *active;
@@ -11770,23 +12087,25 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                     : L"My Theme " + std::to_wstring(GetTickCount64());
                 custom.explicitColors.fill(true);
                 custom.explicitAppearance = true;
-                if (g_app->themeRegistry.saveCustomTheme(custom, themesPath())) {
-                    g_app->settingsData.themeSelection.followSystem = false;
-                    g_app->settingsData.themeSelection.fixedThemeId = custom.id;
-                    const bool wasDark = g_app->settingsData.dark;
-                    resolveActiveTheme();
-                    if (wasDark != g_app->settingsData.dark) {
-                        animateSettingsTheme(hwnd, wasDark, g_app->settingsData.dark);
-                    }
-                    refreshThemeCombos(hwnd);
-                    refreshThemeEditorControls(hwnd);
-                    invalidateSettingsTheme(hwnd);
-                    updateSettingsTabControls(hwnd);
-                    saveSettings(g_app->settingsData);
-                }
+                g_app->themeEditorDraft = std::move(custom);
+                g_app->themeEditorDraftActive = true;
+                g_app->themeEditorDraftDirty = false;
+                g_app->themeEditorDraftNew = true;
+                g_app->activeThemeId = g_app->themeEditorDraft.id;
+                g_app->themePalette = g_app->themeEditorDraft.palette;
+                g_app->settingsData.dark = g_app->themeEditorDraft.appearance == ThemeAppearance::Dark;
+                refreshThemeEditorControls(hwnd);
+                invalidateSettingsTheme(hwnd);
+                updateSettingsTabControls(hwnd);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            if (actionId == kSettingThemeSave && HIWORD(wParam) == BN_CLICKED) {
+                saveThemeEditorDraft(hwnd);
                 return 0;
             }
             if (actionId == kSettingThemeDelete && HIWORD(wParam) == BN_CLICKED) {
+                if (g_app->themeEditorDraftActive) return 0;
                 const std::string deletingId = g_app->settingsData.themeSelection.followSystem
                     ? (systemThemeIsDark()
                         ? g_app->settingsData.themeSelection.systemDarkThemeId
@@ -11861,14 +12180,12 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == WM_CLOSE) {
+            if (!confirmThemeEditorExit(hwnd)) return 0;
             g_app->settingsClosing = true;
             KillTimer(hwnd, kSettingsSyncTimer);
             KillTimer(hwnd, kSettingsEncryptionTimer);
             KillTimer(hwnd, kSettingsActionFeedbackTimer);
             g_app->settingsActionFeedback.clear();
-            if (g_app->settingsTab == kSettingsAppearancePage && activeThemeIsCustom()) {
-                syncThemeEditorControls(hwnd);
-            }
             syncSettingsFromControls(hwnd, true);
             closeSupportProcess();
             DestroyWindow(hwnd);
