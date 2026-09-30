@@ -7259,10 +7259,21 @@ void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
             g_app->themePalette.text,
             g_app->themePalette.accent,
         };
+        const wchar_t* sampleLabelsZh[] = {L"窗口", L"卡片", L"文字", L"强调色"};
+        const wchar_t* sampleLabelsEn[] = {L"Window", L"Card", L"Text", L"Accent"};
         for (int i = 0; i < 4; ++i) {
             const int left = sampleLeft + i * (swatchWidth + gap);
             drawRounded(RECT{left, sampleTop, left + swatchWidth, sampleBottom},
                         samples[i], g_app->themePalette.border, 5);
+            const int luminance = GetRValue(samples[i]) * 299 +
+                GetGValue(samples[i]) * 587 + GetBValue(samples[i]) * 114;
+            const COLORREF labelColor = luminance >= 128000 ? RGB(30, 41, 59) :
+                RGB(255, 255, 255);
+            RECT label{left + ui(6), sampleTop, left + swatchWidth - ui(6), sampleBottom};
+            drawSettingsText(dc, bodyFont,
+                             languageIsChinese() ? sampleLabelsZh[i] : sampleLabelsEn[i],
+                             label, labelColor,
+                             DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         }
     }
     if (g_app->settingsTab == kSettingsStoragePage && layout.cards.size() >= 3) {
@@ -10289,6 +10300,7 @@ void drawSettingsShortcut(const DRAWITEMSTRUCT& item) {
 }
 
 int languageDropdownRowAt(int y) {
+    if (y < 0) return -1;
     RECT windowRect{};
     GetWindowRect(g_app->languageDropdown, &windowRect);
     const int visibleRows = settingsDropdownVisibleRows(windowRect.top,
@@ -10296,6 +10308,24 @@ int languageDropdownRowAt(int y) {
     const int row = y / ui(30);
     return row >= 0 && row < visibleRows
         ? row + g_app->languageDropdownScrollOffset : -1;
+}
+
+void updateLanguageDropdownHover(HWND hwnd) {
+    POINT cursor{};
+    GetCursorPos(&cursor);
+    ScreenToClient(hwnd, &cursor);
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const int row = cursor.x >= client.right - ui(16)
+        ? -1 : languageDropdownRowAt(cursor.y) - g_app->languageDropdownScrollOffset;
+    if (row == g_app->languageDropdownHover) return;
+    const int previous = g_app->languageDropdownHover;
+    g_app->languageDropdownHover = row;
+    for (const int dirtyRow : {previous, row}) {
+        if (dirtyRow < 0) continue;
+        RECT rect{0, ui(dirtyRow * 30), client.right, ui((dirtyRow + 1) * 30)};
+        InvalidateRect(hwnd, &rect, FALSE);
+    }
 }
 
 const std::string& selectedThemeId(int controlId) {
@@ -10873,6 +10903,7 @@ bool handleSettingsSelectorMessage(HWND hwnd, HWND settings, int id, UINT messag
                 (wParam == VK_NEXT ? visibleRows : (wParam == VK_UP ? -1 : 1));
             g_app->languageDropdownScrollOffset += step;
             clampSettingsDropdownScroll(visibleRows);
+            updateLanguageDropdownHover(g_app->languageDropdown);
             InvalidateRect(g_app->languageDropdown, nullptr, FALSE);
             result = 0;
             return true;
@@ -11511,6 +11542,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 g_app->languageDropdownScrollOffset =
                     g_app->languageDropdownDragStartOffset + delta * maxOffset / travel;
                 clampSettingsDropdownScroll(std::max(1, settingsDropdownItemCount() - maxOffset));
+                updateLanguageDropdownHover(hwnd);
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
             return 0;
@@ -11532,29 +11564,12 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const int step = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -1 : 1;
             g_app->languageDropdownScrollOffset += step;
             clampSettingsDropdownScroll(visibleRows);
+            updateLanguageDropdownHover(hwnd);
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
         if (message == WM_MOUSEMOVE) {
-            RECT client{};
-            GetClientRect(hwnd, &client);
-            const int row = languageDropdownRowAt(GET_Y_LPARAM(lParam));
-            if (row != g_app->languageDropdownHover) {
-                const int previous = g_app->languageDropdownHover;
-                g_app->languageDropdownHover = row;
-                RECT previousRect{0, previous < 0 ? 0 : ui(previous * 30),
-                                  0, previous < 0 ? 0 : ui((previous + 1) * 30)};
-                RECT currentRect{0, row < 0 ? 0 : ui(row * 30),
-                                 0, row < 0 ? 0 : ui((row + 1) * 30)};
-                if (previous >= 0) {
-                    previousRect.right = client.right;
-                    InvalidateRect(hwnd, &previousRect, FALSE);
-                }
-                if (row >= 0) {
-                    currentRect.right = client.right;
-                    InvalidateRect(hwnd, &currentRect, FALSE);
-                }
-            }
+            updateLanguageDropdownHover(hwnd);
             TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};
             TrackMouseEvent(&tracking);
             return 0;
