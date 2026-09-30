@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Added a source-code shortcut and GitHub Releases update checks to the About page, including a background startup check and configurable proxy prefix.
+- Update checks now distinguish installed and portable modes, matching the ZIP package for portable users and labeling the package type in the prompt.
+- Fixed installer upgrades failing to close the tray process; the installer now sends the normal exit command before replacing files.
+
 ## [1.4.0] - 2026-09-28
 
 - Improved image detail previews with cursor-centered zoom, drag panning, and on-demand original-image loading.

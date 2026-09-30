@@ -101,6 +101,9 @@ constexpr int kSettingClearImage = 41;
 constexpr int kSettingClearFiles = 42;
 constexpr int kSettingSupportAuthor = 43;
 constexpr int kSettingJoinQqGroup = 44;
+constexpr int kSettingOpenSource = 76;
+constexpr int kSettingCheckUpdate = 77;
+constexpr int kSettingUpdateProxy = 78;
 constexpr int kSettingSearchImeCompatibility = 45;
 constexpr int kSettingPromotePastedItem = 46;
 constexpr int kSettingPreviewAutomatic = 47;
@@ -166,6 +169,7 @@ constexpr UINT kPopupDetailPreviewLoadedMessage = WM_APP + 13;
 constexpr UINT kPopupPreviewKeyMessage = WM_APP + 14;
 constexpr UINT kStoreChangedMessage = WM_APP + 15;
 constexpr UINT kPastePayloadLoadedMessage = WM_APP + 16;
+constexpr UINT kUpdateCheckCompleteMessage = WM_APP + 17;
 constexpr UINT_PTR kExpiryTimer = 3;
 constexpr UINT_PTR kClipboardCaptureTimer = 7;
 constexpr UINT_PTR kSettingsToggleTimer = 4;
@@ -268,6 +272,10 @@ constexpr int kSupportQqWidth = 560;
 constexpr int kSupportQqHeight = 700;
 constexpr std::size_t kPopupImagePreviewCacheLimit = 24;
 constexpr std::size_t kPopupSourceIconCacheLimit = 32;
+constexpr char kCurrentVersion[] = "1.4.0";
+constexpr wchar_t kSourceUrl[] = L"https://github.com/wxh-777/ClipLite";
+constexpr wchar_t kLatestReleaseApiUrl[] =
+    L"https://api.github.com/repos/wxh-777/ClipLite/releases/latest";
 
 struct Settings {
     bool winV = false;
@@ -293,6 +301,7 @@ struct Settings {
     std::string dataDirectory;
     std::vector<std::string> ignoredApps;
     int sensitiveExpiryHours = 0;
+    std::string updateProxy;
     int language = -1; // -1 system, 0 English, 1 Simplified Chinese
     std::vector<std::string> categories{"General", "Work", "Code", "Links"};
     ShortcutBinding historyHotkey{MOD_ALT, 'V'};
@@ -506,6 +515,7 @@ struct AppState {
     float languageDropdownTo = 0.0f;
     bool restoringSettingsControls = false;
     bool settingsClosing = false;
+    bool updateCheckRunning = false;
     int settingsTab = 0;
     std::wstring settingsActionFeedback;
     bool settingsActionFeedbackSuccess = true;
@@ -623,6 +633,15 @@ struct SupportWindowState {
     bool qqLoading = false;
     HFONT titleFont = nullptr;
     HFONT bodyFont = nullptr;
+};
+
+struct UpdateCheckResult {
+    bool success = false;
+    bool interactive = false;
+    bool portable = false;
+    std::string version;
+    std::wstring downloadUrl;
+    std::wstring error;
 };
 
 AppState* g_app = nullptr;
@@ -1396,6 +1415,13 @@ void loadSettings(Settings& settings) {
         if (std::strncmp(line, "sensitiveExpiryHours=", 21) == 0) {
             settings.sensitiveExpiryHours = std::clamp(std::atoi(line + 21), 0, 720);
         }
+        if (std::strncmp(line, "updateProxy=", 12) == 0) {
+            settings.updateProxy = line + 12;
+            while (!settings.updateProxy.empty() &&
+                   (settings.updateProxy.back() == '\r' || settings.updateProxy.back() == '\n')) {
+                settings.updateProxy.pop_back();
+            }
+        }
         for (int i = 0; i < 4; ++i) {
             const std::string prefix = "category" + std::to_string(i) + "=";
             if (std::strncmp(line, prefix.c_str(), prefix.size()) == 0) {
@@ -1517,6 +1543,7 @@ void saveSettings(const Settings& settings) {
            << "maxContentMb=" << settings.maxContentMb << "\n"
            << "dataDirectory=" << settings.dataDirectory << "\n"
            << "sensitiveExpiryHours=" << settings.sensitiveExpiryHours << "\n"
+           << "updateProxy=" << settings.updateProxy << "\n"
            << "language=" << settings.language << "\n"
            << "shortcutHistoryModifiers=" << settings.historyHotkey.modifiers << "\n"
            << "shortcutHistoryKey=" << settings.historyHotkey.virtualKey << "\n"
@@ -5546,6 +5573,159 @@ std::vector<BYTE> downloadSupportImage(const wchar_t* url) {
     return bytes;
 }
 
+std::wstring updateUrlWithProxy(const std::wstring& url, const std::string& proxyText) {
+    if (proxyText.empty()) return url;
+    std::wstring proxy = utf8ToWide(proxyText);
+    while (!proxy.empty() && (proxy.back() == L' ' || proxy.back() == L'\t' || proxy.back() == L'/')) {
+        proxy.pop_back();
+    }
+    if (proxy.empty()) return url;
+    if (proxy.rfind(L"https://", 0) != 0 && proxy.rfind(L"http://", 0) != 0) {
+        proxy = L"https://" + proxy;
+    }
+    return proxy + L"/" + url;
+}
+
+bool runningInPortableMode() {
+    wchar_t executable[MAX_PATH]{};
+    const DWORD length = GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable));
+    if (length == 0 || length >= ARRAYSIZE(executable)) return false;
+    std::wstring executablePath(executable, length);
+    const std::size_t separator = executablePath.find_last_of(L"\\/");
+    if (separator == std::wstring::npos) return false;
+    const DWORD attributes = GetFileAttributesW(
+        (executablePath.substr(0, separator) + L"\\portable.flag").c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+std::vector<BYTE> downloadUpdateMetadata(const std::wstring& url) {
+    constexpr std::size_t maxResponseBytes = 1024u * 1024u;
+    URL_COMPONENTS components{sizeof(components)};
+    components.dwHostNameLength = static_cast<DWORD>(-1);
+    components.dwUrlPathLength = static_cast<DWORD>(-1);
+    components.dwExtraInfoLength = static_cast<DWORD>(-1);
+    if (!WinHttpCrackUrl(url.c_str(), 0, 0, &components)) return {};
+    const std::wstring host(components.lpszHostName, components.dwHostNameLength);
+    std::wstring path(components.lpszUrlPath, components.dwUrlPathLength);
+    if (components.dwExtraInfoLength > 0) {
+        path.append(components.lpszExtraInfo, components.dwExtraInfoLength);
+    }
+    const auto closeHandle = [](HINTERNET handle) {
+        if (handle) WinHttpCloseHandle(handle);
+    };
+    using HttpHandle = std::unique_ptr<void, decltype(closeHandle)>;
+    HttpHandle session(WinHttpOpen(L"ClipLite/1.4", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                   WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0), closeHandle);
+    if (!session) return {};
+    WinHttpSetTimeouts(session.get(), 5000, 5000, 5000, 10000);
+    HttpHandle connection(WinHttpConnect(session.get(), host.c_str(), components.nPort, 0), closeHandle);
+    if (!connection) return {};
+    const DWORD flags = components.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0;
+    HttpHandle request(WinHttpOpenRequest(connection.get(), L"GET", path.c_str(), nullptr,
+                                          WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags),
+                       closeHandle);
+    if (!request) return {};
+    const wchar_t headers[] = L"Accept: application/vnd.github+json\r\n";
+    if (!WinHttpAddRequestHeaders(request.get(), headers, static_cast<DWORD>(-1), WINHTTP_ADDREQ_FLAG_ADD) ||
+        !WinHttpSendRequest(request.get(), WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+        !WinHttpReceiveResponse(request.get(), nullptr)) {
+        return {};
+    }
+    DWORD statusCode = 0;
+    DWORD statusSize = sizeof(statusCode);
+    if (!WinHttpQueryHeaders(request.get(), WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                             WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize,
+                             WINHTTP_NO_HEADER_INDEX) || statusCode != 200) {
+        return {};
+    }
+    std::vector<BYTE> bytes;
+    for (;;) {
+        DWORD available = 0;
+        if (!WinHttpQueryDataAvailable(request.get(), &available)) return {};
+        if (available == 0) break;
+        if (available > maxResponseBytes - bytes.size()) return {};
+        const std::size_t offset = bytes.size();
+        bytes.resize(offset + available);
+        DWORD read = 0;
+        if (!WinHttpReadData(request.get(), bytes.data() + offset, available, &read)) return {};
+        bytes.resize(offset + read);
+    }
+    return bytes;
+}
+
+std::string jsonStringValue(const std::string& json, const char* key, std::size_t start = 0) {
+    const std::string prefix = std::string("\"") + key + "\":\"";
+    const std::size_t valueStart = json.find(prefix, start);
+    if (valueStart == std::string::npos) return {};
+    const std::size_t begin = valueStart + prefix.size();
+    const std::size_t end = json.find('"', begin);
+    return end == std::string::npos ? std::string{} : json.substr(begin, end - begin);
+}
+
+bool versionIsNewer(const std::string& candidate, const char* current) {
+    auto parse = [](const std::string& value) {
+        std::array<int, 3> parts{};
+        std::size_t begin = value.find_first_of("0123456789");
+        for (std::size_t i = 0; i < parts.size() && begin != std::string::npos; ++i) {
+            const std::size_t end = value.find_first_not_of("0123456789", begin);
+            parts[i] = std::atoi(value.substr(begin, end - begin).c_str());
+            begin = end == std::string::npos ? end : value.find_first_of("0123456789", end);
+        }
+        return parts;
+    };
+    return parse(candidate) > parse(current);
+}
+
+UpdateCheckResult checkForUpdate(const std::string& proxy, bool portable) {
+    UpdateCheckResult result;
+    result.portable = portable;
+    const std::vector<BYTE> bytes = downloadUpdateMetadata(
+        updateUrlWithProxy(kLatestReleaseApiUrl, proxy));
+    if (bytes.empty()) {
+        result.error = tr(L"Unable to connect to GitHub Releases.", L"无法连接 GitHub Releases。\n请检查网络或代理地址。" );
+        return result;
+    }
+    const std::string json(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    result.version = jsonStringValue(json, "tag_name");
+    const std::size_t assets = json.find("\"assets\"");
+    std::size_t search = assets == std::string::npos ? 0 : assets;
+    while (search < json.size()) {
+        const std::size_t url = json.find("\"browser_download_url\":\"", search);
+        if (url == std::string::npos) break;
+        const std::string candidate = jsonStringValue(json, "browser_download_url", url);
+        const bool matchesPackage = portable
+            ? candidate.find("ClipLite-") != std::string::npos &&
+              candidate.find("-portable-win-x64.zip") != std::string::npos
+            : candidate.find("ClipLite-Setup-") != std::string::npos &&
+              candidate.find("-x64.exe") != std::string::npos;
+        if (matchesPackage) {
+            result.downloadUrl = utf8ToWide(candidate);
+            break;
+        }
+        search = url + 1;
+    }
+    result.success = !result.version.empty() && !result.downloadUrl.empty();
+    if (!result.success) result.error = tr(L"GitHub returned an invalid release record.", L"GitHub 返回的发布信息无效。" );
+    return result;
+}
+
+void startUpdateCheck(bool interactive) {
+    if (!g_app || !g_app->hidden || g_app->updateCheckRunning) return;
+    g_app->updateCheckRunning = true;
+    const HWND owner = g_app->hidden;
+    const std::string proxy = g_app->settingsData.updateProxy;
+    const bool portable = runningInPortableMode();
+    std::thread([owner, proxy, portable, interactive] {
+        auto* result = new UpdateCheckResult(checkForUpdate(proxy, portable));
+        result->interactive = interactive;
+        if (!PostMessageW(owner, kUpdateCheckCompleteMessage,
+                          reinterpret_cast<WPARAM>(result), 0)) {
+            delete result;
+        }
+    }).detach();
+}
+
 std::unique_ptr<SupportWindowState::Image> decodeSupportImage(const std::vector<BYTE>& bytes) {
     if (bytes.empty()) return nullptr;
     HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes.size());
@@ -6615,7 +6795,15 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
         }, 190);
         makeCard(settingsLocale().protectionScope, {}, 120);
     } else {
-        makeCard(settingsLocale().about, {}, 300);
+        makeCard(settingsLocale().about, {
+            makeSettingsRow(hwnd, tr(L"Update proxy (optional)", L"更新代理地址（可选）"),
+                            {kSettingUpdateProxy}, {360}, {30}, contentWidth),
+            makeSettingsRow(hwnd, nullptr,
+                            {kSettingOpenSource, kSettingCheckUpdate}, {128, 128}, {30, 30}, contentWidth)
+        }, 300);
+        SettingsCardLayout& aboutCard = layout.cards.back();
+        aboutCard.rows[0].top = aboutCard.top + 274;
+        aboutCard.rows[1].top = aboutCard.top + 326;
     }
     const int controlRight = clientWidth - kSettingsBodyMargin - 14 - scrollbarReserve;
     for (SettingsCardLayout& card : layout.cards) {
@@ -8150,20 +8338,37 @@ void createSettingsControlsModern(HWND hwnd) {
     CreateWindowW(L"BUTTON", settingsLocale().openLog,
                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                    ui(520 - kSettingsSidebarWidth), ui(298 - kSettingsHeaderHeight),
-                   ui(150), ui(30), parent,
+                   ui(128), ui(30), parent,
                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingOpenLog)),
                    GetModuleHandleW(nullptr), nullptr);
     CreateWindowW(L"BUTTON", settingsLocale().supportAuthor,
                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                    ui(520 - kSettingsSidebarWidth), ui(338 - kSettingsHeaderHeight),
-                   ui(150), ui(30), parent,
+                   ui(128), ui(30), parent,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingSupportAuthor)),
                   GetModuleHandleW(nullptr), nullptr);
     CreateWindowW(L"BUTTON", settingsLocale().joinQqGroup,
                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                    ui(520 - kSettingsSidebarWidth), ui(378 - kSettingsHeaderHeight),
-                   ui(150), ui(30), parent,
-                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingJoinQqGroup)),
+                   ui(128), ui(30), parent,
+                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingJoinQqGroup)),
+                   GetModuleHandleW(nullptr), nullptr);
+    CreateWindowExW(0, L"EDIT", utf8ToWide(g_app->settingsData.updateProxy).c_str(),
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL,
+                    ui(520 - kSettingsSidebarWidth), ui(418 - kSettingsHeaderHeight), ui(360), ui(30), parent,
+                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingUpdateProxy)),
+                     GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(settingsControl(hwnd, kSettingUpdateProxy), EM_SETCUEBANNER, FALSE,
+                 reinterpret_cast<LPARAM>(L"https://gh-proxy.com"));
+    CreateWindowW(L"BUTTON", tr(L"Open source", L"打开源码"),
+                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                  ui(520 - kSettingsSidebarWidth), ui(458 - kSettingsHeaderHeight), ui(128), ui(30), parent,
+                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingOpenSource)),
+                  GetModuleHandleW(nullptr), nullptr);
+    CreateWindowW(L"BUTTON", tr(L"Check for updates", L"检查更新"),
+                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                  ui(680 - kSettingsSidebarWidth), ui(458 - kSettingsHeaderHeight), ui(128), ui(30), parent,
+                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingCheckUpdate)),
                   GetModuleHandleW(nullptr), nullptr);
 }
 
@@ -8184,6 +8389,12 @@ void refreshSettingsLocalizedControls(HWND hwnd) {
     }
     if (HWND qq = settingsControl(hwnd, kSettingJoinQqGroup)) {
         SetWindowTextW(qq, settingsLocale().joinQqGroup);
+    }
+    if (HWND source = settingsControl(hwnd, kSettingOpenSource)) {
+        SetWindowTextW(source, tr(L"Open source", L"打开源码"));
+    }
+    if (HWND update = settingsControl(hwnd, kSettingCheckUpdate)) {
+        SetWindowTextW(update, tr(L"Check for updates", L"检查更新"));
     }
     if (HWND duplicate = settingsControl(hwnd, kSettingThemeDuplicate)) {
         SetWindowTextW(duplicate, settingsLocale().duplicateTheme);
@@ -8226,7 +8437,8 @@ void updateSettingsTabControls(HWND hwnd, bool redraw) {
                         kSettingDataDirectory, kSettingBrowseDataDirectory,
                           kSettingIgnoredApps, kSettingSensitiveExpiry, kSettingClear,
                              kSettingClearText, kSettingClearImage, kSettingClearFiles,
-                              kSettingOpenLog, kSettingSupportAuthor, kSettingJoinQqGroup,
+                          kSettingOpenLog, kSettingSupportAuthor, kSettingJoinQqGroup,
+                              kSettingOpenSource, kSettingCheckUpdate, kSettingUpdateProxy,
                              kSettingShortcutPreview, kSettingShortcutHistory,
                          kSettingShortcutSettings, kSettingShortcutPause,
                          kSettingShortcutPaste, kSettingShortcutPastePlain,
@@ -8317,9 +8529,12 @@ void updateSettingsTabControls(HWND hwnd, bool redraw) {
         }
     }
     if (g_app->settingsTab == kSettingsAboutPage) {
-        show(kSettingOpenLog, 520, 298, 150, 30);
-        show(kSettingSupportAuthor, 520, 338, 150, 30);
-        show(kSettingJoinQqGroup, 520, 378, 150, 30);
+        show(kSettingOpenLog, 268, 298, 128, 30);
+        show(kSettingSupportAuthor, 408, 298, 128, 30);
+        show(kSettingJoinQqGroup, 548, 298, 128, 30);
+        const int updateTop = layout.cards.back().rows[1].top;
+        show(kSettingOpenSource, 408, updateTop, 128, 30);
+        show(kSettingCheckUpdate, 548, updateTop, 128, 30);
     }
     const bool appearancePage = g_app->settingsTab == kSettingsAppearancePage;
     const bool followSystem = g_app->settingsData.themeSelection.followSystem;
@@ -9234,6 +9449,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     HWND maxDiskMb = settingsControl(hwnd, kSettingMaxDiskMb);
     HWND maxContentMb = settingsControl(hwnd, kSettingMaxContentMb);
     HWND dataDirectory = settingsControl(hwnd, kSettingDataDirectory);
+    HWND updateProxy = settingsControl(hwnd, kSettingUpdateProxy);
     HWND ignoredApps = settingsControl(hwnd, kSettingIgnoredApps);
     HWND sensitiveExpiry = settingsControl(hwnd, kSettingSensitiveExpiry);
     HWND startup = settingsControl(hwnd, kSettingStartup);
@@ -9252,7 +9468,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
         categoryDisk[i] = settingsControl(hwnd, kSettingCategoryDiskBase + i);
     }
     if (!win || !language || !pause || !maxItems || !retentionDays || !maxDiskMb ||
-        !maxContentMb || !dataDirectory || !ignoredApps || !sensitiveExpiry || !startup ||
+        !maxContentMb || !dataDirectory || !updateProxy || !ignoredApps || !sensitiveExpiry || !startup ||
         !startupSettings || !startupNotification || !runAsAdministrator ||
         !searchImeCompatibility || !promotePastedItem || !previewAutomatic || !previewByKey || !encrypt) {
         return false;
@@ -9298,6 +9514,14 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     next.dataDirectory = normalizedDataDirectory.empty() ||
         _wcsicmp(normalizedDataDirectory.c_str(), defaultDataDirectory.c_str()) == 0
         ? std::string{} : wideToUtf8(normalizedDataDirectory.c_str(), normalizedDataDirectory.size());
+    const int updateProxyLength = GetWindowTextLengthW(updateProxy);
+    std::wstring updateProxyText(static_cast<std::size_t>(updateProxyLength) + 1, L'\0');
+    GetWindowTextW(updateProxy, updateProxyText.data(), updateProxyLength + 1);
+    updateProxyText.resize(static_cast<std::size_t>(updateProxyLength));
+    while (!updateProxyText.empty() && (updateProxyText.back() == L' ' || updateProxyText.back() == L'\t')) {
+        updateProxyText.pop_back();
+    }
+    next.updateProxy = wideToUtf8(updateProxyText.c_str(), updateProxyText.size());
     GetWindowTextW(sensitiveExpiry, value, 32);
     next.sensitiveExpiryHours = static_cast<int>(std::clamp(std::wcstol(value, nullptr, 10), 0L, 720L));
     for (int i = 0; i < kStorageCategoryCount; ++i) {
@@ -9403,7 +9627,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
         next.encryptData != previous.encryptData || next.language != previous.language ||
         dataDirectoryChanged ||
         next.sensitiveExpiryHours != previous.sensitiveExpiryHours || searchImeCompatibilityChanged ||
-        promotePastedItemChanged || previewChanged ||
+        promotePastedItemChanged || previewChanged || next.updateProxy != previous.updateProxy ||
         next.ignoredApps != previous.ignoredApps;
     if (!changed) return true;
 
@@ -9899,7 +10123,8 @@ bool isSettingsActionButton(int id) {
            id == kSettingClearImage || id == kSettingClearFiles ||
            id == kSettingBrowseDataDirectory || id == kSettingOpenLog ||
            id == kSettingSupportAuthor || id == kSettingJoinQqGroup ||
-            id == kSettingThemeDuplicate || id == kSettingThemeSave || id == kSettingThemeDelete;
+           id == kSettingOpenSource || id == kSettingCheckUpdate ||
+             id == kSettingThemeDuplicate || id == kSettingThemeSave || id == kSettingThemeDelete;
 }
 
 bool isSettingsClearAction(int id) {
@@ -9983,7 +10208,8 @@ void drawSettingsButton(const DRAWITEMSTRUCT& item) {
     const int id = GetDlgCtrlID(item.hwndItem);
     const bool neutral = id == kSettingBrowseDataDirectory || id == kSettingOpenLog ||
         id == kSettingThemeDuplicate || id == kSettingThemeSave || id == kSettingThemeDelete ||
-        id == kSettingSupportAuthor || id == kSettingJoinQqGroup;
+        id == kSettingSupportAuthor || id == kSettingJoinQqGroup ||
+        id == kSettingOpenSource || id == kSettingCheckUpdate;
     const bool hovered = g_app->hoveredSettingsControl == id;
     const bool pressed = (item.itemState & ODS_SELECTED) != 0;
     const bool focused = (item.itemState & ODS_FOCUS) != 0 || GetFocus() == item.hwndItem;
@@ -10817,6 +11043,45 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         g_app->pasteLoadPending = false;
         if (g_app->popup != result->popup) return 0;
         completePaste(*result);
+        return 0;
+    }
+    if (message == kUpdateCheckCompleteMessage) {
+        std::unique_ptr<UpdateCheckResult> result(
+            reinterpret_cast<UpdateCheckResult*>(wParam));
+        g_app->updateCheckRunning = false;
+        if (!result || !result->interactive) {
+            if (!result || !result->success || !versionIsNewer(result->version, kCurrentVersion)) {
+                return 0;
+            }
+        }
+        if (!result || !result->success) {
+            if (result && result->interactive) {
+                MessageBoxW(g_app->settings, result->error.c_str(),
+                            tr(L"Update check", L"检查更新"), MB_OK | MB_ICONWARNING);
+            }
+            return 0;
+        }
+        if (!versionIsNewer(result->version, kCurrentVersion)) {
+            if (result->interactive) {
+                MessageBoxW(g_app->settings,
+                            tr(L"You are using the latest version.", L"当前已经是最新版本。"),
+                            tr(L"Update check", L"检查更新"), MB_OK | MB_ICONINFORMATION);
+            }
+            return 0;
+        }
+        const wchar_t* messageText = result->portable
+            ? tr(L"ClipLite %ls is available. Open the portable package download?",
+                 L"发现 ClipLite %ls，是否打开便携版下载地址？")
+            : tr(L"ClipLite %ls is available. Open the installer download?",
+                 L"发现 ClipLite %ls，是否打开安装包下载地址？");
+        wchar_t formatted[512]{};
+        swprintf_s(formatted, messageText, utf8ToWide(result->version).c_str());
+        if (MessageBoxW(g_app->settings, formatted,
+                tr(L"Update available", L"发现新版本"), MB_YESNO | MB_ICONINFORMATION) == IDYES) {
+            const std::wstring url = updateUrlWithProxy(result->downloadUrl,
+                                                        g_app->settingsData.updateProxy);
+            ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
         return 0;
     }
     if (hwnd == g_app->filterMenuWindow || hwnd == g_app->filterSubmenuWindow) {
@@ -12164,8 +12429,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                  LOWORD(wParam) == kSettingRetentionDays ||
                  LOWORD(wParam) == kSettingMaxDiskMb ||
                  LOWORD(wParam) == kSettingMaxContentMb ||
-                   LOWORD(wParam) == kSettingDataDirectory ||
-                   LOWORD(wParam) == kSettingIgnoredApps ||
+                    LOWORD(wParam) == kSettingDataDirectory ||
+                    LOWORD(wParam) == kSettingUpdateProxy ||
+                    LOWORD(wParam) == kSettingIgnoredApps ||
                    LOWORD(wParam) == kSettingSensitiveExpiry ||
                     (LOWORD(wParam) >= kSettingCategoryMaxBase &&
                      LOWORD(wParam) < kSettingCategoryDiskBase + kStorageCategoryCount))) {
@@ -12258,6 +12524,15 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             if (actionId == kSettingOpenLog && HIWORD(wParam) == BN_CLICKED) {
                 openDiagnosticLog(hwnd);
+                return 0;
+            }
+            if (actionId == kSettingOpenSource && HIWORD(wParam) == BN_CLICKED) {
+                ShellExecuteW(nullptr, L"open", kSourceUrl, nullptr, nullptr, SW_SHOWNORMAL);
+                return 0;
+            }
+            if (actionId == kSettingCheckUpdate && HIWORD(wParam) == BN_CLICKED) {
+                startUpdateCheck(true);
+                setSettingsActionFeedback(hwnd, tr(L"Checking for updates...", L"正在检查更新..."), true);
                 return 0;
             }
             if (actionId == kSettingSupportAuthor) {
@@ -13294,6 +13569,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     } else if (commandSettings || app.settingsData.showSettingsOnStartup) {
         PostMessageW(app.hidden, kShowSettingsMessage, 0, 0);
     }
+    if (!commandImageBenchmark) startUpdateCheck(false);
     appendDiagnosticLog("INFO", "startup: initialization completed");
 
     MSG message{};

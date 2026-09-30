@@ -25,6 +25,8 @@ OutputBaseFilename=ClipLite-Setup-{#AppVersion}-x64
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+CloseApplications=no
+RestartApplications=no
 LanguageDetectionMethod=uilanguage
 MissingMessagesWarning=no
 UninstallDisplayIcon={app}\ClipLite.exe
@@ -70,6 +72,20 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Filename: "{app}\ClipLite.exe"; Parameters: "--exit"; RunOnceId: "ClipLiteExit"; Flags: runhidden waituntilterminated
 
 [Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ExitCode: Integer;
+begin
+  Result := '';
+  NeedsRestart := False;
+  if not FileExists(ExpandConstant('{app}\ClipLite.exe')) then
+    Exit;
+
+  if not Exec(ExpandConstant('{app}\ClipLite.exe'), '--exit', '', SW_HIDE,
+              ewWaitUntilTerminated, ExitCode) then
+    Result := 'Unable to close ClipLite before installation.';
+end;
+
 function InitializeUninstall(): Boolean;
 begin
   Result := True;

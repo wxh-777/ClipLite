@@ -30,6 +30,9 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 - Pinned records are protected from automatic count, capacity, expiry, and startup cleanup, and are not overwritten by new clipboard content.
 - Source application filtering, sensitive text expiry, and optional Windows DPAPI user encryption.
 - Installer and portable distribution modes; clipboard archiving, history reads, and usage statistics run through short-lived worker tasks without keeping the full history payload in memory.
+- The About page opens the GitHub source and checks GitHub Releases. ClipLite also performs one background update check after startup without blocking clipboard features.
+- Update checks support a proxy prefix such as `https://gh-proxy.com`; GitHub API and installer URLs are composed as `https://gh-proxy.com/https://github.com/...`. Leave it empty to connect directly.
+- Portable mode matches and opens `ClipLite-*-portable-win-x64.zip`, while installed mode matches `ClipLite-Setup-*.exe`. Keep the portable package's `data\\` directory when replacing the application.
 - The history window does not take input focus from the original application; left-clicking an item pastes it without requiring the input field to be selected again.
 - When "Run ClipLite as administrator" is enabled, Windows authorization is required once; later launches use a per-user highest-privilege scheduled task and do not show the UAC prompt again. Disabling the option removes the task.
 - Running as administrator can improve clipboard access and paste compatibility with some elevated windows where Windows permits it; ClipLite still cannot bypass UIPI, the secure desktop, or protected-window restrictions.
