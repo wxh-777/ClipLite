@@ -104,6 +104,7 @@ constexpr int kSettingJoinQqGroup = 44;
 constexpr int kSettingOpenSource = 76;
 constexpr int kSettingCheckUpdate = 77;
 constexpr int kSettingUpdateProxy = 78;
+constexpr int kSettingSearchOnOpen = 79;
 constexpr int kSettingSearchImeCompatibility = 45;
 constexpr int kSettingPromotePastedItem = 46;
 constexpr int kSettingPreviewAutomatic = 47;
@@ -143,6 +144,7 @@ constexpr int kMenuPromotePastedItem = 107;
 constexpr int kMenuPreviewAutomatic = 108;
 constexpr int kMenuPreviewByKey = 109;
 constexpr int kMenuPreviewDisabled = 110;
+constexpr int kMenuSearchOnOpen = 111;
 constexpr int kFilterAll = 130;
 constexpr int kFilterText = 131;
 constexpr int kFilterFiles = 132;
@@ -258,6 +260,8 @@ constexpr int kSettingsTrackWidth = 36;
 constexpr int kSettingsTrackHeight = 20;
 constexpr int kSettingsThemeWidth = 102;
 constexpr int kSettingsThemeSegmentWidth = 32;
+constexpr int kSettingsThemeSaveWidth = 86;
+constexpr int kSettingsThemeGap = 8;
 constexpr int kSettingsThemeColumnGap = 56;
 constexpr int kSettingsAppearancePage = 1;
 constexpr int kSettingsShortcutPage = 2;
@@ -291,6 +295,7 @@ struct Settings {
     bool showSettingsOnStartup = true;
     bool showStartupNotification = true;
     bool searchImeCompatibility = false;
+    bool searchOnOpen = false;
     bool promotePastedItem = false;
     bool previewAutomatic = true;
     bool previewByKey = true;
@@ -793,6 +798,7 @@ enum class ThemeColorRole {
     Border,
     Divider,
     HoverBackground,
+    PressedBackground,
     Accent,
     AccentSoft,
     Error,
@@ -1148,6 +1154,7 @@ struct SettingsLocale {
     const wchar_t* previewProtected;
     const wchar_t* previewOriginalImage;
     const wchar_t* previewContent;
+    const wchar_t* searchOnOpen;
 };
 
 const SettingsLocale kEnglishSettingsLocale{
@@ -1204,7 +1211,7 @@ const SettingsLocale kEnglishSettingsLocale{
      L"Automatic preview", L"Preview while holding a key", L"Preview mode", L"Disable preview",
      L"Preview key", L"Loading preview...",
      L"Unable to load the preview.", L"No item selected", L"This item is protected.", L"Original image",
-     L"Content preview"
+      L"Content preview", L"Focus search when opening history"
 };
 
 const SettingsLocale kChineseSettingsLocale{
@@ -1249,7 +1256,8 @@ const SettingsLocale kChineseSettingsLocale{
      L"支付宝", L"ClipLite QQ 群", L"群号：1081580020", L"复制群号", L"已复制", L"正在加载图片...",
       L"无法加载支持图片，请检查网络连接。", L"自动预览", L"按住按键预览", L"预览模式", L"关闭预览",
       L"预览按键",
-      L"正在加载预览...", L"无法加载预览。", L"未选择记录", L"此记录受保护。", L"原图", L"内容预览"
+       L"正在加载预览...", L"无法加载预览。", L"未选择记录", L"此记录受保护。", L"原图", L"内容预览",
+       L"打开历史窗口后直接搜索"
 };
 
 const SettingsLocale& settingsLocale() {
@@ -1411,6 +1419,7 @@ void loadSettings(Settings& settings) {
         if (std::strncmp(line, "showStartupNotification=0", 25) == 0) settings.showStartupNotification = false;
         if (std::strncmp(line, "showStartupNotification=1", 25) == 0) settings.showStartupNotification = true;
         if (std::strncmp(line, "searchImeCompatibility=1", 24) == 0) settings.searchImeCompatibility = true;
+        if (std::strncmp(line, "searchOnOpen=1", 14) == 0) settings.searchOnOpen = true;
         if (std::strncmp(line, "promotePastedItem=1", 19) == 0) settings.promotePastedItem = true;
         if (std::strncmp(line, "previewAutomatic=0", 18) == 0) settings.previewAutomatic = false;
         if (std::strncmp(line, "previewAutomatic=1", 18) == 0) settings.previewAutomatic = true;
@@ -1553,6 +1562,7 @@ void saveSettings(const Settings& settings) {
            << "showSettingsOnStartup=" << (settings.showSettingsOnStartup ? 1 : 0) << "\n"
            << "showStartupNotification=" << (settings.showStartupNotification ? 1 : 0) << "\n"
            << "searchImeCompatibility=" << (settings.searchImeCompatibility ? 1 : 0) << "\n"
+           << "searchOnOpen=" << (settings.searchOnOpen ? 1 : 0) << "\n"
            << "promotePastedItem=" << (settings.promotePastedItem ? 1 : 0) << "\n"
            << "previewAutomatic=" << (settings.previewAutomatic ? 1 : 0) << "\n"
            << "previewByKey=" << (settings.previewByKey ? 1 : 0) << "\n"
@@ -2491,7 +2501,7 @@ void invalidatePopupHover(HWND hwnd, int row, int filter, bool header) {
 }
 
 void invalidateSettingsNav(HWND hwnd, int tab) {
-    if (tab < 0 || tab > 4) return;
+    if (tab < 0 || tab >= 6) return;
     RECT rect{ui(8), ui(50 + tab * 38), ui(180), ui(50 + tab * 38 + 38)};
     InvalidateRect(hwnd, &rect, FALSE);
 }
@@ -5112,6 +5122,8 @@ void applyPopupWindowFrame(HWND hwnd, int width, int height) {
                           sizeof(kDwmCornerRound));
 }
 
+bool activatePopupSearchFocus(bool imeMode);
+
 void showPopup(bool openedByWinV = false) {
     if (g_app->popup) {
         if (GetForegroundWindow() != g_app->popup) rememberPasteTarget();
@@ -5130,6 +5142,7 @@ void showPopup(bool openedByWinV = false) {
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
         updatePopupKeyboardHook();
         restorePasteTargetFocus(g_app->targetWindow);
+        if (g_app->settingsData.searchOnOpen) activatePopupSearchFocus(false);
         SetTimer(g_app->popup, kPopupOpenGuardTimer, kPopupOpenGuardMs, nullptr);
         return;
     }
@@ -5191,6 +5204,7 @@ void showPopup(bool openedByWinV = false) {
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
     updatePopupKeyboardHook();
     restorePasteTargetFocus(g_app->targetWindow);
+    if (g_app->settingsData.searchOnOpen) activatePopupSearchFocus(false);
     SetTimer(g_app->popup, kPopupOpenGuardTimer, kPopupOpenGuardMs, nullptr);
 }
 
@@ -5480,7 +5494,8 @@ bool activatePopupSearchFocus(bool imeMode) {
     if (!g_app || !g_app->popup || !g_app->searchEdit ||
         (imeMode && g_app->popupImeMode)) return false;
     g_app->popupImeMode = imeMode;
-    g_app->popupSearchInputActive = false;
+    // 自动聚焦与鼠标点击输入框保持相同的键盘钩子状态，避免首个字符被当作列表输入。
+    g_app->popupSearchInputActive = true;
     g_app->popupSearchControlDown = false;
     g_app->popupSuppressImeTriggerSpace = false;
     KillTimer(g_app->popup, kPopupDeactivateTimer);
@@ -5490,7 +5505,8 @@ bool activatePopupSearchFocus(bool imeMode) {
     g_app->popupActivated = GetForegroundWindow() == g_app->popup;
     if (!g_app->popupActivated) {
         g_app->popupImeMode = false;
-        g_app->popupSearchInputActive = false;
+        // Win+V 弹窗不抢占前台，输入由低级键盘钩子转发；只有 IME 模式需要真实焦点。
+        if (imeMode) g_app->popupSearchInputActive = false;
         g_app->popupSuppressImeTriggerSpace = false;
         return false;
     }
@@ -6794,7 +6810,9 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
             makeSettingsRow(hwnd, settingsLocale().runAsAdministrator,
                             {kSettingRunAsAdministrator}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().searchInputCompatibility,
-                            {kSettingSearchImeCompatibility}, {36}, {20}, contentWidth),
+                             {kSettingSearchImeCompatibility}, {36}, {20}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().searchOnOpen,
+                             {kSettingSearchOnOpen}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().promotePastedItem,
                              {kSettingPromotePastedItem}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().automaticPreview,
@@ -6932,7 +6950,7 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
                             {kSettingUpdateProxy}, {360}, {30}, contentWidth),
             makeSettingsRow(hwnd, nullptr,
                             {kSettingOpenSource, kSettingCheckUpdate}, {128, 128}, {30, 30}, contentWidth)
-        }, 300);
+        }, 240);
         SettingsCardLayout& aboutCard = layout.cards.back();
         aboutCard.rows[0].top = aboutCard.top + 274;
         aboutCard.rows[1].top = aboutCard.top + 326;
@@ -7190,7 +7208,8 @@ void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
     if (g_app->hoveredSettingsTab >= 0 && g_app->hoveredSettingsTab != g_app->settingsTab) {
         const int hoverTop = 50 + g_app->hoveredSettingsTab * 38;
         drawRounded(RECT{ui(12), ui(hoverTop), ui(168), ui(hoverTop + 34)},
-                    settingsAccentSoftColor(), settingsAccentSoftColor(), 6);
+                    themeColor(ThemeColorRole::HoverBackground),
+                    themeColor(ThemeColorRole::HoverBackground), 6);
     }
     SelectObject(dc, navFont);
     SetTextColor(dc, secondary);
@@ -7219,13 +7238,14 @@ void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
     const int themeWidth = ui(kSettingsThemeWidth);
-    const int themeLeft = contentRight - themeWidth;
+    const int themeLeft = contentRight - ui(kSettingsThemeSaveWidth + kSettingsThemeGap) - themeWidth;
     const int themeTop = ui(14);
     SelectObject(dc, bodyFont);
     SetTextColor(dc, g_app->settingsActionFeedback.empty()
         ? secondary
         : (g_app->settingsActionFeedbackSuccess ? accent : RGB(185, 28, 28)));
-    RECT saveState{themeLeft - ui(94), ui(20), themeLeft - ui(8), ui(42)};
+    RECT saveState{themeLeft + themeWidth + ui(kSettingsThemeGap), ui(20),
+                   themeLeft + themeWidth + ui(kSettingsThemeGap + kSettingsThemeSaveWidth), ui(42)};
     const wchar_t* saveLabel = g_app->settingsActionFeedback.empty()
         ? settingsLocale().autoSaved : g_app->settingsActionFeedback.c_str();
     DrawTextW(dc, saveLabel, -1, &saveState,
@@ -8309,10 +8329,11 @@ void createSettingsControlsModern(HWND hwnd) {
     createToggle(kSettingRunAsAdministrator, 640, 404, g_app->settingsData.runAsAdministrator);
     createToggle(kSettingSearchImeCompatibility, 640, 439,
                  g_app->settingsData.searchImeCompatibility);
-    createToggle(kSettingPromotePastedItem, 640, 474,
+    createToggle(kSettingSearchOnOpen, 640, 474, g_app->settingsData.searchOnOpen);
+    createToggle(kSettingPromotePastedItem, 640, 509,
                  g_app->settingsData.promotePastedItem);
-    createToggle(kSettingPreviewAutomatic, 640, 509, g_app->settingsData.previewAutomatic);
-    createToggle(kSettingPreviewByKey, 640, 544, g_app->settingsData.previewByKey);
+    createToggle(kSettingPreviewAutomatic, 640, 544, g_app->settingsData.previewAutomatic);
+    createToggle(kSettingPreviewByKey, 640, 579, g_app->settingsData.previewByKey);
     createToggle(kSettingEncrypt, 640, 116, g_app->settingsData.encryptData);
     createShortcut(kSettingShortcutPreview, 550, g_app->settingsData.popupPreviewHotkey);
     createShortcut(kSettingShortcutHistory, 110, g_app->settingsData.historyHotkey);
@@ -8577,8 +8598,8 @@ void updateSettingsTabControls(HWND hwnd, bool redraw) {
                             kSettingSystemDarkTheme, kSettingThemeDuplicate, kSettingThemeSave,
                             kSettingThemeDelete,
                            kSettingWinV, kSettingLanguage, kSettingPause,
-                          kSettingStartup, kSettingStartupSettings, kSettingStartupNotification,
-                          kSettingRunAsAdministrator, kSettingSearchImeCompatibility,
+                           kSettingStartup, kSettingStartupSettings, kSettingStartupNotification,
+                           kSettingRunAsAdministrator, kSettingSearchImeCompatibility, kSettingSearchOnOpen,
                           kSettingPreviewAutomatic, kSettingPreviewByKey,
                          kSettingPromotePastedItem, kSettingEncrypt, kSettingMaxItems,
                         kSettingRetentionDays, kSettingMaxDiskMb, kSettingMaxContentMb,
@@ -9246,6 +9267,22 @@ void appendPopupPromotePastedItemMenu(HMENU menu) {
                 kMenuPromotePastedItem, settingsLocale().promotePastedItem);
 }
 
+void appendPopupSearchOnOpenMenu(HMENU menu) {
+    AppendMenuW(menu, MF_STRING | (g_app->settingsData.searchOnOpen ? MF_CHECKED : 0),
+                kMenuSearchOnOpen, settingsLocale().searchOnOpen);
+}
+
+void togglePopupSearchOnOpen() {
+    if (!g_app) return;
+    g_app->settingsData.searchOnOpen = !g_app->settingsData.searchOnOpen;
+    if (g_app->settings) {
+        setSettingsToggleValue(settingsControl(g_app->settings, kSettingSearchOnOpen),
+                               g_app->settingsData.searchOnOpen);
+        InvalidateRect(g_app->settings, nullptr, FALSE);
+    }
+    saveSettings(g_app->settingsData);
+}
+
 // 统一应用历史窗口右键菜单和设置页的预览开关。
 void setPopupPreviewOptions(bool automatic, bool byKey) {
     if (!g_app) return;
@@ -9323,7 +9360,8 @@ bool isSettingsToggle(int id) {
     return id == kSettingWinV || id == kSettingPause ||
            id == kSettingStartup || id == kSettingStartupSettings ||
            id == kSettingStartupNotification || id == kSettingRunAsAdministrator ||
-           id == kSettingSearchImeCompatibility || id == kSettingPromotePastedItem ||
+            id == kSettingSearchImeCompatibility || id == kSettingSearchOnOpen ||
+            id == kSettingPromotePastedItem ||
            id == kSettingPreviewAutomatic || id == kSettingPreviewByKey || id == kSettingEncrypt;
 }
 
@@ -9352,7 +9390,8 @@ int settingsThemeModeAtPoint(HWND hwnd, int x, int y) {
     if (!hwnd || y < ui(14) || y >= ui(44)) return -1;
     RECT client{};
     GetClientRect(hwnd, &client);
-    const int left = client.right - ui(20) - ui(kSettingsThemeWidth);
+    const int left = client.right - ui(kSettingsBodyMargin + kSettingsThemeSaveWidth +
+                                       kSettingsThemeGap + kSettingsThemeWidth);
     const int segmentLeft = left + ui(3);
     const int segmentRight = segmentLeft + ui(kSettingsThemeSegmentWidth) * 3;
     if (x < segmentLeft || x >= segmentRight) return -1;
@@ -9604,6 +9643,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     HWND startupNotification = settingsControl(hwnd, kSettingStartupNotification);
     HWND runAsAdministrator = settingsControl(hwnd, kSettingRunAsAdministrator);
     HWND searchImeCompatibility = settingsControl(hwnd, kSettingSearchImeCompatibility);
+    HWND searchOnOpen = settingsControl(hwnd, kSettingSearchOnOpen);
     HWND promotePastedItem = settingsControl(hwnd, kSettingPromotePastedItem);
     HWND previewAutomatic = settingsControl(hwnd, kSettingPreviewAutomatic);
     HWND previewByKey = settingsControl(hwnd, kSettingPreviewByKey);
@@ -9617,7 +9657,8 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     if (!win || !language || !pause || !maxItems || !retentionDays || !maxDiskMb ||
         !maxContentMb || !dataDirectory || !updateProxy || !ignoredApps || !sensitiveExpiry || !startup ||
         !startupSettings || !startupNotification || !runAsAdministrator ||
-        !searchImeCompatibility || !promotePastedItem || !previewAutomatic || !previewByKey || !encrypt) {
+         !searchImeCompatibility || !searchOnOpen || !promotePastedItem || !previewAutomatic ||
+         !previewByKey || !encrypt) {
         return false;
     }
     for (int i = 0; i < kStorageCategoryCount; ++i) {
@@ -9632,6 +9673,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     next.showStartupNotification = settingsToggleValue(startupNotification);
     next.runAsAdministrator = settingsToggleValue(runAsAdministrator);
     next.searchImeCompatibility = settingsToggleValue(searchImeCompatibility);
+    next.searchOnOpen = settingsToggleValue(searchOnOpen);
     next.promotePastedItem = settingsToggleValue(promotePastedItem);
     next.previewAutomatic = settingsToggleValue(previewAutomatic);
     next.previewByKey = settingsToggleValue(previewByKey);
@@ -9756,6 +9798,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     const bool adminModeChanged = next.runAsAdministrator != previous.runAsAdministrator;
     const bool searchImeCompatibilityChanged =
         next.searchImeCompatibility != previous.searchImeCompatibility;
+    const bool searchOnOpenChanged = next.searchOnOpen != previous.searchOnOpen;
     const bool promotePastedItemChanged = next.promotePastedItem != previous.promotePastedItem;
     const bool previewChanged = next.previewAutomatic != previous.previewAutomatic ||
         next.previewByKey != previous.previewByKey ||
@@ -9773,7 +9816,8 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
         next.pauseMonitoring != previous.pauseMonitoring ||
         next.encryptData != previous.encryptData || next.language != previous.language ||
         dataDirectoryChanged ||
-        next.sensitiveExpiryHours != previous.sensitiveExpiryHours || searchImeCompatibilityChanged ||
+         next.sensitiveExpiryHours != previous.sensitiveExpiryHours || searchImeCompatibilityChanged ||
+         searchOnOpenChanged ||
         promotePastedItemChanged || previewChanged || next.updateProxy != previous.updateProxy ||
         next.ignoredApps != previous.ignoredApps;
     if (!changed) return true;
@@ -9905,6 +9949,7 @@ COLORREF themeColor(ThemeColorRole role) {
     case ThemeColorRole::Border: return palette.border;
     case ThemeColorRole::Divider: return palette.divider;
     case ThemeColorRole::HoverBackground: return palette.hoverBackground;
+    case ThemeColorRole::PressedBackground: return palette.pressedBackground;
     case ThemeColorRole::Accent: return palette.accent;
     case ThemeColorRole::AccentSoft: return palette.accentSoft;
     case ThemeColorRole::Error: return palette.error;
@@ -10370,28 +10415,32 @@ void drawSettingsButton(const DRAWITEMSTRUCT& item) {
     const bool pressed = (item.itemState & ODS_SELECTED) != 0;
     const bool focused = (item.itemState & ODS_FOCUS) != 0 || GetFocus() == item.hwndItem;
     const bool highContrast = highContrastEnabled();
+    const COLORREF surface = themeColor(ThemeColorRole::SurfaceBackground);
+    const COLORREF error = themeColor(ThemeColorRole::Error);
+    const auto blend = [](COLORREF foreground, COLORREF background, BYTE amount) {
+        const auto channel = [amount](BYTE from, BYTE to) {
+            return static_cast<BYTE>(from +
+                (static_cast<int>(to) - static_cast<int>(from)) * amount / 255);
+        };
+        return RGB(channel(GetRValue(background), GetRValue(foreground)),
+                   channel(GetGValue(background), GetGValue(foreground)),
+                   channel(GetBValue(background), GetBValue(foreground)));
+    };
     const COLORREF background = neutral
         ? (highContrast ? GetSysColor(COLOR_BTNFACE) :
-           settingsModeColor(pressed ? RGB(226, 232, 240) :
-                               (hovered ? RGB(239, 246, 255) : RGB(248, 250, 252)),
-                               pressed ? RGB(55, 65, 81) : RGB(30, 41, 59)))
+           pressed ? themeColor(ThemeColorRole::PressedBackground) :
+           (hovered ? themeColor(ThemeColorRole::HoverBackground) : surface))
         : (highContrast ? GetSysColor(pressed ? COLOR_HIGHLIGHT : COLOR_BTNFACE) :
-           settingsModeColor(pressed ? RGB(254, 226, 226) :
-                               (hovered ? RGB(254, 242, 242) : RGB(255, 247, 247)),
-                               pressed ? RGB(93, 42, 52) :
-                               (hovered ? RGB(67, 35, 42) : RGB(52, 42, 48))));
+           blend(error, surface, pressed ? 72 : hovered ? 42 : 20));
     const COLORREF border = neutral
         ? (highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-           (hovered || pressed ? settingsAccentColor() :
-                                  themeColor(ThemeColorRole::Border)))
+           (hovered || pressed ? settingsAccentColor() : themeColor(ThemeColorRole::Border)))
         : (highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-           settingsModeColor(hovered || pressed ? RGB(239, 68, 68) : RGB(252, 165, 165),
-                               hovered || pressed ? RGB(248, 113, 113) : RGB(139, 70, 80)));
+           blend(error, surface, hovered || pressed ? 180 : 100));
     const COLORREF text = neutral
         ? (highContrast ? GetSysColor(COLOR_WINDOWTEXT) : settingsAccentColor())
         : (highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-           (pressed ? settingsModeColor(RGB(153, 27, 27), RGB(248, 160, 160))
-                    : themeColor(ThemeColorRole::Error)));
+           error);
     const int offset = pressed ? ui(1) : 0;
     RECT buttonRect = item.rcItem;
     OffsetRect(&buttonRect, 0, offset);
@@ -10754,7 +10803,7 @@ void paintSettingsEdit(HWND hwnd, HDC dc, WNDPROC oldProc) {
     const bool focused = GetFocus() == hwnd;
     const bool hovered = g_app->hoveredSettingsControl == id;
     const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW) :
-        themeColor(ThemeColorRole::SurfaceBackground);
+        themeColor(ThemeColorRole::InputBackground);
     const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
         (focused ? settingsAccentColor()
                  : hovered ? settingsAccentColor()
@@ -13310,6 +13359,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 const ClipItem& item = g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]];
                  appendPasteMenu(menu, item);
                  appendPopupPinMenu(menu);
+                 appendPopupSearchOnOpenMenu(menu);
                  appendPopupPromotePastedItemMenu(menu);
                  appendPopupPreviewMenu(menu);
                 AppendMenuW(menu, MF_STRING, kMenuDelete, settingsLocale().popupDelete);
@@ -13323,7 +13373,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 DestroyMenu(menu);
                 const std::size_t index = g_app->visible[static_cast<std::size_t>(g_app->selected)];
                  if (command == kMenuPopupPinned) setPopupPinned(!g_app->popupPinned);
-                  else if (command == kMenuPromotePastedItem) {
+                 else if (command == kMenuSearchOnOpen) togglePopupSearchOnOpen();
+                 else if (command == kMenuPromotePastedItem) {
                       togglePopupPromotePastedItem();
                   }
                   else if (command == kMenuPreviewAutomatic) setPopupPreviewOptions(true, false);
@@ -13339,6 +13390,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             } else {
                 HMENU menu = CreatePopupMenu();
                  appendPopupPinMenu(menu);
+                 appendPopupSearchOnOpenMenu(menu);
                  appendPopupPromotePastedItemMenu(menu);
                  appendPopupPreviewMenu(menu);
                 appendFilterMenu(menu);
@@ -13350,7 +13402,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 g_app->filterMenuOpen = false;
                 DestroyMenu(menu);
                 if (command == kMenuPopupPinned) {
-                    setPopupPinned(!g_app->popupPinned);
+                     setPopupPinned(!g_app->popupPinned);
+                 } else if (command == kMenuSearchOnOpen) {
+                     togglePopupSearchOnOpen();
                 } else if (command == kMenuPromotePastedItem) {
                     togglePopupPromotePastedItem();
                     refreshVisible();
