@@ -130,6 +130,9 @@ constexpr int kSettingThemeSave = 75;
 constexpr int kSettingThemeName = 99;
 constexpr int kSettingThemeColorBase = 100;
 constexpr int kSettingThemeSwatchBase = 120;
+constexpr std::array<std::size_t, 14> kEditableThemeColorIndices = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14, 17,
+};
 constexpr int kMenuPaste = 100;
 constexpr int kMenuDelete = 102;
 constexpr int kMenuPastePlain = 103;
@@ -323,6 +326,7 @@ struct PopupImagePreview {
     HBITMAP bitmap = nullptr;
     int width = 0;
     int height = 0;
+    bool premultipliedAlpha = false;
     bool failed = false;
     bool loading = false;
     std::uint64_t loadGeneration = 0;
@@ -717,6 +721,7 @@ struct PopupFilePreviewResult {
     HBITMAP bitmap = nullptr;
     int width = 0;
     int height = 0;
+    bool premultipliedAlpha = false;
     bool success = false;
 };
 
@@ -776,7 +781,24 @@ void appendDiagnosticLog(const char* level, const char* message, DWORD errorCode
 LONGLONG settingsToggleClock();
 LONGLONG settingsToggleClockFrequency();
 float settingsThemeProgress();
-COLORREF settingsThemeColor(COLORREF light, COLORREF dark);
+enum class ThemeColorRole {
+    WindowBackground,
+    SidebarBackground,
+    SurfaceBackground,
+    InputBackground,
+    PreviewBackground,
+    Text,
+    SecondaryText,
+    DisabledText,
+    Border,
+    Divider,
+    HoverBackground,
+    Accent,
+    AccentSoft,
+    Error,
+};
+COLORREF themeColor(ThemeColorRole role);
+COLORREF settingsModeColor(COLORREF light, COLORREF dark);
 COLORREF settingsAccentColor();
 COLORREF settingsAccentSoftColor();
 void animateSettingsTheme(HWND hwnd, bool fromDark, bool toDark);
@@ -2701,7 +2723,7 @@ bool drawCachedPopupSurface(HDC dc, const RECT& rect, COLORREF fill,
             return false;
         }
         HGDIOBJ previous = SelectObject(source, bitmap);
-        const COLORREF background = settingsThemeColor(RGB(242, 244, 247), RGB(38, 42, 48));
+        const COLORREF background = themeColor(ThemeColorRole::WindowBackground);
         HBRUSH backgroundBrush = CreateSolidBrush(background);
         RECT surfaceRect{0, 0, width, height};
         FillRect(source, &surfaceRect, backgroundBrush);
@@ -3263,8 +3285,11 @@ bool drawCachedImagePreview(HDC dc, const PopupImagePreview& preview, const RECT
     HGDIOBJ previous = SelectObject(source, preview.bitmap);
     const int left = rowRect.left + (rowRect.right - rowRect.left - preview.width) / 2;
     const int top = rowRect.top + (rowRect.bottom - rowRect.top - preview.height) / 2;
-    const bool drawn = BitBlt(dc, left, top, preview.width, preview.height,
-                              source, 0, 0, SRCCOPY) != FALSE;
+    const bool drawn = preview.premultipliedAlpha
+        ? AlphaBlend(dc, left, top, preview.width, preview.height,
+                     source, 0, 0, preview.width, preview.height,
+                     BLENDFUNCTION{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA}) != FALSE
+        : BitBlt(dc, left, top, preview.width, preview.height, source, 0, 0, SRCCOPY) != FALSE;
     SelectObject(source, previous);
     DeleteDC(source);
     return drawn;
@@ -3274,8 +3299,8 @@ bool drawCachedImagePreview(HDC dc, const PopupImagePreview& preview, const RECT
 bool drawImagePreviewPlaceholder(HDC dc, const RECT& previewRect) {
     if (!dc) return false;
     drawGdiRoundedSurface(dc, previewRect,
-                          settingsThemeColor(RGB(245, 247, 249), RGB(42, 49, 60)),
-                          settingsThemeColor(RGB(232, 235, 238), RGB(52, 61, 73)), 5);
+                          themeColor(ThemeColorRole::PreviewBackground),
+                          themeColor(ThemeColorRole::Divider), 5);
     return true;
 }
 
@@ -3416,11 +3441,13 @@ bool createPreviewFileStream(const std::wstring& path, IStream** streamOut,
 }
 
 bool createFileImagePreviewWic(const std::wstring& path, int boundsWidth, int boundsHeight,
-                             COLORREF background, HBITMAP& bitmap, int& width, int& height,
-                             int* sourceWidth = nullptr, int* sourceHeight = nullptr,
-                             bool fullResolution = false,
-                             const std::atomic<std::uint64_t>* generation = nullptr,
-                             std::uint64_t expected = 0) {
+                              COLORREF background, HBITMAP& bitmap, int& width, int& height,
+                              int* sourceWidth = nullptr, int* sourceHeight = nullptr,
+                              bool fullResolution = false,
+                              const std::atomic<std::uint64_t>* generation = nullptr,
+                              std::uint64_t expected = 0,
+                              bool* premultipliedAlpha = nullptr) {
+    if (premultipliedAlpha) *premultipliedAlpha = false;
     (void)background;
     bitmap = nullptr;
     width = 0;
@@ -3499,6 +3526,7 @@ bool createFileImagePreviewWic(const std::wstring& path, int boundsWidth, int bo
     if (stream) stream->Release();
     if (factory) factory->Release();
     CoUninitialize();
+    if (success && premultipliedAlpha) *premultipliedAlpha = true;
     return success;
 }
 
@@ -3546,9 +3574,12 @@ bool createFileImagePreview(const std::wstring& path, int boundsWidth, int bound
                             int* sourceWidth = nullptr, int* sourceHeight = nullptr,
                             bool fullResolution = false,
                             const std::atomic<std::uint64_t>* generation = nullptr,
-                            std::uint64_t expected = 0) {
+                            std::uint64_t expected = 0,
+                            bool* premultipliedAlpha = nullptr) {
+    if (premultipliedAlpha) *premultipliedAlpha = false;
     if (createFileImagePreviewWic(path, boundsWidth, boundsHeight, background, bitmap, width, height,
-                                  sourceWidth, sourceHeight, fullResolution, generation, expected)) return true;
+                                  sourceWidth, sourceHeight, fullResolution, generation, expected,
+                                  premultipliedAlpha)) return true;
     if (previewJobCancelled(generation, expected)) return false;
     return createFileImagePreviewGdi(path, boundsWidth, boundsHeight, background, bitmap, width, height,
                                      sourceWidth, sourceHeight, fullResolution, generation, expected);
@@ -3586,29 +3617,116 @@ bool createDibImagePreview(const std::string& payload, int boundsWidth, int boun
         bitmap = nullptr;
         return false;
     }
-    HDC dc = CreateCompatibleDC(nullptr);
-    if (!dc) {
-        DeleteObject(bitmap);
-        bitmap = nullptr;
-        return false;
+    BITMAPV5HEADER v5{};
+    const bool hasAlphaMask = header.biBitCount == 32 &&
+        header.biSize >= sizeof(BITMAPV5HEADER) &&
+        (std::memcpy(&v5, payload.data(), sizeof(v5)), v5.bV5AlphaMask != 0);
+    const DWORD redMask = v5.bV5RedMask != 0 ? v5.bV5RedMask : 0x00ff0000;
+    const DWORD greenMask = v5.bV5GreenMask != 0 ? v5.bV5GreenMask : 0x0000ff00;
+    const DWORD blueMask = v5.bV5BlueMask != 0 ? v5.bV5BlueMask : 0x000000ff;
+    const auto channel = [](std::uint32_t pixel, DWORD mask, BYTE fallback) {
+        if (mask == 0) return fallback;
+        unsigned shift = 0;
+        while (((mask >> shift) & 1u) == 0) ++shift;
+        const std::uint32_t maximum = mask >> shift;
+        const std::uint32_t value = (pixel & mask) >> shift;
+        return static_cast<BYTE>((value * 255u + maximum / 2u) / maximum);
+    };
+    bool hasAlpha = hasAlphaMask;
+    if (hasAlpha) {
+        hasAlpha = false;
+        const int sourceHeight = static_cast<int>(std::llabs(
+            static_cast<long long>(header.biHeight)));
+        for (int y = 0; y < sourceHeight && !hasAlpha; ++y) {
+            const int sourceRow = header.biHeight < 0 ? y : sourceHeight - 1 - y;
+            for (int x = 0; x < header.biWidth; ++x) {
+                std::uint32_t pixel = 0;
+                std::memcpy(&pixel, payload.data() + layout.bitsOffset +
+                    static_cast<std::size_t>(sourceRow) * layout.rowBytes +
+                    static_cast<std::size_t>(x) * sizeof(pixel), sizeof(pixel));
+                if (channel(pixel, v5.bV5AlphaMask, 0) != 0) {
+                    hasAlpha = true;
+                    break;
+                }
+            }
+        }
     }
-    HGDIOBJ previous = SelectObject(dc, bitmap);
-    SetStretchBltMode(dc, HALFTONE);
-    POINT origin{};
-    SetBrushOrgEx(dc, 0, 0, &origin);
-    const int result = StretchDIBits(dc, 0, 0, width, height,
-                                     0, 0, header.biWidth,
-                                     static_cast<int>(std::llabs(static_cast<long long>(header.biHeight))),
-                                     payload.data() + layout.bitsOffset,
-                                     reinterpret_cast<const BITMAPINFO*>(payload.data()),
-                                     DIB_RGB_COLORS, SRCCOPY);
-    SetBrushOrgEx(dc, origin.x, origin.y, nullptr);
-    SelectObject(dc, previous);
-    DeleteDC(dc);
-    if (result <= 0 || result == GDI_ERROR) {
-        DeleteObject(bitmap);
-        bitmap = nullptr;
-        return false;
+    if (hasAlpha) {
+        BYTE* output = static_cast<BYTE*>(bits);
+        const int sourceHeight = static_cast<int>(std::llabs(
+            static_cast<long long>(header.biHeight)));
+        for (int y = 0; y < height; ++y) {
+            const float sourceY = std::clamp((y + 0.5f) * sourceHeight / height - 0.5f,
+                                             0.0f, static_cast<float>(sourceHeight - 1));
+            const int y0 = static_cast<int>(sourceY);
+            const int y1 = std::min(y0 + 1, sourceHeight - 1);
+            const float fy = sourceY - y0;
+            for (int x = 0; x < width; ++x) {
+                const float sourceX = std::clamp((x + 0.5f) * header.biWidth / width - 0.5f,
+                                                 0.0f, static_cast<float>(header.biWidth - 1));
+                const int x0 = static_cast<int>(sourceX);
+                const int x1 = std::min(x0 + 1, static_cast<int>(header.biWidth) - 1);
+                const float fx = sourceX - x0;
+                const int xs[] = {x0, x1, x0, x1};
+                const int ys[] = {y0, y0, y1, y1};
+                const float weights[] = {
+                    (1.0f - fx) * (1.0f - fy), fx * (1.0f - fy),
+                    (1.0f - fx) * fy, fx * fy,
+                };
+                float alpha = 0.0f;
+                float red = 0.0f;
+                float green = 0.0f;
+                float blue = 0.0f;
+                for (int sample = 0; sample < 4; ++sample) {
+                    const int sourceRow = header.biHeight < 0 ? ys[sample]
+                        : sourceHeight - 1 - ys[sample];
+                    std::uint32_t pixel = 0;
+                    std::memcpy(&pixel, payload.data() + layout.bitsOffset +
+                        static_cast<std::size_t>(sourceRow) * layout.rowBytes +
+                        static_cast<std::size_t>(xs[sample]) * sizeof(pixel), sizeof(pixel));
+                    const float sampleAlpha = channel(pixel, v5.bV5AlphaMask, 255) / 255.0f;
+                    alpha += sampleAlpha * weights[sample];
+                    red += channel(pixel, redMask, 0) * sampleAlpha * weights[sample];
+                    green += channel(pixel, greenMask, 0) * sampleAlpha * weights[sample];
+                    blue += channel(pixel, blueMask, 0) * sampleAlpha * weights[sample];
+                }
+                BYTE* destination = output + (static_cast<std::size_t>(y) * width + x) * 4;
+                destination[0] = static_cast<BYTE>(std::clamp(blue + 0.5f, 0.0f, 255.0f));
+                destination[1] = static_cast<BYTE>(std::clamp(green + 0.5f, 0.0f, 255.0f));
+                destination[2] = static_cast<BYTE>(std::clamp(red + 0.5f, 0.0f, 255.0f));
+                destination[3] = static_cast<BYTE>(std::clamp(alpha * 255.0f + 0.5f,
+                                                               0.0f, 255.0f));
+            }
+        }
+    } else {
+        HDC dc = CreateCompatibleDC(nullptr);
+        if (!dc) {
+            DeleteObject(bitmap);
+            bitmap = nullptr;
+            return false;
+        }
+        HGDIOBJ previous = SelectObject(dc, bitmap);
+        SetStretchBltMode(dc, HALFTONE);
+        POINT origin{};
+        SetBrushOrgEx(dc, 0, 0, &origin);
+        const int result = StretchDIBits(dc, 0, 0, width, height,
+                                         0, 0, header.biWidth,
+                                         static_cast<int>(std::llabs(static_cast<long long>(header.biHeight))),
+                                         payload.data() + layout.bitsOffset,
+                                         reinterpret_cast<const BITMAPINFO*>(payload.data()),
+                                         DIB_RGB_COLORS, SRCCOPY);
+        SetBrushOrgEx(dc, origin.x, origin.y, nullptr);
+        SelectObject(dc, previous);
+        DeleteDC(dc);
+        if (result <= 0 || result == GDI_ERROR) {
+            DeleteObject(bitmap);
+            bitmap = nullptr;
+            return false;
+        }
+        BYTE* output = static_cast<BYTE*>(bits);
+        for (std::size_t i = 3; i < static_cast<std::size_t>(width) * height * 4; i += 4) {
+            output[i] = 255;
+        }
     }
     return true;
 }
@@ -3764,6 +3882,7 @@ bool decodePngToBitmap(const std::string& data, COLORREF background,
 
 std::uint64_t filePreviewCacheKey(const ClipItem& item, const std::wstring& path) {
     std::uint64_t key = item.hash ^ (item.recordId * 1099511628211ULL);
+    key ^= 0xA62F7D91C40B385EULL;
     WIN32_FILE_ATTRIBUTE_DATA attributes{};
     if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes)) {
         ULARGE_INTEGER size{};
@@ -3785,7 +3904,7 @@ std::uint64_t normalPreviewCacheKey(const ClipItem& item) {
 }
 
 void postPopupPreviewResult(const PopupPreviewJob& job, HBITMAP bitmap,
-                            int width, int height, bool success) {
+                            int width, int height, bool premultipliedAlpha, bool success) {
     bool stopping = false;
     if (g_app) {
         std::lock_guard<std::mutex> lock(g_app->previewMutex);
@@ -3798,7 +3917,7 @@ void postPopupPreviewResult(const PopupPreviewJob& job, HBITMAP bitmap,
     try {
         auto result = std::make_unique<PopupFilePreviewResult>(
             PopupFilePreviewResult{job.popup, job.storeRevision, job.generation, job.itemIndex,
-                                   bitmap, width, height, success});
+                                   bitmap, width, height, premultipliedAlpha, success});
         if (!PostMessageW(g_app->hidden, kPopupFilePreviewLoadedMessage,
                           reinterpret_cast<WPARAM>(result.get()), 0)) {
             if (result->bitmap) DeleteObject(result->bitmap);
@@ -3870,7 +3989,7 @@ void previewWorkerLoop(AppState* app) {
             if (job.detail) {
                 postPopupDetailPreviewResult(job, nullptr, nullptr, 0, 0, 0, 0, 0, 0, 0, {}, {}, false);
             } else {
-                postPopupPreviewResult(job, nullptr, 0, 0, false);
+                postPopupPreviewResult(job, nullptr, 0, 0, false, false);
             }
             continue;
         }
@@ -3957,20 +4076,25 @@ void previewWorkerLoop(AppState* app) {
                                           imageBytes, std::move(imageFormat), std::move(text), success);
             continue;
         }
-        success = app->thumbnailCache.read(job.cacheKey, job.encrypted, encoded) &&
+        bool premultipliedAlpha = false;
+        const bool preserveDibAlpha = job.item.type == ClipType::ImageV5;
+        success = !preserveDibAlpha &&
+            app->thumbnailCache.read(job.cacheKey, job.encrypted, encoded) &&
             decodePngToBitmap(encoded, job.background, bitmap, width, height);
         if (!success) {
             if (bitmap) DeleteObject(bitmap);
             bitmap = nullptr;
             if (job.kind == PopupPreviewKind::File) {
                 success = createFileImagePreview(job.filePath, job.width, job.height, job.background,
-                                                 bitmap, width, height);
+                                                 bitmap, width, height, nullptr, nullptr, false,
+                                                 nullptr, 0, &premultipliedAlpha);
             } else {
                 std::string payload;
                 success = app->store.readPayloadSnapshot(job.historyPath, job.item, payload) &&
                     createDibImagePreview(payload, job.width, job.height, bitmap, width, height);
+                premultipliedAlpha = success;
             }
-            if (success && encodeBitmapToPng(bitmap, encoded)) {
+            if (success && !premultipliedAlpha && encodeBitmapToPng(bitmap, encoded)) {
                 app->thumbnailCache.write(job.cacheKey, job.encrypted, encoded);
                 if (++writesSincePrune >= 16) {
                     app->thumbnailCache.prune(32u * 1024u * 1024u, 5000);
@@ -3983,7 +4107,7 @@ void previewWorkerLoop(AppState* app) {
             bitmap = nullptr;
             success = false;
         }
-        postPopupPreviewResult(job, bitmap, width, height, success);
+        postPopupPreviewResult(job, bitmap, width, height, premultipliedAlpha, success);
     }
 }
 
@@ -4129,6 +4253,8 @@ bool ensureDetailPreviewWindow() {
         g_app->detailPreviewRenderer = std::make_unique<PopupPreviewRenderer>();
         if (!g_app->detailPreviewRenderer->attach(g_app->detailPreview)) {
             g_app->detailPreviewRenderer.reset();
+        } else {
+            g_app->detailPreviewRenderer->setBackground(g_app->themePalette.previewBackground);
         }
         const int width = ui(kPopupDetailPreviewWidth);
         const int height = ui(kPopupDetailPreviewHeight);
@@ -4153,7 +4279,7 @@ bool ensureDetailPreviewWindow() {
                 SendMessageW(g_app->detailPreviewTextEdit, EM_EXLIMITTEXT, 0,
                              static_cast<LPARAM>(128u * 1024u));
                 SendMessageW(g_app->detailPreviewTextEdit, EM_SETBKGNDCOLOR, 0,
-                             settingsThemeColor(RGB(248, 250, 252), RGB(37, 44, 54)));
+                              themeColor(ThemeColorRole::PreviewBackground));
                 ShowWindow(g_app->detailPreviewTextEdit, SW_HIDE);
             }
         }
@@ -4277,7 +4403,7 @@ void requestDetailPreview(int row, bool upgrade) {
     job.historyPath = g_app->store.path();
     job.width = ui(kPopupDetailPreviewWidth - 32);
     job.height = ui(kPopupDetailPreviewHeight - 78);
-    job.background = settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
+    job.background = themeColor(ThemeColorRole::SurfaceBackground);
     job.encrypted = item.encrypted;
     job.detail = true;
     job.highQuality = g_app->detailPreviewHeld || g_app->detailPreviewHighQuality;
@@ -4611,7 +4737,7 @@ bool startFileImagePreviewLoad(HWND popup, std::size_t itemIndex, const ClipItem
     job.filePath = path;
     job.width = rowRect.right - rowRect.left;
     job.height = rowRect.bottom - rowRect.top;
-    job.background = settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
+    job.background = themeColor(ThemeColorRole::SurfaceBackground);
     job.encrypted = g_app->settingsData.encryptData;
     {
         std::lock_guard<std::mutex> lock(g_app->previewMutex);
@@ -4636,7 +4762,7 @@ bool startDibImagePreviewLoad(HWND popup, std::size_t itemIndex, const ClipItem&
     job.historyPath = g_app->store.path();
     job.width = rowRect.right - rowRect.left;
     job.height = rowRect.bottom - rowRect.top;
-    job.background = settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
+    job.background = themeColor(ThemeColorRole::SurfaceBackground);
     job.encrypted = g_app->settingsData.encryptData;
     {
         std::lock_guard<std::mutex> lock(g_app->previewMutex);
@@ -4681,13 +4807,13 @@ bool drawFileImagePreview(HDC dc, const ClipItem& item, const RECT& rowRect) {
     std::wstring path;
     if (!g_app->store.readPayload(itemIndex, payload) || !findImageFilePath(payload, path)) {
         trimPopupImagePreviewCache();
-        g_app->imagePreviews.push_back(PopupImagePreview{itemIndex, nullptr, 0, 0, true});
+        g_app->imagePreviews.push_back(PopupImagePreview{itemIndex, nullptr, 0, 0, false, true});
         return false;
     }
 
     trimPopupImagePreviewCache();
     if (!startFileImagePreviewLoad(g_app->popup, itemIndex, item, path, rowRect)) return false;
-    g_app->imagePreviews.push_back(PopupImagePreview{itemIndex, nullptr, 0, 0, false, true,
+    g_app->imagePreviews.push_back(PopupImagePreview{itemIndex, nullptr, 0, 0, false, false, true,
                                                        g_app->imagePreviewGeneration, 0});
     return false;
 }
@@ -4719,7 +4845,7 @@ void preloadPopupImageScreens(HWND hwnd) {
         if (item.type != ClipType::Image && item.type != ClipType::ImageV5) continue;
         if (!startDibImagePreviewLoad(g_app->popup, itemIndex, item, previewRect)) continue;
         trimPopupImagePreviewCache();
-        g_app->imagePreviews.push_back(PopupImagePreview{itemIndex, nullptr, 0, 0, false, true,
+        g_app->imagePreviews.push_back(PopupImagePreview{itemIndex, nullptr, 0, 0, false, false, true,
                                                            g_app->imagePreviewGeneration, 0});
         }
     };
@@ -4759,7 +4885,7 @@ bool drawImagePreview(HDC dc, const ClipItem& item, const RECT& rowRect, bool al
     if (!startDibImagePreviewLoad(g_app->popup, itemIndex, item, rowRect)) {
         return drawImagePreviewPlaceholder(dc, rowRect);
     }
-    g_app->imagePreviews.push_back(PopupImagePreview{itemIndex, nullptr, 0, 0, false, true,
+    g_app->imagePreviews.push_back(PopupImagePreview{itemIndex, nullptr, 0, 0, false, false, true,
                                                        g_app->imagePreviewGeneration, 0});
     return drawImagePreviewPlaceholder(dc, rowRect);
 }
@@ -5804,19 +5930,19 @@ void paintSupportWindow(HWND hwnd, HDC dc) {
     GetClientRect(hwnd, &client);
     const COLORREF background = highContrastEnabled()
         ? GetSysColor(COLOR_WINDOW)
-        : settingsThemeColor(RGB(240, 244, 248), RGB(21, 26, 34));
+        : themeColor(ThemeColorRole::WindowBackground);
     const COLORREF card = highContrastEnabled()
         ? GetSysColor(COLOR_WINDOW)
-        : settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
+        : themeColor(ThemeColorRole::SurfaceBackground);
     const COLORREF text = highContrastEnabled()
         ? GetSysColor(COLOR_WINDOWTEXT)
-        : settingsThemeColor(RGB(30, 41, 59), RGB(226, 232, 240));
+        : themeColor(ThemeColorRole::Text);
     const COLORREF secondary = highContrastEnabled()
         ? GetSysColor(COLOR_WINDOWTEXT)
-        : settingsThemeColor(RGB(95, 113, 131), RGB(143, 161, 179));
+        : themeColor(ThemeColorRole::SecondaryText);
     const COLORREF line = highContrastEnabled()
         ? GetSysColor(COLOR_WINDOWTEXT)
-        : settingsThemeColor(RGB(200, 211, 222), RGB(46, 57, 71));
+        : themeColor(ThemeColorRole::Border);
 
     HBRUSH backgroundBrush = CreateSolidBrush(background);
     FillRect(dc, &client, backgroundBrush);
@@ -6462,6 +6588,7 @@ void paintSettingsEditBorders(HWND hwnd, HDC dc);
 struct SettingsRowLayout {
     const wchar_t* label = nullptr;
     int themeColorStart = -1;
+    int themeColorSecond = -1;
     int themeColorCount = 0;
     int top = 0;
     int height = 0;
@@ -6687,28 +6814,33 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
                 {kSettingSystemDarkTheme}, {190}, {30}, contentWidth));
         }
         appearanceRows.push_back(makeSettingsRow(hwnd, nullptr,
-            {kSettingThemeDuplicate, kSettingThemeSave, kSettingThemeDelete},
+            {kSettingThemeDelete, kSettingThemeSave, kSettingThemeDuplicate},
             {108, 108, 108}, {30, 30, 30}, contentWidth));
         if (activeThemeIsCustom()) {
             appearanceRows.push_back(makeSettingsRow(hwnd, languageIsChinese() ? L"主题名称" : L"Theme name",
                 {kSettingThemeName}, {190}, {30}, contentWidth));
-            for (std::size_t i = 0; i < kThemeColorCount; i += 2) {
-                const std::size_t second = i + 1;
-                SettingsRowLayout row = second < kThemeColorCount
+            for (std::size_t i = 0; i < kEditableThemeColorIndices.size();) {
+                const std::size_t first = kEditableThemeColorIndices[i];
+                const bool hasSecond = i + 1 < kEditableThemeColorIndices.size();
+                const std::size_t second = hasSecond
+                    ? kEditableThemeColorIndices[i + 1] : 0;
+                SettingsRowLayout row = hasSecond
                     ? makeSettingsRow(hwnd, nullptr,
-                        {kSettingThemeSwatchBase + static_cast<int>(i),
-                         kSettingThemeColorBase + static_cast<int>(i),
+                        {kSettingThemeSwatchBase + static_cast<int>(first),
+                         kSettingThemeColorBase + static_cast<int>(first),
                          kSettingThemeSwatchBase + static_cast<int>(second),
                          kSettingThemeColorBase + static_cast<int>(second)},
                         {30, 72, 30, 72}, {30, 30, 30, 30}, contentWidth)
                     : makeSettingsRow(hwnd, nullptr,
-                        {kSettingThemeSwatchBase + static_cast<int>(i),
-                         kSettingThemeColorBase + static_cast<int>(i)},
+                        {kSettingThemeSwatchBase + static_cast<int>(first),
+                         kSettingThemeColorBase + static_cast<int>(first)},
                         {30, 72}, {30, 30}, contentWidth);
-                row.themeColorStart = static_cast<int>(i);
-                row.themeColorCount = second < kThemeColorCount ? 2 : 1;
+                row.themeColorStart = static_cast<int>(first);
+                row.themeColorSecond = hasSecond ? static_cast<int>(second) : -1;
+                row.themeColorCount = hasSecond ? 2 : 1;
                 row.height = std::max(row.height, 50);
                 appearanceRows.push_back(std::move(row));
+                i += hasSecond ? 2 : 1;
             }
         }
         makeCard(settingsLocale().appearanceCard, std::move(appearanceRows), 72);
@@ -6917,10 +7049,10 @@ void paintSettingsScrollbar(HWND hwnd, HDC dc, int contentHeight) {
     GetClientRect(hwnd, &client);
     const bool highContrast = highContrastEnabled();
     const COLORREF trackColor = highContrast ? GetSysColor(COLOR_SCROLLBAR) :
-        settingsThemeColor(RGB(232, 236, 240), RGB(44, 52, 62));
+        settingsModeColor(RGB(232, 236, 240), RGB(44, 52, 62));
     const COLORREF thumbColor = highContrast ? GetSysColor(COLOR_HIGHLIGHT) :
         (g_app->settingsScrollDragging ? settingsAccentColor() :
-            settingsThemeColor(RGB(167, 178, 188), RGB(111, 123, 137)));
+            themeColor(ThemeColorRole::DisabledText));
     const RECT track{client.right - ui(13), trackTop,
                      client.right - ui(7), trackBottom};
     const RECT thumb{client.right - ui(15), thumbTop,
@@ -6966,12 +7098,12 @@ void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
     RECT client{};
     GetClientRect(bodyOnly && g_app->settingsBodyContent ? g_app->settingsBodyContent : hwnd, &client);
     HWND settingsWindow = bodyOnly ? g_app->settings : hwnd;
-    COLORREF windowBackground = settingsThemeColor(RGB(240, 244, 248), RGB(21, 26, 34));
-    COLORREF sidebarBackground = settingsThemeColor(RGB(232, 238, 245), RGB(26, 33, 44));
-    COLORREF cardBackground = settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
-    COLORREF line = settingsThemeColor(RGB(200, 211, 222), RGB(46, 57, 71));
-    COLORREF text = settingsThemeColor(RGB(30, 41, 59), RGB(226, 232, 240));
-    COLORREF secondary = settingsThemeColor(RGB(95, 113, 131), RGB(143, 161, 179));
+    COLORREF windowBackground = themeColor(ThemeColorRole::WindowBackground);
+    COLORREF sidebarBackground = themeColor(ThemeColorRole::SidebarBackground);
+    COLORREF cardBackground = themeColor(ThemeColorRole::SurfaceBackground);
+    COLORREF line = themeColor(ThemeColorRole::Border);
+    COLORREF text = themeColor(ThemeColorRole::Text);
+    COLORREF secondary = themeColor(ThemeColorRole::SecondaryText);
     COLORREF accent = settingsAccentColor();
     if (highContrastEnabled()) {
         windowBackground = GetSysColor(COLOR_WINDOW);
@@ -7099,8 +7231,8 @@ void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
     DrawTextW(dc, saveLabel, -1, &saveState,
               DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     if (g_app->settingsTab == kSettingsAppearancePage) {
-        const COLORREF themeSurface = settingsThemeColor(RGB(232, 238, 245), RGB(26, 33, 44));
-        const COLORREF themeLine = settingsThemeColor(RGB(200, 211, 222), RGB(46, 57, 71));
+        const COLORREF themeSurface = themeColor(ThemeColorRole::SidebarBackground);
+        const COLORREF themeLine = themeColor(ThemeColorRole::Border);
         drawRounded(RECT{themeLeft, themeTop, themeLeft + themeWidth, themeTop + ui(30)},
                     themeSurface, themeLine, 15);
         const int themeMode = g_app->settingsData.themeSelection.followSystem ? 0 :
@@ -7113,7 +7245,7 @@ void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
             const bool hovered = g_app->hoveredSettingsThemeMode == i;
             if (selected || hovered) {
                 const COLORREF segmentBackground = selected ? accent :
-                    settingsThemeColor(RGB(214, 225, 242), RGB(53, 63, 78));
+                    themeColor(ThemeColorRole::HoverBackground);
                 drawRounded(modeRect, segmentBackground, segmentBackground, 12);
             }
             const COLORREF iconColor = selected ? RGB(255, 255, 255) :
@@ -7148,7 +7280,7 @@ void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
             const int available = contentRight - contentLeft - ui(28);
             const int columnWidth = std::max(1, (available - columnGap) / 2);
             for (int column = 0; column < row.themeColorCount; ++column) {
-                const int index = row.themeColorStart + column;
+                const int index = column == 0 ? row.themeColorStart : row.themeColorSecond;
                 const int left = contentLeft + ui(14) + column * (columnWidth + columnGap);
                 const int right = ui(row.controlX[static_cast<std::size_t>(column * 2)] -
                                      kSettingsSidebarWidth - 8);
@@ -7322,7 +7454,7 @@ void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
         const bool warning = !g_app->shortcutConflictFeedback.empty() ||
             conflict.firstId >= 0 || g_app->shortcutRegistrationWarning;
         SetTextColor(dc, warning
-                         ? settingsThemeColor(RGB(185, 28, 28), RGB(248, 160, 160))
+                         ? themeColor(ThemeColorRole::Error)
                          : secondary);
         RECT description{contentLeft + ui(14), settingsContentY(card.bottom - 58), contentRight - ui(14),
                          settingsContentY(card.bottom - 12)};
@@ -7424,13 +7556,13 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     configureTextRendering(dc);
     RECT client{};
     GetClientRect(hwnd, &client);
-    COLORREF background = settingsThemeColor(RGB(242, 244, 247), RGB(38, 42, 48));
-    COLORREF text = settingsThemeColor(RGB(26, 26, 26), RGB(240, 243, 247));
-    COLORREF secondary = settingsThemeColor(RGB(102, 102, 102), RGB(175, 183, 193));
-    COLORREF border = settingsThemeColor(RGB(209, 213, 219), RGB(75, 83, 92));
-    COLORREF card = settingsThemeColor(RGB(255, 255, 255), RGB(48, 53, 60));
-    COLORREF cardBorder = settingsThemeColor(RGB(234, 234, 234), RGB(67, 74, 82));
-    COLORREF chip = settingsThemeColor(RGB(255, 255, 255), RGB(55, 61, 69));
+    COLORREF background = themeColor(ThemeColorRole::WindowBackground);
+    COLORREF text = themeColor(ThemeColorRole::Text);
+    COLORREF secondary = themeColor(ThemeColorRole::SecondaryText);
+    COLORREF border = themeColor(ThemeColorRole::Border);
+    COLORREF card = themeColor(ThemeColorRole::SurfaceBackground);
+    COLORREF cardBorder = themeColor(ThemeColorRole::Divider);
+    COLORREF chip = themeColor(ThemeColorRole::InputBackground);
     COLORREF accent = settingsAccentColor();
     if (highContrastEnabled()) {
         background = GetSysColor(COLOR_WINDOW);
@@ -7475,7 +7607,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         ? accent : border;
     const RECT searchRect{ui(kPopupSearchLeft), ui(12), ui(kPopupSearchRight), ui(48)};
     drawGdiRoundedSurface(dc, searchRect,
-                          settingsThemeColor(RGB(255, 255, 255), RGB(48, 53, 60)),
+                          themeColor(ThemeColorRole::InputBackground),
                           searchBorder, 6);
     drawSearchIcon(dc, ui(kPopupSearchLeft + 14), ui(30),
                    g_app->searchEdit && g_app->popupSearchInputActive ? accent : secondary);
@@ -7538,7 +7670,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         const bool active = isAutomaticFilterActive(slot);
         const bool hovered = slot == g_app->hoveredFilter;
         const COLORREF chipBackground = active ? accent :
-            (hovered ? settingsThemeColor(RGB(231, 242, 239), RGB(67, 78, 88)) : chip);
+            (hovered ? themeColor(ThemeColorRole::HoverBackground) : chip);
         const COLORREF chipBorder = active ? accent : (hovered ? accent : border);
         drawGdiRoundedSurface(dc, chipRect, chipBackground, chipBorder, 4);
         SetTextColor(dc, active || hovered ? (active ? RGB(255, 255, 255) : accent) : secondary);
@@ -7579,7 +7711,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         const bool rowHovered = row == g_app->hoveredRow;
         const bool rowSelected = row == g_app->selected;
         const COLORREF rowFill = rowSelected ? settingsAccentSoftColor() :
-            (rowHovered ? settingsThemeColor(RGB(247, 251, 250), RGB(57, 64, 73)) : card);
+            (rowHovered ? themeColor(ThemeColorRole::HoverBackground) : card);
         const COLORREF rowBorder = rowSelected || rowHovered ? accent : cardBorder;
         if (!drawCachedPopupSurface(dc, rowRect, rowFill, rowBorder, 6)) {
             drawGdiRoundedSurface(dc, rowRect, rowFill, rowBorder, 6);
@@ -7611,9 +7743,9 @@ void paintPopupContent(HWND hwnd, HDC dc) {
                                    rowRect.right - ui(28), y + ui(23)};
             drawMetadataTag(dc, missingRect,
                             tr(L"File missing", L"文件已不存在"),
-                            settingsThemeColor(RGB(254, 226, 226), RGB(76, 52, 56)),
-                            settingsThemeColor(RGB(252, 165, 165), RGB(130, 77, 83)),
-                            settingsThemeColor(RGB(185, 28, 28), RGB(255, 176, 176)), 3);
+                            settingsModeColor(RGB(254, 226, 226), RGB(76, 52, 56)),
+                            settingsModeColor(RGB(252, 165, 165), RGB(130, 77, 83)),
+                            themeColor(ThemeColorRole::Error), 3);
         }
         SelectObject(dc, metaFont);
         const wchar_t* kind = automaticTypeLabel(item.type);
@@ -7657,7 +7789,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         const int centerX = client.right / 2;
         const int emptyTop = ui(kPopupListTop + 54);
         drawEmptyClipboardIcon(dc, centerX, emptyTop,
-                                settingsThemeColor(RGB(178, 187, 194), RGB(115, 126, 138)));
+                                 themeColor(ThemeColorRole::DisabledText));
         RECT emptyRect{ui(24), emptyTop + ui(48), client.right - ui(24), emptyTop + ui(72)};
         DrawTextW(dc, empty, -1, &emptyRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
@@ -7669,7 +7801,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     if (popupScrollMetrics(trackTop, trackBottom, thumbTop, thumbHeight, maxOffset)) {
         const RECT scrollRect{client.right - ui(5), thumbTop, client.right - ui(2),
                                thumbTop + thumbHeight};
-        const COLORREF scrollColor = settingsThemeColor(RGB(192, 192, 192), RGB(103, 113, 124));
+        const COLORREF scrollColor = settingsModeColor(RGB(192, 192, 192), RGB(103, 113, 124));
         drawGdiRoundedSurface(dc, scrollRect, scrollColor, scrollColor, 3);
     }
     RestoreDC(dc, listClip);
@@ -8006,7 +8138,7 @@ void refreshThemeEditorControls(HWND settings) {
     if (!theme || (!g_app->themeEditorDraftActive && theme->builtIn)) return;
     g_app->restoringSettingsControls = true;
     SetWindowTextW(settingsControl(settings, kSettingThemeName), theme->name.c_str());
-    for (std::size_t i = 0; i < kThemeColorCount; ++i) {
+    for (const std::size_t i : kEditableThemeColorIndices) {
         const std::string ascii = themeColorToHex(themePaletteColor(theme->palette, i));
         const std::wstring hex(ascii.begin(), ascii.end());
         SetWindowTextW(settingsControl(settings, kSettingThemeColorBase + static_cast<int>(i)),
@@ -8040,7 +8172,7 @@ bool syncThemeEditorControls(HWND settings) {
             return false;
         }
     }
-    for (std::size_t i = 0; i < kThemeColorCount; ++i) {
+    for (const std::size_t i : kEditableThemeColorIndices) {
         wchar_t value[16]{};
         GetWindowTextW(settingsControl(settings, kSettingThemeColorBase + static_cast<int>(i)),
                        value, ARRAYSIZE(value));
@@ -8069,6 +8201,11 @@ bool syncThemeEditorControls(HWND settings) {
     g_app->themePalette = g_app->themeEditorDraft.palette;
     g_app->settingsData.dark = g_app->themeEditorDraft.appearance == ThemeAppearance::Dark;
     g_app->settingsData.themeMode = g_app->settingsData.dark ? 2 : 1;
+    if (g_app->detailPreviewRenderer) {
+        g_app->detailPreviewRenderer->setBackground(g_app->themePalette.previewBackground);
+    }
+    refreshDetailPreviewTextEditAppearance();
+    if (g_app->detailPreview) InvalidateRect(g_app->detailPreview, nullptr, FALSE);
     updateSettingsTabControls(settings, false);
     InvalidateRect(settings, nullptr, FALSE);
     return true;
@@ -8226,7 +8363,7 @@ void createSettingsControlsModern(HWND hwnd) {
                     ui(520 - kSettingsSidebarWidth), ui(252 - kSettingsHeaderHeight), ui(190), ui(30),
                     parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingThemeName)),
                      GetModuleHandleW(nullptr), nullptr);
-    for (std::size_t i = 0; i < kThemeColorCount; ++i) {
+    for (const std::size_t i : kEditableThemeColorIndices) {
         const COLORREF color = activeTheme ? themePaletteColor(activeTheme->palette, i) : RGB(0, 0, 0);
         const std::wstring hex = [] (COLORREF value) {
             const std::string ascii = themeColorToHex(value);
@@ -8828,10 +8965,10 @@ void paintFilterMenuWindow(HWND hwnd, HDC dc) {
     RECT client{};
     GetClientRect(hwnd, &client);
     const bool isSubmenu = hwnd == g_app->filterSubmenuWindow;
-    const COLORREF background = settingsThemeColor(RGB(255, 255, 255), RGB(48, 53, 60));
-    const COLORREF border = settingsThemeColor(RGB(225, 228, 232), RGB(75, 83, 92));
-    const COLORREF text = settingsThemeColor(RGB(30, 34, 40), RGB(240, 243, 247));
-    const COLORREF secondary = settingsThemeColor(RGB(110, 116, 124), RGB(175, 183, 193));
+    const COLORREF background = themeColor(ThemeColorRole::SurfaceBackground);
+    const COLORREF border = themeColor(ThemeColorRole::Border);
+    const COLORREF text = themeColor(ThemeColorRole::Text);
+    const COLORREF secondary = themeColor(ThemeColorRole::SecondaryText);
     const COLORREF hover = settingsAccentSoftColor();
     const COLORREF accent = settingsAccentColor();
     HBRUSH brush = CreateSolidBrush(background);
@@ -8886,7 +9023,7 @@ void paintFilterMenuWindow(HWND hwnd, HDC dc) {
             drawText(L">", arrow, secondary, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
         drawGdiLine(dc, ui(12), ui(141), client.right - ui(12), ui(141),
-                    settingsThemeColor(RGB(235, 237, 240), RGB(70, 77, 86)));
+                    themeColor(ThemeColorRole::Divider));
         RECT resetRect{ui(5), ui(146), client.right - ui(5), ui(178)};
         if (g_app->filterMenuHover == 4) drawGdiRoundedSurface(dc, resetRect, hover, hover, 5);
         drawText(tr(L"Reset filters", L"重置筛选"),
@@ -8963,12 +9100,11 @@ void paintFilterMenuWindow(HWND hwnd, HDC dc) {
         const RECT track{client.right - ui(8), trackTop, client.right - ui(5), trackBottom};
         const RECT thumb{client.right - ui(10), thumbTop, client.right - ui(4),
                          thumbTop + thumbHeight};
-        drawGdiRoundedSurface(dc, track,
-                              settingsThemeColor(RGB(242, 244, 247), RGB(58, 64, 72)),
-                              settingsThemeColor(RGB(242, 244, 247), RGB(58, 64, 72)), 2);
+        const COLORREF trackColor = settingsModeColor(RGB(242, 244, 247), RGB(58, 64, 72));
+        const COLORREF thumbColor = settingsModeColor(RGB(190, 195, 202), RGB(112, 123, 136));
+        drawGdiRoundedSurface(dc, track, trackColor, trackColor, 2);
         drawGdiRoundedSurface(dc, thumb,
-                              settingsThemeColor(RGB(190, 195, 202), RGB(112, 123, 136)),
-                              settingsThemeColor(RGB(190, 195, 202), RGB(112, 123, 136)), 3);
+                              thumbColor, thumbColor, 3);
     }
 }
 
@@ -9754,30 +9890,30 @@ bool advanceSettingsThemeAnimation() {
     return linear >= 1.0f;
 }
 
-COLORREF settingsThemeColor(COLORREF light, COLORREF dark) {
+COLORREF themeColor(ThemeColorRole role) {
+    static const ThemePalette defaultPalette;
+    const ThemePalette& palette = g_app ? g_app->themePalette : defaultPalette;
+    switch (role) {
+    case ThemeColorRole::WindowBackground: return palette.windowBackground;
+    case ThemeColorRole::SidebarBackground: return palette.sidebarBackground;
+    case ThemeColorRole::SurfaceBackground: return palette.surfaceBackground;
+    case ThemeColorRole::InputBackground: return palette.inputBackground;
+    case ThemeColorRole::PreviewBackground: return palette.previewBackground;
+    case ThemeColorRole::Text: return palette.text;
+    case ThemeColorRole::SecondaryText: return palette.secondaryText;
+    case ThemeColorRole::DisabledText: return palette.disabledText;
+    case ThemeColorRole::Border: return palette.border;
+    case ThemeColorRole::Divider: return palette.divider;
+    case ThemeColorRole::HoverBackground: return palette.hoverBackground;
+    case ThemeColorRole::Accent: return palette.accent;
+    case ThemeColorRole::AccentSoft: return palette.accentSoft;
+    case ThemeColorRole::Error: return palette.error;
+    }
+    return palette.windowBackground;
+}
+
+COLORREF settingsModeColor(COLORREF light, COLORREF dark) {
     if (!g_app) return light;
-    const auto matches = [light, dark](COLORREF expectedLight, COLORREF expectedDark) {
-        return light == expectedLight && dark == expectedDark;
-    };
-    if (matches(RGB(240, 244, 248), RGB(21, 26, 34))) return g_app->themePalette.windowBackground;
-    if (matches(RGB(232, 238, 245), RGB(26, 33, 44))) return g_app->themePalette.sidebarBackground;
-    if (matches(RGB(255, 255, 255), RGB(30, 37, 48))) return g_app->themePalette.surfaceBackground;
-    if (matches(RGB(255, 255, 255), RGB(43, 47, 54))) return g_app->themePalette.inputBackground;
-    if (matches(RGB(248, 250, 252), RGB(37, 44, 54))) return g_app->themePalette.previewBackground;
-    if (matches(RGB(30, 41, 59), RGB(226, 232, 240))) return g_app->themePalette.text;
-    if (matches(RGB(95, 113, 131), RGB(143, 161, 179))) return g_app->themePalette.secondaryText;
-    if (matches(RGB(167, 178, 188), RGB(111, 123, 137))) return g_app->themePalette.disabledText;
-    if (matches(RGB(200, 211, 222), RGB(74, 88, 104))) return g_app->themePalette.border;
-    if (matches(RGB(226, 232, 240), RGB(52, 62, 75))) return g_app->themePalette.divider;
-    if (matches(RGB(247, 251, 250), RGB(57, 64, 73))) return g_app->themePalette.hoverBackground;
-    if (matches(RGB(232, 240, 254), RGB(39, 55, 82))) return g_app->themePalette.selectedBackground;
-    if (matches(RGB(214, 225, 242), RGB(53, 63, 78))) return g_app->themePalette.pressedBackground;
-    if (matches(RGB(185, 28, 28), RGB(248, 160, 160))) return g_app->themePalette.error;
-    if (matches(RGB(242, 244, 247), RGB(38, 42, 48))) return g_app->themePalette.windowBackground;
-    if (matches(RGB(26, 26, 26), RGB(240, 243, 247))) return g_app->themePalette.text;
-    if (matches(RGB(102, 102, 102), RGB(175, 183, 193))) return g_app->themePalette.secondaryText;
-    if (matches(RGB(209, 213, 219), RGB(75, 83, 92))) return g_app->themePalette.border;
-    if (matches(RGB(234, 234, 234), RGB(67, 74, 82))) return g_app->themePalette.divider;
     if (!g_app->settingsThemeAnimating) return g_app->settingsData.dark ? dark : light;
     const float progress = settingsThemeProgress();
     const float eased = progress * progress * (3.0f - 2.0f * progress);
@@ -9792,11 +9928,11 @@ COLORREF settingsThemeColor(COLORREF light, COLORREF dark) {
 }
 
 COLORREF settingsAccentColor() {
-    return g_app ? g_app->themePalette.accent : RGB(37, 99, 235);
+    return themeColor(ThemeColorRole::Accent);
 }
 
 COLORREF settingsAccentSoftColor() {
-    return g_app ? g_app->themePalette.accentSoft : RGB(232, 240, 254);
+    return themeColor(ThemeColorRole::AccentSoft);
 }
 
 void animateSettingsTheme(HWND hwnd, bool fromDark, bool toDark) {
@@ -10045,9 +10181,9 @@ void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
             path.CloseFigure();
         };
         const COLORREF surface = highContrast ? GetSysColor(COLOR_WINDOW) :
-            settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
+            themeColor(ThemeColorRole::SurfaceBackground);
         const COLORREF knobSurface = highContrast ? GetSysColor(COLOR_WINDOW) :
-            settingsThemeColor(RGB(255, 255, 255), RGB(47, 53, 60));
+            settingsModeColor(RGB(255, 255, 255), RGB(47, 53, 60));
         const COLORREF accent = highContrast ? GetSysColor(COLOR_HIGHLIGHT) : settingsAccentColor();
         const auto lighten = [](COLORREF value, BYTE amount) {
             return RGB(static_cast<BYTE>(GetRValue(value) +
@@ -10060,9 +10196,9 @@ void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
         const COLORREF track = checked
             ? (hovered ? lighten(accent, 28) : accent)
             : (hovered ? settingsAccentSoftColor()
-                       : settingsThemeColor(RGB(197, 208, 208), RGB(75, 84, 95)));
+                       : settingsModeColor(RGB(197, 208, 208), RGB(75, 84, 95)));
         const COLORREF trackBorder = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-            (checked ? track : settingsThemeColor(RGB(155, 171, 167), RGB(112, 123, 135)));
+            (checked ? track : settingsModeColor(RGB(155, 171, 167), RGB(112, 123, 135)));
         const int centerY = (item.rcItem.top + item.rcItem.bottom) / 2;
         const float trackWidth = static_cast<float>(ui(kSettingsTrackWidth));
         const float trackHeight = static_cast<float>(ui(kSettingsTrackHeight));
@@ -10107,17 +10243,17 @@ void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
                                           static_cast<float>(bufferHeight));
         addCapsule(surfacePath, surfaceRect);
         graphics.FillPath(&surfaceBrush, &surfacePath);
-         Gdiplus::SolidBrush trackBrush(makeColor(track));
-         Gdiplus::Pen trackPen(makeColor(trackBorder), 1.0f);
+        Gdiplus::SolidBrush trackBrush(makeColor(track));
+        Gdiplus::Pen trackPen(makeColor(trackBorder), 1.0f);
         Gdiplus::GraphicsPath trackPath;
         addCapsule(trackPath, trackRect);
         graphics.FillPath(&trackBrush, &trackPath);
         graphics.DrawPath(&trackPen, &trackPath);
-         Gdiplus::SolidBrush knobBrush(makeColor(knobSurface));
-         Gdiplus::Pen knobPen(makeColor(highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-             settingsThemeColor(RGB(224, 231, 228), RGB(214, 220, 226))), 1.0f);
-         graphics.FillEllipse(&knobBrush, knobRect);
-         graphics.DrawEllipse(&knobPen, knobRect);
+        Gdiplus::SolidBrush knobBrush(makeColor(knobSurface));
+        Gdiplus::Pen knobPen(makeColor(highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
+            settingsModeColor(RGB(224, 231, 228), RGB(214, 220, 226))), 1.0f);
+        graphics.FillEllipse(&knobBrush, knobRect);
+        graphics.DrawEllipse(&knobPen, knobRect);
         if (bufferBitmap) {
             BitBlt(item.hDC, item.rcItem.left, item.rcItem.top, bufferWidth, bufferHeight,
                    bufferDc, 0, 0, SRCCOPY);
@@ -10215,7 +10351,16 @@ void setSettingsActionFeedback(HWND hwnd, const std::wstring& message, bool succ
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
+void fillSettingsControlBackdrop(HDC dc, const RECT& rect) {
+    const COLORREF background = highContrastEnabled() ? GetSysColor(COLOR_WINDOW) :
+        themeColor(ThemeColorRole::SurfaceBackground);
+    HBRUSH brush = CreateSolidBrush(background);
+    FillRect(dc, &rect, brush);
+    DeleteObject(brush);
+}
+
 void drawSettingsButton(const DRAWITEMSTRUCT& item) {
+    fillSettingsControlBackdrop(item.hDC, item.rcItem);
     const int id = GetDlgCtrlID(item.hwndItem);
     const bool neutral = id == kSettingBrowseDataDirectory || id == kSettingOpenLog ||
         id == kSettingThemeDuplicate || id == kSettingThemeSave || id == kSettingThemeDelete ||
@@ -10227,26 +10372,26 @@ void drawSettingsButton(const DRAWITEMSTRUCT& item) {
     const bool highContrast = highContrastEnabled();
     const COLORREF background = neutral
         ? (highContrast ? GetSysColor(COLOR_BTNFACE) :
-           settingsThemeColor(pressed ? RGB(226, 232, 240) :
-                              (hovered ? RGB(239, 246, 255) : RGB(248, 250, 252)),
-                              pressed ? RGB(55, 65, 81) : RGB(30, 41, 59)))
+           settingsModeColor(pressed ? RGB(226, 232, 240) :
+                               (hovered ? RGB(239, 246, 255) : RGB(248, 250, 252)),
+                               pressed ? RGB(55, 65, 81) : RGB(30, 41, 59)))
         : (highContrast ? GetSysColor(pressed ? COLOR_HIGHLIGHT : COLOR_BTNFACE) :
-           settingsThemeColor(pressed ? RGB(254, 226, 226) :
-                              (hovered ? RGB(254, 242, 242) : RGB(255, 247, 247)),
-                              pressed ? RGB(93, 42, 52) :
-                              (hovered ? RGB(67, 35, 42) : RGB(52, 42, 48))));
+           settingsModeColor(pressed ? RGB(254, 226, 226) :
+                               (hovered ? RGB(254, 242, 242) : RGB(255, 247, 247)),
+                               pressed ? RGB(93, 42, 52) :
+                               (hovered ? RGB(67, 35, 42) : RGB(52, 42, 48))));
     const COLORREF border = neutral
         ? (highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
            (hovered || pressed ? settingsAccentColor() :
-                                 settingsThemeColor(RGB(200, 211, 222), RGB(74, 88, 104))))
+                                  themeColor(ThemeColorRole::Border)))
         : (highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-           settingsThemeColor(hovered || pressed ? RGB(239, 68, 68) : RGB(252, 165, 165),
-                              hovered || pressed ? RGB(248, 113, 113) : RGB(139, 70, 80)));
+           settingsModeColor(hovered || pressed ? RGB(239, 68, 68) : RGB(252, 165, 165),
+                               hovered || pressed ? RGB(248, 113, 113) : RGB(139, 70, 80)));
     const COLORREF text = neutral
         ? (highContrast ? GetSysColor(COLOR_WINDOWTEXT) : settingsAccentColor())
         : (highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-           settingsThemeColor(pressed ? RGB(153, 27, 27) : RGB(185, 28, 28),
-                              RGB(248, 160, 160)));
+           (pressed ? settingsModeColor(RGB(153, 27, 27), RGB(248, 160, 160))
+                    : themeColor(ThemeColorRole::Error)));
     const int offset = pressed ? ui(1) : 0;
     RECT buttonRect = item.rcItem;
     OffsetRect(&buttonRect, 0, offset);
@@ -10263,11 +10408,12 @@ void drawSettingsButton(const DRAWITEMSTRUCT& item) {
 }
 
 void drawSettingsThemeSwatch(const DRAWITEMSTRUCT& item) {
+    fillSettingsControlBackdrop(item.hDC, item.rcItem);
     const int id = GetDlgCtrlID(item.hwndItem);
     const std::size_t index = static_cast<std::size_t>(id - kSettingThemeSwatchBase);
     const COLORREF color = themeEditorColor(g_app->settings, index);
     const COLORREF border = highContrastEnabled() ? GetSysColor(COLOR_WINDOWTEXT) :
-        settingsThemeColor(RGB(200, 211, 222), RGB(74, 88, 104));
+        themeColor(ThemeColorRole::Border);
     drawGdiRoundedSurface(item.hDC, item.rcItem, color, border, 5);
     if (GetFocus() == item.hwndItem && !highContrastEnabled()) {
         RECT focus = item.rcItem;
@@ -10277,24 +10423,25 @@ void drawSettingsThemeSwatch(const DRAWITEMSTRUCT& item) {
 }
 
 void drawSettingsShortcut(const DRAWITEMSTRUCT& item) {
+    fillSettingsControlBackdrop(item.hDC, item.rcItem);
     const int id = GetDlgCtrlID(item.hwndItem);
     const bool capturing = g_app->shortcutCaptureControl == item.hwndItem;
     const bool focused = (item.itemState & ODS_FOCUS) != 0 || GetFocus() == item.hwndItem;
     const bool hovered = g_app->hoveredSettingsControl == id;
     const bool conflicted = findShortcutConflict(g_app->settingsData, id).firstId >= 0;
-    const COLORREF background = settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
+    const COLORREF background = themeColor(ThemeColorRole::SurfaceBackground);
     const COLORREF border = highContrastEnabled() ? GetSysColor(COLOR_WINDOWTEXT) :
-        (conflicted ? settingsThemeColor(RGB(220, 38, 38), RGB(248, 113, 113)) :
+        (conflicted ? settingsModeColor(RGB(220, 38, 38), RGB(248, 113, 113)) :
          (capturing || focused ? settingsAccentColor() :
-         hovered ? settingsAccentColor() :
-                   settingsThemeColor(RGB(200, 211, 222), RGB(74, 88, 104))));
+          hovered ? settingsAccentColor() :
+                    themeColor(ThemeColorRole::Border)));
     drawGdiRoundedSurface(item.hDC, item.rcItem, background, border, 6);
     wchar_t label[128]{};
     GetWindowTextW(item.hwndItem, label, static_cast<int>(sizeof(label) / sizeof(label[0])));
     const COLORREF shortcutText = conflicted
-        ? settingsThemeColor(RGB(185, 28, 28), RGB(248, 160, 160))
+        ? themeColor(ThemeColorRole::Error)
         : (capturing ? settingsAccentColor()
-                     : settingsThemeColor(settingsAccentColor(), RGB(238, 241, 245)));
+                     : settingsModeColor(settingsAccentColor(), RGB(238, 241, 245)));
     drawSettingsText(item.hDC, g_app->settingsBodyFont, label, item.rcItem, shortcutText,
                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 }
@@ -10365,11 +10512,11 @@ void paintLanguageDropdown(HWND hwnd, HDC dc) {
     HDC renderDc = bufferBitmap ? bufferDc : dc;
     const bool highContrast = highContrastEnabled();
     const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW) :
-        settingsThemeColor(RGB(255, 255, 255), RGB(38, 43, 49));
+        themeColor(ThemeColorRole::SurfaceBackground);
     const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        settingsThemeColor(RGB(205, 219, 215), RGB(82, 92, 102));
+        themeColor(ThemeColorRole::Border);
     const COLORREF text = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        settingsThemeColor(RGB(30, 36, 46), RGB(238, 241, 245));
+        themeColor(ThemeColorRole::Text);
     const COLORREF accent = highContrast ? GetSysColor(COLOR_HIGHLIGHT) : settingsAccentColor();
 
     if (g_app->gdiplusToken != 0) {
@@ -10509,14 +10656,14 @@ void paintSettingsSelector(HWND hwnd, HDC dc) {
         (themeSelector ? g_app->themeDropdownControlId == id : g_app->themeDropdownControlId == 0);
     const bool hovered = g_app->hoveredSettingsControl == id;
     const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW) :
-        settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
+        themeColor(ThemeColorRole::SurfaceBackground);
     const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
         ((active || hovered) ? settingsAccentColor()
-                             : settingsThemeColor(RGB(205, 219, 215), RGB(82, 92, 102)));
+                             : themeColor(ThemeColorRole::Border));
     const COLORREF text = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-        settingsThemeColor(RGB(30, 36, 46), RGB(238, 241, 245));
+        themeColor(ThemeColorRole::Text);
     const COLORREF arrow = highContrast ? GetSysColor(COLOR_HIGHLIGHT) :
-        settingsThemeColor(RGB(75, 85, 82), RGB(190, 199, 207));
+        themeColor(ThemeColorRole::SecondaryText);
     HDC bufferDc = CreateCompatibleDC(dc);
     HBITMAP bufferBitmap = bufferDc ? CreateCompatibleBitmap(dc, width, height) : nullptr;
     HGDIOBJ oldBitmap = bufferBitmap ? SelectObject(bufferDc, bufferBitmap) : nullptr;
@@ -10607,11 +10754,11 @@ void paintSettingsEdit(HWND hwnd, HDC dc, WNDPROC oldProc) {
     const bool focused = GetFocus() == hwnd;
     const bool hovered = g_app->hoveredSettingsControl == id;
     const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW) :
-        settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
+        themeColor(ThemeColorRole::SurfaceBackground);
     const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
         (focused ? settingsAccentColor()
                  : hovered ? settingsAccentColor()
-                           : settingsThemeColor(RGB(200, 211, 222), RGB(74, 88, 104)));
+                           : themeColor(ThemeColorRole::Border));
     HBRUSH backgroundBrush = CreateSolidBrush(background);
     FillRect(bufferDc, &client, backgroundBrush);
     DeleteObject(backgroundBrush);
@@ -10627,7 +10774,7 @@ void paintSettingsEdit(HWND hwnd, HDC dc, WNDPROC oldProc) {
         RECT placeholder{ui(10), ui(8), width - ui(10), height - ui(8)};
         SetBkMode(bufferDc, TRANSPARENT);
         SetTextColor(bufferDc, highContrast ? GetSysColor(COLOR_GRAYTEXT) :
-            settingsThemeColor(RGB(150, 160, 157), RGB(145, 155, 166)));
+            settingsModeColor(RGB(150, 160, 157), RGB(145, 155, 166)));
         DrawTextW(bufferDc, settingsLocale().ignoredAppsPlaceholder, -1,
                   &placeholder, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
@@ -10775,8 +10922,8 @@ void paintSettingsEditBorders(HWND hwnd, HDC dc) {
         const bool hovered = g_app->hoveredSettingsControl == id;
         const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
             (focused ? settingsAccentColor() :
-             hovered ? settingsThemeColor(RGB(120, 145, 137), RGB(119, 132, 145)) :
-                       settingsThemeColor(RGB(205, 219, 215), RGB(82, 92, 102)));
+             hovered ? settingsModeColor(RGB(120, 145, 137), RGB(119, 132, 145)) :
+                       themeColor(ThemeColorRole::Border));
         if (g_app->gdiplusToken != 0) {
             auto makeColor = [](COLORREF value) {
                 return Gdiplus::Color(255, GetRValue(value), GetGValue(value), GetBValue(value));
@@ -11344,8 +11491,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 } else {
                     RECT client{};
                     GetClientRect(hwnd, &client);
-                    const COLORREF background = settingsThemeColor(
-                        RGB(240, 244, 248), RGB(21, 26, 34));
+                    const COLORREF background = themeColor(ThemeColorRole::WindowBackground);
                     HBRUSH brush = CreateSolidBrush(background);
                     FillRect(dc, &client, brush);
                     DeleteObject(brush);
@@ -11380,11 +11526,11 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             createSettingsPaintFonts();
             const bool highContrast = highContrastEnabled();
             const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW) :
-                settingsThemeColor(RGB(240, 244, 248), RGB(21, 26, 34));
+                themeColor(ThemeColorRole::WindowBackground);
             const COLORREF card = highContrast ? GetSysColor(COLOR_WINDOW) :
-                settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
+                themeColor(ThemeColorRole::SurfaceBackground);
             const COLORREF input = highContrast ? GetSysColor(COLOR_WINDOW) :
-                settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
+                themeColor(ThemeColorRole::InputBackground);
             g_app->settingsBackgroundBrush = CreateSolidBrush(background);
             g_app->settingsCardBrush = CreateSolidBrush(card);
             g_app->settingsInputBrush = CreateSolidBrush(input);
@@ -11435,7 +11581,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             createPopupPaintFonts();
             g_app->popupInputBrush = CreateSolidBrush(highContrastEnabled()
                 ? GetSysColor(COLOR_WINDOW)
-                : settingsThemeColor(RGB(255, 255, 255), RGB(43, 47, 54)));
+                : themeColor(ThemeColorRole::InputBackground));
             const int searchEditWidth = kPopupSearchRight - kPopupSearchLeft - 30;
             g_app->searchEdit = CreateWindowExW(0, L"EDIT", L"",
                                                  WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOHSCROLL,
@@ -11481,17 +11627,17 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         const bool highContrast = highContrastEnabled();
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-            settingsThemeColor(RGB(30, 41, 59), RGB(226, 232, 240)));
+            themeColor(ThemeColorRole::Text));
         if (hwnd == g_app->settings && message == WM_CTLCOLOREDIT) {
             SetBkMode(dc, OPAQUE);
             SetBkColor(dc, highContrast ? GetSysColor(COLOR_WINDOW) :
-                settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48)));
+                themeColor(ThemeColorRole::InputBackground));
             return reinterpret_cast<LRESULT>(g_app->settingsInputBrush);
         }
         if (message == WM_CTLCOLOREDIT || message == WM_CTLCOLORLISTBOX) {
             SetBkMode(dc, OPAQUE);
             SetBkColor(dc, highContrast ? GetSysColor(COLOR_WINDOW) :
-                settingsThemeColor(RGB(255, 255, 255), RGB(43, 47, 54)));
+                themeColor(ThemeColorRole::InputBackground));
             return reinterpret_cast<LRESULT>(hwnd == g_app->popup
                 ? g_app->popupInputBrush : g_app->settingsInputBrush);
         }
@@ -11832,6 +11978,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 cached->bitmap = result->bitmap;
                 cached->width = result->width;
                 cached->height = result->height;
+                cached->premultipliedAlpha = result->premultipliedAlpha;
             }
             invalidatePopupImageRow(g_app->popup, itemIndex);
             return 0;
@@ -11876,7 +12023,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                         g_app->detailPreviewState.sourceWidth,
                         g_app->detailPreviewState.sourceHeight,
                         result->itemIndex < g_app->store.items().size() &&
-                            g_app->store.items()[result->itemIndex].type == ClipType::Files);
+                            (g_app->store.items()[result->itemIndex].type == ClipType::Files ||
+                             isImageType(g_app->store.items()[result->itemIndex].type)));
                     g_app->detailPreviewRenderer->setTransform(
                         g_app->detailPreviewState.zoom,
                         g_app->detailPreviewState.panX,
