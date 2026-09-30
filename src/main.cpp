@@ -170,6 +170,7 @@ constexpr UINT_PTR kExpiryTimer = 3;
 constexpr UINT_PTR kClipboardCaptureTimer = 7;
 constexpr UINT_PTR kSettingsToggleTimer = 4;
 constexpr UINT_PTR kSettingsDropdownTimer = 5;
+constexpr int kSettingsDropdownMaxVisibleRows = 8;
 constexpr UINT_PTR kSettingsSyncTimer = 6;
 constexpr UINT_PTR kSettingsThemeTimer = 7;
 constexpr UINT_PTR kSettingsActionFeedbackTimer = 8;
@@ -496,6 +497,10 @@ struct AppState {
     int languageDropdownHeight = 0;
     int themeDropdownControlId = 0;
     int languageDropdownHover = -1;
+    int languageDropdownScrollOffset = 0;
+    bool languageDropdownScrollDragging = false;
+    int languageDropdownDragStartY = 0;
+    int languageDropdownDragStartOffset = 0;
     LONGLONG languageDropdownStartTicks = 0;
     float languageDropdownFrom = 0.0f;
     float languageDropdownTo = 0.0f;
@@ -9608,6 +9613,78 @@ void animateSettingsToggle(HWND hwnd) {
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
+int settingsDropdownItemCount() {
+    if (g_app->themeDropdownControlId == 0) return 3;
+    int count = 0;
+    for (const ThemeDefinition& theme : g_app->themeRegistry.themes()) {
+        if (g_app->themeDropdownControlId == kSettingFixedTheme ||
+            (g_app->themeDropdownControlId == kSettingSystemLightTheme &&
+             theme.appearance == ThemeAppearance::Light) ||
+            (g_app->themeDropdownControlId == kSettingSystemDarkTheme &&
+             theme.appearance == ThemeAppearance::Dark)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+int settingsDropdownVisibleRows(int top, int itemCount) {
+    POINT point{0, top};
+    MONITORINFO monitorInfo{sizeof(monitorInfo)};
+    const HMONITOR monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+    if (!GetMonitorInfoW(monitor, &monitorInfo)) return std::max(1, itemCount);
+    const int availableHeight = std::max(ui(30),
+        static_cast<int>(monitorInfo.rcWork.bottom) - top - ui(8));
+    const int screenRows = availableHeight / ui(30);
+    return std::clamp(std::min(screenRows, kSettingsDropdownMaxVisibleRows),
+                      1, std::max(1, itemCount));
+}
+
+void clampSettingsDropdownScroll(int visibleRows) {
+    const int maxOffset = std::max(0, settingsDropdownItemCount() - visibleRows);
+    g_app->languageDropdownScrollOffset = std::clamp(
+        g_app->languageDropdownScrollOffset, 0, maxOffset);
+}
+
+const std::string& selectedThemeId(int controlId);
+
+int settingsDropdownSelectedRow() {
+    if (g_app->themeDropdownControlId == 0) {
+        return settingsLanguageSelection(settingsControl(g_app->settings, kSettingLanguage));
+    }
+    int row = 0;
+    for (const ThemeDefinition& theme : g_app->themeRegistry.themes()) {
+        if (g_app->themeDropdownControlId != kSettingFixedTheme &&
+            ((g_app->themeDropdownControlId == kSettingSystemLightTheme &&
+              theme.appearance != ThemeAppearance::Light) ||
+             (g_app->themeDropdownControlId == kSettingSystemDarkTheme &&
+              theme.appearance != ThemeAppearance::Dark))) continue;
+        if (theme.id == selectedThemeId(g_app->themeDropdownControlId)) return row;
+        ++row;
+    }
+    return 0;
+}
+
+bool settingsDropdownScrollMetrics(HWND hwnd, int& trackTop, int& trackBottom,
+                                   int& thumbTop, int& thumbHeight, int& maxOffset) {
+    if (!hwnd) return false;
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    RECT windowRect{};
+    GetWindowRect(hwnd, &windowRect);
+    const int itemCount = settingsDropdownItemCount();
+    const int visibleRows = settingsDropdownVisibleRows(windowRect.top, itemCount);
+    maxOffset = std::max(0, itemCount - visibleRows);
+    if (maxOffset == 0) return false;
+    trackTop = ui(6);
+    trackBottom = std::max(trackTop + ui(12), static_cast<int>(client.bottom) - ui(6));
+    const int trackHeight = trackBottom - trackTop;
+    thumbHeight = std::max(ui(18), trackHeight * visibleRows / itemCount);
+    const int travel = std::max(0, trackHeight - thumbHeight);
+    thumbTop = trackTop + (travel * g_app->languageDropdownScrollOffset) / maxOffset;
+    return true;
+}
+
 float languageDropdownProgress() {
     if (!g_app->languageDropdown) return 0.0f;
     const LONGLONG elapsed = settingsToggleClock() - g_app->languageDropdownStartTicks;
@@ -9629,18 +9706,10 @@ void positionLanguageDropdown(HWND settings, float progress) {
     GetWindowRect(combo, &comboRect);
     POINT topLeft{comboRect.left, comboRect.bottom + ui(4)};
     const int width = comboRect.right - comboRect.left;
-    const int rowCount = g_app->themeDropdownControlId == 0 ? 3 : [&] {
-        int count = 0;
-        for (const ThemeDefinition& theme : g_app->themeRegistry.themes()) {
-            if (g_app->themeDropdownControlId == kSettingFixedTheme ||
-                (g_app->themeDropdownControlId == kSettingSystemLightTheme &&
-                 theme.appearance == ThemeAppearance::Light) ||
-                (g_app->themeDropdownControlId == kSettingSystemDarkTheme &&
-                 theme.appearance == ThemeAppearance::Dark)) ++count;
-        }
-        return count;
-    }();
-    const int fullHeight = ui(rowCount * 30);
+    const int rowCount = settingsDropdownItemCount();
+    const int visibleRows = settingsDropdownVisibleRows(topLeft.y, rowCount);
+    clampSettingsDropdownScroll(visibleRows);
+    const int fullHeight = ui(visibleRows * 30);
     const int height = std::max(1, static_cast<int>(fullHeight * progress + 0.5f));
     if (g_app->languageDropdownX == topLeft.x && g_app->languageDropdownY == topLeft.y &&
         g_app->languageDropdownWidth == width && g_app->languageDropdownHeight == height) {
@@ -9650,6 +9719,10 @@ void positionLanguageDropdown(HWND settings, float progress) {
         g_app->languageDropdownHeight != height;
     SetWindowPos(g_app->languageDropdown, HWND_TOP, topLeft.x, topLeft.y, width, height,
                  SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOREDRAW | SWP_NOSENDCHANGING);
+    HRGN roundedRegion = CreateRoundRectRgn(0, 0, width + 1, height + 1, ui(12), ui(12));
+    if (roundedRegion && SetWindowRgn(g_app->languageDropdown, roundedRegion, TRUE) == 0) {
+        DeleteObject(roundedRegion);
+    }
     g_app->languageDropdownX = topLeft.x;
     g_app->languageDropdownY = topLeft.y;
     g_app->languageDropdownWidth = width;
@@ -9667,8 +9740,9 @@ void animateLanguageDropdown(HWND settings, float target) {
 }
 
 void toggleSettingsDropdown(HWND settings, int controlId) {
+    const int dropdownId = controlId == kSettingLanguage ? 0 : controlId;
     if (g_app->languageDropdown) {
-        if (g_app->themeDropdownControlId == controlId) {
+        if (g_app->themeDropdownControlId == dropdownId) {
             animateLanguageDropdown(settings, g_app->languageDropdownTo > 0.5f ? 0.0f : 1.0f);
             return;
         }
@@ -9676,8 +9750,10 @@ void toggleSettingsDropdown(HWND settings, int controlId) {
         DestroyWindow(g_app->languageDropdown);
         g_app->languageDropdown = nullptr;
     }
-    g_app->themeDropdownControlId = controlId == kSettingLanguage ? 0 : controlId;
+    g_app->themeDropdownControlId = dropdownId;
     g_app->languageDropdownHover = -1;
+    g_app->languageDropdownScrollOffset = 0;
+    g_app->languageDropdownScrollDragging = false;
     g_app->languageDropdownX = 0;
     g_app->languageDropdownY = 0;
     g_app->languageDropdownWidth = 0;
@@ -9691,6 +9767,10 @@ void toggleSettingsDropdown(HWND settings, int controlId) {
     GetWindowRect(selector, &selectorRect);
     POINT topLeft{selectorRect.left, selectorRect.bottom + ui(4)};
     const int width = selectorRect.right - selectorRect.left;
+    const int visibleRows = settingsDropdownVisibleRows(topLeft.y, settingsDropdownItemCount());
+    g_app->languageDropdownScrollOffset = std::max(0,
+        settingsDropdownSelectedRow() - visibleRows / 2);
+    clampSettingsDropdownScroll(visibleRows);
     g_app->languageDropdown = CreateWindowExW(
         WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"ClipLiteDropdown", L"", WS_POPUP | WS_VISIBLE,
         topLeft.x, topLeft.y, width, 1, settings, nullptr,
@@ -9706,14 +9786,6 @@ void toggleSettingsDropdown(HWND settings, int controlId) {
     g_app->languageDropdownWidth = width;
     g_app->languageDropdownHeight = 1;
     SetTimer(settings, kSettingsDropdownTimer, 8, nullptr);
-}
-
-void toggleLanguageDropdown(HWND settings) {
-    toggleSettingsDropdown(settings, kSettingLanguage);
-}
-
-void toggleThemeDropdown(HWND settings, int controlId) {
-    toggleSettingsDropdown(settings, controlId);
 }
 
 void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
@@ -9990,40 +10062,14 @@ void drawSettingsShortcut(const DRAWITEMSTRUCT& item) {
                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 }
 
-void drawSettingsLanguage(const DRAWITEMSTRUCT& item) {
-    const COLORREF input = settingsThemeColor(RGB(255, 255, 255), RGB(30, 37, 48));
-    const COLORREF selected = settingsAccentSoftColor();
-    const COLORREF text = settingsThemeColor(RGB(30, 36, 46), RGB(238, 241, 245));
-    const bool hovered = g_app->hoveredSettingsControl == GetDlgCtrlID(item.hwndItem);
-    HBRUSH brush = CreateSolidBrush((item.itemState & ODS_SELECTED) ? selected :
-                                    (hovered ? settingsAccentSoftColor() : input));
-    FillRect(item.hDC, &item.rcItem, brush);
-    DeleteObject(brush);
-    wchar_t value[64]{};
-    const int index = item.itemID == static_cast<UINT>(-1)
-        ? static_cast<int>(SendMessageW(item.hwndItem, CB_GETCURSEL, 0, 0))
-        : static_cast<int>(item.itemID);
-    if (index >= 0) SendMessageW(item.hwndItem, CB_GETLBTEXT, index, reinterpret_cast<LPARAM>(value));
-    RECT textRect = item.rcItem;
-    textRect.left += ui(8);
-    drawSettingsText(item.hDC, g_app->settingsBodyFont, value, textRect, text,
-                     DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-}
-
 int languageDropdownRowAt(int y) {
+    RECT windowRect{};
+    GetWindowRect(g_app->languageDropdown, &windowRect);
+    const int visibleRows = settingsDropdownVisibleRows(windowRect.top,
+                                                        settingsDropdownItemCount());
     const int row = y / ui(30);
-    int count = 3;
-    if (g_app->themeDropdownControlId != 0) {
-        count = 0;
-        for (const ThemeDefinition& theme : g_app->themeRegistry.themes()) {
-            if (g_app->themeDropdownControlId == kSettingFixedTheme ||
-                (g_app->themeDropdownControlId == kSettingSystemLightTheme &&
-                 theme.appearance == ThemeAppearance::Light) ||
-                (g_app->themeDropdownControlId == kSettingSystemDarkTheme &&
-                 theme.appearance == ThemeAppearance::Dark)) ++count;
-        }
-    }
-    return row >= 0 && row < count ? row : -1;
+    return row >= 0 && row < visibleRows
+        ? row + g_app->languageDropdownScrollOffset : -1;
 }
 
 const std::string& selectedThemeId(int controlId) {
@@ -10102,24 +10148,19 @@ void paintLanguageDropdown(HWND hwnd, HDC dc) {
         Gdiplus::Pen popupPen(makeColor(border), 1.0f);
         graphics.FillPath(&popupBrush, &popupPath);
         graphics.DrawPath(&popupPen, &popupPath);
-        const int visibleRows = g_app->themeDropdownControlId == 0 ? 3 : [&] {
-            int count = 0;
-            for (const ThemeDefinition& theme : g_app->themeRegistry.themes()) {
-                if (g_app->themeDropdownControlId == kSettingFixedTheme ||
-                    (g_app->themeDropdownControlId == kSettingSystemLightTheme &&
-                     theme.appearance == ThemeAppearance::Light) ||
-                    (g_app->themeDropdownControlId == kSettingSystemDarkTheme &&
-                     theme.appearance == ThemeAppearance::Dark)) ++count;
-            }
-            return count;
-        }();
+        RECT dropdownRect{};
+        GetWindowRect(hwnd, &dropdownRect);
+        const int visibleRows = settingsDropdownVisibleRows(dropdownRect.top,
+                                                             settingsDropdownItemCount());
+        const int firstRow = g_app->languageDropdownScrollOffset;
         for (int row = 0; row < visibleRows; ++row) {
+            const int itemRow = firstRow + row;
             if (row * ui(30) >= renderHeight) break;
             bool active = false;
             if (g_app->themeDropdownControlId == 0) {
-                active = row == settingsLanguageSelection(
+                active = itemRow == settingsLanguageSelection(
                     settingsControl(g_app->settings, kSettingLanguage));
-            } else if (const ThemeDefinition* theme = themeDropdownThemeAt(row)) {
+            } else if (const ThemeDefinition* theme = themeDropdownThemeAt(itemRow)) {
                 active = theme->id == selectedThemeId(g_app->themeDropdownControlId);
             }
             const bool hovered = row == g_app->languageDropdownHover;
@@ -10127,12 +10168,34 @@ void paintLanguageDropdown(HWND hwnd, HDC dc) {
             const BYTE alpha = active ? 42 : 24;
             Gdiplus::SolidBrush rowBrush(makeColor(accent, alpha));
             const Gdiplus::RectF rowRect(static_cast<float>(ui(2)),
-                                         static_cast<float>(ui(row * 30 + 2)),
+                                          static_cast<float>(ui(row * 30 + 2)),
                                          static_cast<float>(contentWidth - ui(4)),
                                          static_cast<float>(ui(26)));
             Gdiplus::GraphicsPath rowPath;
             addRoundedRect(rowPath, rowRect, static_cast<float>(ui(4)));
             graphics.FillPath(&rowBrush, &rowPath);
+        }
+        int trackTop = 0;
+        int trackBottom = 0;
+        int thumbTop = 0;
+        int thumbHeight = 0;
+        int maxOffset = 0;
+        if (settingsDropdownScrollMetrics(hwnd, trackTop, trackBottom, thumbTop,
+                                           thumbHeight, maxOffset)) {
+            const Gdiplus::RectF trackRect(
+                static_cast<float>(contentWidth - ui(10)), static_cast<float>(trackTop),
+                static_cast<float>(ui(4)), static_cast<float>(trackBottom - trackTop));
+            const Gdiplus::RectF thumbRect(
+                static_cast<float>(contentWidth - ui(11)), static_cast<float>(thumbTop),
+                static_cast<float>(ui(6)), static_cast<float>(thumbHeight));
+            Gdiplus::GraphicsPath trackPath;
+            Gdiplus::GraphicsPath thumbPath;
+            addRoundedRect(trackPath, trackRect, static_cast<float>(ui(2)));
+            addRoundedRect(thumbPath, thumbRect, static_cast<float>(ui(3)));
+            Gdiplus::SolidBrush trackBrush(makeColor(border, 55));
+            Gdiplus::SolidBrush thumbBrush(makeColor(accent, 190));
+            graphics.FillPath(&trackBrush, &trackPath);
+            graphics.FillPath(&thumbBrush, &thumbPath);
         }
     }
 
@@ -10141,24 +10204,19 @@ void paintLanguageDropdown(HWND hwnd, HDC dc) {
     const wchar_t* labels[] = {settingsLocale().autoLanguage, L"English", L"简体中文"};
     const int selected = settingsLanguageSelection(
                 settingsControl(g_app->settings, kSettingLanguage));
-    const int visibleRows = g_app->themeDropdownControlId == 0 ? 3 : [&] {
-        int count = 0;
-        for (const ThemeDefinition& theme : g_app->themeRegistry.themes()) {
-            if (g_app->themeDropdownControlId == kSettingFixedTheme ||
-                (g_app->themeDropdownControlId == kSettingSystemLightTheme &&
-                 theme.appearance == ThemeAppearance::Light) ||
-                (g_app->themeDropdownControlId == kSettingSystemDarkTheme &&
-                 theme.appearance == ThemeAppearance::Dark)) ++count;
-        }
-        return count;
-    }();
+    RECT dropdownRect{};
+    GetWindowRect(hwnd, &dropdownRect);
+    const int visibleRows = settingsDropdownVisibleRows(dropdownRect.top,
+                                                         settingsDropdownItemCount());
+    const int firstRow = g_app->languageDropdownScrollOffset;
     for (int row = 0; row < visibleRows; ++row) {
         if (row * ui(30) >= renderHeight) break;
+        const int itemRow = firstRow + row;
         RECT rowRect{ui(10), ui(row * 30 + 3), contentWidth - ui(30), ui(row * 30 + 27)};
-        const wchar_t* rowLabel = labels[std::min(row, 2)];
-        bool selectedRow = row == selected;
+        const wchar_t* rowLabel = labels[std::min(itemRow, 2)];
+        bool selectedRow = itemRow == selected;
         if (g_app->themeDropdownControlId != 0) {
-            const ThemeDefinition* theme = themeDropdownThemeAt(row);
+            const ThemeDefinition* theme = themeDropdownThemeAt(itemRow);
             rowLabel = theme ? theme->name.c_str() : L"";
             selectedRow = theme && theme->id == selectedThemeId(g_app->themeDropdownControlId);
         }
@@ -10545,6 +10603,61 @@ void configureSettingsEdit(HWND hwnd) {
     invalidateSettingsEditBorder(hwnd);
 }
 
+bool isSettingsSelector(int id) {
+    return id == kSettingLanguage || id == kSettingFixedTheme ||
+           id == kSettingSystemLightTheme || id == kSettingSystemDarkTheme;
+}
+
+bool handleSettingsSelectorMessage(HWND hwnd, HWND settings, int id, UINT message,
+                                   WPARAM wParam, LRESULT& result) {
+    if (!isSettingsSelector(id)) return false;
+    if (message == WM_PAINT) {
+        PAINTSTRUCT ps{};
+        HDC dc = BeginPaint(hwnd, &ps);
+        paintSettingsSelector(hwnd, dc);
+        EndPaint(hwnd, &ps);
+        result = 0;
+        return true;
+    }
+    if (message == WM_LBUTTONDOWN) {
+        SetFocus(hwnd);
+        result = 0;
+        return true;
+    }
+    if (message == WM_LBUTTONDBLCLK) {
+        result = 0;
+        return true;
+    }
+    if (message == WM_LBUTTONUP) {
+        toggleSettingsDropdown(settings, id);
+        result = 0;
+        return true;
+    }
+    if (message == WM_KEYDOWN &&
+        (wParam == VK_SPACE || wParam == VK_RETURN || wParam == VK_UP ||
+         wParam == VK_DOWN || wParam == VK_PRIOR || wParam == VK_NEXT || wParam == VK_F4)) {
+        const int dropdownId = id == kSettingLanguage ? 0 : id;
+        if (g_app->languageDropdown && g_app->themeDropdownControlId == dropdownId &&
+            (wParam == VK_UP || wParam == VK_DOWN || wParam == VK_PRIOR || wParam == VK_NEXT)) {
+            RECT windowRect{};
+            GetWindowRect(g_app->languageDropdown, &windowRect);
+            const int visibleRows = settingsDropdownVisibleRows(windowRect.top,
+                                                                 settingsDropdownItemCount());
+            const int step = wParam == VK_PRIOR ? -visibleRows :
+                (wParam == VK_NEXT ? visibleRows : (wParam == VK_UP ? -1 : 1));
+            g_app->languageDropdownScrollOffset += step;
+            clampSettingsDropdownScroll(visibleRows);
+            InvalidateRect(g_app->languageDropdown, nullptr, FALSE);
+            result = 0;
+            return true;
+        }
+        toggleSettingsDropdown(settings, id);
+        result = 0;
+        return true;
+    }
+    return false;
+}
+
 LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     const WNDPROC oldProc = reinterpret_cast<WNDPROC>(GetPropW(hwnd, L"ClipLiteOldProc"));
     if (!oldProc) return DefWindowProcW(hwnd, message, wParam, lParam);
@@ -10556,9 +10669,7 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
         return 1;
     }
     if (isSettingsToggle(id) && message == WM_ERASEBKGND) return 1;
-    if (id == kSettingLanguage && message == WM_ERASEBKGND) return 1;
-    if ((id == kSettingFixedTheme || id == kSettingSystemLightTheme ||
-         id == kSettingSystemDarkTheme) && message == WM_ERASEBKGND) return 1;
+    if (isSettingsSelector(id) && message == WM_ERASEBKGND) return 1;
     if (isSettingsShortcut(id)) {
         if (message == WM_LBUTTONDOWN) {
             beginSettingsShortcutCapture(settings, hwnd);
@@ -10589,56 +10700,9 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
         if ((message == WM_KEYDOWN || message == WM_SYSKEYDOWN) && wParam == VK_RETURN) return 0;
         if (message == WM_CHAR && (wParam == VK_RETURN || wParam == L'\n')) return 0;
     }
-    if (id == kSettingLanguage && message == WM_PAINT) {
-        PAINTSTRUCT ps{};
-        HDC dc = BeginPaint(hwnd, &ps);
-        paintSettingsSelector(hwnd, dc);
-        EndPaint(hwnd, &ps);
-        return 0;
-    }
-    if (id == kSettingLanguage && message == WM_LBUTTONDOWN) {
-        SendMessageW(hwnd, CB_SHOWDROPDOWN, FALSE, 0);
-        SetFocus(hwnd);
-        toggleLanguageDropdown(settings);
-        return 0;
-    }
-    if (id == kSettingLanguage && message == WM_LBUTTONDBLCLK) {
-        SendMessageW(hwnd, CB_SHOWDROPDOWN, FALSE, 0);
-        SetFocus(hwnd);
-        toggleLanguageDropdown(settings);
-        return 0;
-    }
-    if (id == kSettingLanguage &&
-        (message == WM_LBUTTONUP || message == WM_NCLBUTTONDOWN || message == WM_NCLBUTTONDBLCLK)) {
-        SendMessageW(hwnd, CB_SHOWDROPDOWN, FALSE, 0);
-        return 0;
-    }
-    if (id == kSettingLanguage && message == WM_KEYDOWN &&
-        (wParam == VK_SPACE || wParam == VK_RETURN || wParam == VK_DOWN || wParam == VK_F4)) {
-        SendMessageW(hwnd, CB_SHOWDROPDOWN, FALSE, 0);
-        toggleLanguageDropdown(settings);
-        return 0;
-    }
-    if ((id == kSettingFixedTheme || id == kSettingSystemLightTheme ||
-         id == kSettingSystemDarkTheme) && message == WM_PAINT) {
-        PAINTSTRUCT ps{};
-        HDC dc = BeginPaint(hwnd, &ps);
-        paintSettingsSelector(hwnd, dc);
-        EndPaint(hwnd, &ps);
-        return 0;
-    }
-    if ((id == kSettingFixedTheme || id == kSettingSystemLightTheme ||
-         id == kSettingSystemDarkTheme) &&
-        (message == WM_LBUTTONDOWN || message == WM_LBUTTONDBLCLK)) {
-        SetFocus(hwnd);
-        toggleThemeDropdown(settings, id);
-        return 0;
-    }
-    if ((id == kSettingFixedTheme || id == kSettingSystemLightTheme ||
-         id == kSettingSystemDarkTheme) && message == WM_KEYDOWN &&
-        (wParam == VK_SPACE || wParam == VK_RETURN || wParam == VK_DOWN || wParam == VK_F4)) {
-        toggleThemeDropdown(settings, id);
-        return 0;
+    LRESULT selectorResult = 0;
+    if (handleSettingsSelectorMessage(hwnd, settings, id, message, wParam, selectorResult)) {
+        return selectorResult;
     }
     if (message == WM_LBUTTONDOWN && g_app->languageDropdown) {
         animateLanguageDropdown(settings, 0.0f);
@@ -10967,10 +11031,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             drawSettingsButton(*item);
             return TRUE;
         }
-        if (item && item->CtlType == ODT_COMBOBOX && GetDlgCtrlID(item->hwndItem) == kSettingLanguage) {
-            drawSettingsLanguage(*item);
-            return TRUE;
-        }
     }
     if (g_app && (hwnd == g_app->settingsBodyViewport || hwnd == g_app->settingsBodyContent)) {
         if (message == WM_ERASEBKGND) return 1;
@@ -11003,17 +11063,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
     }
     if ((hwnd == g_app->settingsBodyContent || hwnd == g_app->settingsBodyViewport) &&
-        (message == WM_COMMAND || message == WM_DRAWITEM || message == WM_MEASUREITEM ||
+        (message == WM_COMMAND || message == WM_DRAWITEM ||
          message == WM_CTLCOLORSTATIC || message == WM_CTLCOLOREDIT ||
          message == WM_CTLCOLORBTN || message == WM_CTLCOLORLISTBOX)) {
         return g_app->settings ? SendMessageW(g_app->settings, message, wParam, lParam) : 0;
-    }
-    if (hwnd == g_app->settings && message == WM_MEASUREITEM) {
-        auto* measure = reinterpret_cast<MEASUREITEMSTRUCT*>(lParam);
-        if (measure && measure->CtlType == ODT_COMBOBOX && measure->CtlID == kSettingLanguage) {
-            measure->itemHeight = 24;
-            return TRUE;
-        }
     }
     if (message == WM_CREATE) {
         wchar_t className[64]{};
@@ -11158,6 +11211,65 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
     if (hwnd == g_app->languageDropdown) {
         if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+        if (message == WM_LBUTTONDOWN) {
+            int trackTop = 0;
+            int trackBottom = 0;
+            int thumbTop = 0;
+            int thumbHeight = 0;
+            int maxOffset = 0;
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            if (settingsDropdownScrollMetrics(hwnd, trackTop, trackBottom, thumbTop,
+                                               thumbHeight, maxOffset) &&
+                GET_X_LPARAM(lParam) >= client.right - ui(16) &&
+                GET_X_LPARAM(lParam) < client.right &&
+                GET_Y_LPARAM(lParam) >= thumbTop &&
+                GET_Y_LPARAM(lParam) < thumbTop + thumbHeight) {
+                g_app->languageDropdownScrollDragging = true;
+                g_app->languageDropdownDragStartY = GET_Y_LPARAM(lParam);
+                g_app->languageDropdownDragStartOffset =
+                    g_app->languageDropdownScrollOffset;
+                SetCapture(hwnd);
+                return 0;
+            }
+        }
+        if (message == WM_MOUSEMOVE && g_app->languageDropdownScrollDragging) {
+            int trackTop = 0;
+            int trackBottom = 0;
+            int thumbTop = 0;
+            int thumbHeight = 0;
+            int maxOffset = 0;
+            if (settingsDropdownScrollMetrics(hwnd, trackTop, trackBottom, thumbTop,
+                                               thumbHeight, maxOffset)) {
+                const int travel = std::max(1, trackBottom - trackTop - thumbHeight);
+                const int delta = GET_Y_LPARAM(lParam) - g_app->languageDropdownDragStartY;
+                g_app->languageDropdownScrollOffset =
+                    g_app->languageDropdownDragStartOffset + delta * maxOffset / travel;
+                clampSettingsDropdownScroll(std::max(1, settingsDropdownItemCount() - maxOffset));
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+        if (message == WM_LBUTTONUP && g_app->languageDropdownScrollDragging) {
+            g_app->languageDropdownScrollDragging = false;
+            if (GetCapture() == hwnd) ReleaseCapture();
+            return 0;
+        }
+        if (message == WM_CAPTURECHANGED) {
+            g_app->languageDropdownScrollDragging = false;
+            return 0;
+        }
+        if (message == WM_MOUSEWHEEL) {
+            RECT windowRect{};
+            GetWindowRect(hwnd, &windowRect);
+            const int visibleRows = settingsDropdownVisibleRows(windowRect.top,
+                                                                 settingsDropdownItemCount());
+            const int step = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -1 : 1;
+            g_app->languageDropdownScrollOffset += step;
+            clampSettingsDropdownScroll(visibleRows);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
         if (message == WM_MOUSEMOVE) {
             RECT client{};
             GetClientRect(hwnd, &client);
@@ -11195,7 +11307,23 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == WM_SETCURSOR) {
-            SetCursor(LoadCursorW(nullptr, IDC_HAND));
+            POINT cursor{};
+            GetCursorPos(&cursor);
+            ScreenToClient(hwnd, &cursor);
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            int trackTop = 0;
+            int trackBottom = 0;
+            int thumbTop = 0;
+            int thumbHeight = 0;
+            int maxOffset = 0;
+            const bool onScrollbar = settingsDropdownScrollMetrics(
+                hwnd, trackTop, trackBottom, thumbTop, thumbHeight, maxOffset) &&
+                cursor.x >= client.right - ui(16) && cursor.x < client.right &&
+                cursor.y >= trackTop && cursor.y < trackBottom;
+            SetCursor(LoadCursorW(nullptr,
+                                  onScrollbar || g_app->languageDropdownScrollDragging
+                                      ? IDC_SIZENS : IDC_HAND));
             return TRUE;
         }
         if (message == WM_LBUTTONUP) {
@@ -11252,6 +11380,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             g_app->languageDropdownWidth = 0;
             g_app->languageDropdownHeight = 0;
             g_app->themeDropdownControlId = 0;
+            g_app->languageDropdownScrollDragging = false;
             return 0;
         }
     }
@@ -12047,17 +12176,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 if (!settingsNumericEditRange(LOWORD(wParam), minimum, maximum)) {
                     scheduleSettingsSync(hwnd);
                 }
-                return 0;
-            }
-            if (LOWORD(wParam) == kSettingLanguage &&
-                (HIWORD(wParam) == CBN_DROPDOWN || HIWORD(wParam) == CBN_SELENDOK ||
-                 HIWORD(wParam) == CBN_SELENDCANCEL)) {
-                HWND language = settingsControl(hwnd, kSettingLanguage);
-                SendMessageW(language, CB_SHOWDROPDOWN, FALSE, 0);
-                if (HIWORD(wParam) == CBN_DROPDOWN && !g_app->languageDropdown) {
-                    toggleLanguageDropdown(hwnd);
-                }
-                if (HIWORD(wParam) == CBN_SELENDOK) scheduleSettingsSync(hwnd);
                 return 0;
             }
             if (isSettingsToggle(LOWORD(wParam)) &&
