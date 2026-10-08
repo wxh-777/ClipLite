@@ -48,6 +48,18 @@ struct TestStoredHtmlHeader {
 };
 #pragma pack(pop)
 
+std::uint32_t testMetadataCrc(const void* data, std::size_t size) {
+    std::uint32_t crc = 0xFFFFFFFFu;
+    const auto* bytes = static_cast<const std::uint8_t*>(data);
+    for (std::size_t index = 0; index < size; ++index) {
+        crc ^= bytes[index];
+        for (int bit = 0; bit < 8; ++bit) {
+            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+        }
+    }
+    return crc ^ 0xFFFFFFFFu;
+}
+
 struct TestDataScope {
     std::wstring path;
 
@@ -160,10 +172,28 @@ int main() {
     expiry.clear();
     if (!expiry.append(ClipType::Text, "expire", clipLiteHash("expire"), {}, 1)) return 48;
     if (expiry.items()[0].expiresAt != 1 || !expiry.pruneExpired(2) || expiry.activeCount() != 0) return 49;
+    if (!expiry.append(ClipType::Text, "pinned-expires", clipLiteHash("pinned-expires"), {}, 1) ||
+        !expiry.togglePinned(0) || !expiry.pruneExpired(2) || expiry.activeCount() != 0) return 100;
+    if (!expiry.append(ClipType::Text, "protected-pin", clipLiteHash("protected-pin"), {}, 1) ||
+        !expiry.togglePinned(0)) return 101;
+    expiry.setProtectPinnedFromAutoCleanup(true);
+    if (!expiry.pruneExpired(2) || expiry.activeCount() != 1 || !expiry.items()[0].pinned) return 102;
+    if (!expiry.toggleFavorite(0) || !expiry.items()[0].favorite || !expiry.items()[0].pinned) return 103;
     if (!expiry.append(ClipType::Text, "pinned-expire", clipLiteHash("pinned-expire"), {}, 1) ||
-        !expiry.togglePinned(0) || !expiry.pruneExpired(2) || expiry.activeCount() != 1 ||
-        !expiry.items()[0].pinned) return 94;
+        !expiry.pruneExpired(2) || expiry.activeCount() != 1) return 94;
+    ClipStore dualStateReopened(10);
+    if (!dualStateReopened.open() || dualStateReopened.activeCount() != 1 ||
+        !dualStateReopened.items()[0].favorite || !dualStateReopened.items()[0].pinned) return 110;
+    dualStateReopened.clear();
     expiry.clear();
+
+    ClipStore pinCleanupDefault(10);
+    pinCleanupDefault.open();
+    pinCleanupDefault.clear();
+    if (!pinCleanupDefault.append(ClipType::Text, "pin-default", clipLiteHash("pin-default"), {}, 1) ||
+        !pinCleanupDefault.togglePinned(0) || !pinCleanupDefault.pruneExpired(2) ||
+        pinCleanupDefault.activeCount() != 0) return 104;
+    pinCleanupDefault.clear();
 
     ClipStore pinnedUpdate(10);
     pinnedUpdate.open();
@@ -171,9 +201,9 @@ int main() {
     const std::uint64_t pinnedHash = clipLiteHash("pinned-original");
     std::string pinnedRestored;
     if (!pinnedUpdate.append(ClipType::Text, "pinned-original", pinnedHash) ||
-        !pinnedUpdate.togglePinned(0) ||
+        !pinnedUpdate.toggleFavorite(0) ||
         pinnedUpdate.appendOrUpdate(ClipType::Text, "pinned-replacement", pinnedHash) ||
-        pinnedUpdate.activeCount() != 1 || !pinnedUpdate.items()[0].pinned ||
+        pinnedUpdate.activeCount() != 1 || !pinnedUpdate.items()[0].favorite ||
         !pinnedUpdate.readPayload(0, pinnedRestored) || pinnedRestored != "pinned-original") return 95;
     pinnedUpdate.clear();
 
@@ -189,7 +219,7 @@ int main() {
     std::string restored;
     if (!store.readPayload(0, restored) || restored != text) return 4;
     if (store.search("searchable suffix").size() != 1) return 5;
-    if (!store.togglePinned(0) || !store.items()[0].pinned) return 6;
+    if (!store.toggleFavorite(0) || !store.items()[0].favorite) return 6;
     if (!store.setCategory(0, 2) || store.items()[0].category != 2) return 7;
     if (!store.remove(0) || store.activeCount() != 0) return 8;
 
@@ -365,13 +395,13 @@ int main() {
     pinnedLimit.open();
     pinnedLimit.clear();
     if (!pinnedLimit.append(ClipType::Text, "pinned", clipLiteHash("pinned")) ||
-        !pinnedLimit.togglePinned(0) ||
+        !pinnedLimit.toggleFavorite(0) ||
         !pinnedLimit.append(ClipType::Text, "normal", clipLiteHash("normal"))) return 73;
     if (!pinnedLimit.pruneCategory(ClipType::Text, 1, 1) ||
-        pinnedLimit.activeCount() != 1 || !pinnedLimit.items()[0].pinned) return 74;
+        pinnedLimit.activeCount() != 1 || !pinnedLimit.items()[0].favorite) return 74;
     if (!pinnedLimit.append(ClipType::Text, "normal-two", clipLiteHash("normal-two")) ||
-        !pinnedLimit.clearTypeUnpinned(ClipType::Text) ||
-        pinnedLimit.activeCount() != 1 || !pinnedLimit.items()[0].pinned) return 75;
+        !pinnedLimit.clearTypeUnfavorited(ClipType::Text) ||
+        pinnedLimit.activeCount() != 1 || !pinnedLimit.items()[0].favorite) return 75;
     if (!pinnedLimit.clearType(ClipType::Text) || pinnedLimit.activeCount() != 0) return 76;
     pinnedLimit.clear();
 
@@ -379,11 +409,11 @@ int main() {
     appendLimit.open();
     appendLimit.clear();
     if (!appendLimit.append(ClipType::Text, "keep-pinned", clipLiteHash("keep-pinned")) ||
-        !appendLimit.togglePinned(0) ||
+        !appendLimit.toggleFavorite(0) ||
         !appendLimit.append(ClipType::Text, "first-normal", clipLiteHash("first-normal")) ||
-        appendLimit.activeCount() != 2 || !appendLimit.items()[1].pinned ||
+        appendLimit.activeCount() != 2 || !appendLimit.items()[1].favorite ||
         !appendLimit.append(ClipType::Text, "second-normal", clipLiteHash("second-normal")) ||
-        appendLimit.activeCount() != 2 || !appendLimit.items()[1].pinned ||
+        appendLimit.activeCount() != 2 || !appendLimit.items()[1].favorite ||
         appendLimit.items()[0].preview != "second-normal") return 93;
     appendLimit.clear();
 
@@ -409,8 +439,8 @@ int main() {
         !loadLimit.togglePinned(2)) return 96;
     ClipStore loadLimitReopened(1);
     if (!loadLimitReopened.open() || loadLimitReopened.activeCount() != 3 ||
-        !loadLimitReopened.items()[2].pinned ||
-        loadLimitReopened.items()[2].preview != "load-old") return 97;
+        !loadLimitReopened.items()[0].pinned ||
+        loadLimitReopened.items()[0].preview != "load-old") return 97;
     loadLimitReopened.clear();
     loadLimit.clear();
 
@@ -418,10 +448,10 @@ int main() {
     allUnpinned.open();
     allUnpinned.clear();
     if (!allUnpinned.append(ClipType::Text, "pinned-all", clipLiteHash("pinned-all")) ||
-        !allUnpinned.togglePinned(0) ||
+        !allUnpinned.toggleFavorite(0) ||
         !allUnpinned.append(ClipType::Text, "normal-all", clipLiteHash("normal-all")) ||
-        !allUnpinned.clearUnpinned() || allUnpinned.activeCount() != 1 ||
-        !allUnpinned.items()[0].pinned) return 77;
+        !allUnpinned.clearUnfavorited() || allUnpinned.activeCount() != 1 ||
+        !allUnpinned.items()[0].favorite) return 77;
     if (!allUnpinned.clear() || allUnpinned.activeCount() != 0) return 78;
     allUnpinned.clear();
 
@@ -462,20 +492,18 @@ int main() {
         !ordering.append(ClipType::Text, "third", clipLiteHash("third")) ||
         ordering.items()[0].preview != "third") return 68;
     if (!ordering.togglePinned(0)) return 69;
+    if (!ordering.items()[0].pinned ||
+        !ordering.append(ClipType::Text, "fourth", clipLiteHash("fourth")) ||
+        !ordering.items()[0].pinned || ordering.items()[0].preview != "third") return 111;
     ClipStore orderingReopened(10);
-    if (!orderingReopened.open() || orderingReopened.items().size() != 3 ||
-        orderingReopened.items()[0].preview != "third" ||
-        orderingReopened.items()[1].preview != "second" ||
-        orderingReopened.items()[2].preview != "first") return 70;
+    if (!orderingReopened.open() || orderingReopened.items().size() != 4 ||
+        !orderingReopened.items()[0].pinned || orderingReopened.items()[0].preview != "third") return 70;
     if (!orderingReopened.appendOrUpdate(ClipType::Text, "second", clipLiteHash("second")) ||
-        orderingReopened.items()[0].preview != "second" ||
-        orderingReopened.items()[1].preview != "third" ||
-        orderingReopened.items()[2].preview != "first") return 71;
+        !orderingReopened.items()[0].pinned || orderingReopened.items()[0].preview != "third") return 71;
     ClipStore orderingReopenedAgain(10);
-    if (!orderingReopenedAgain.open() || orderingReopenedAgain.items().size() != 3 ||
-        orderingReopenedAgain.items()[0].preview != "second" ||
-        orderingReopenedAgain.items()[1].preview != "third" ||
-        orderingReopenedAgain.items()[2].preview != "first") return 72;
+    if (!orderingReopenedAgain.open() || orderingReopenedAgain.items().size() != 4 ||
+        !orderingReopenedAgain.items()[0].pinned ||
+        orderingReopenedAgain.items()[0].preview != "third") return 72;
     orderingReopenedAgain.clear();
     orderingReopened.clear();
     ordering.clear();
@@ -547,11 +575,49 @@ int main() {
     if (pressure.activeCount() != 10000) return 33;
     constexpr std::size_t pinnedPressureIndex = 5000;
     if (!pressure.togglePinned(pinnedPressureIndex) ||
-        !pressure.items()[pinnedPressureIndex].pinned) return 84;
+        !pressure.items()[0].pinned || pressure.items()[0].preview != "pressure-4999") return 84;
+    std::FILE* compatibleHeaderFile = nullptr;
+    _wfopen_s(&compatibleHeaderFile, pressure.path().c_str(), L"rb");
+    std::uint8_t compatibleFlags = 0;
+    if (!compatibleHeaderFile ||
+        _fseeki64(compatibleHeaderFile,
+                  static_cast<__int64>(pressure.items()[0].fileOffset +
+                                       offsetof(TestDiskHeader, flags)), SEEK_SET) != 0 ||
+        std::fread(&compatibleFlags, sizeof(compatibleFlags), 1, compatibleHeaderFile) != 1 ||
+        std::fclose(compatibleHeaderFile) != 0 || (compatibleFlags & 0xF0u) != 0 ||
+        (compatibleFlags & 1u) == 0) return 109;
     ClipStore pressureReopened(10000);
     if (!pressureReopened.open() || pressureReopened.activeCount() != 10000 ||
-        !pressureReopened.items()[pinnedPressureIndex].pinned) return 34;
+        !pressureReopened.items()[0].pinned ||
+        pressureReopened.items()[0].preview != "pressure-4999") return 34;
     pressureReopened.clear();
     pressure.clear();
+
+    ClipStore legacyFavorite(10);
+    legacyFavorite.open();
+    legacyFavorite.clear();
+    if (!legacyFavorite.append(ClipType::Text, "legacy-pin", clipLiteHash("legacy-pin"))) return 105;
+    std::FILE* legacyFlagFile = nullptr;
+    _wfopen_s(&legacyFlagFile, legacyFavorite.path().c_str(), L"r+b");
+    TestDiskHeader legacyFavoriteHeader{};
+    if (!legacyFlagFile || std::fread(&legacyFavoriteHeader, sizeof(legacyFavoriteHeader), 1,
+                                      legacyFlagFile) != 1) return 106;
+    TestDiskMetadata legacyFavoriteMetadata{};
+    if (std::fread(&legacyFavoriteMetadata, sizeof(legacyFavoriteMetadata), 1,
+                   legacyFlagFile) != 1) return 106;
+    legacyFavoriteHeader.flags |= 1;
+    legacyFavoriteMetadata.version = 1;
+    legacyFavoriteMetadata.size = sizeof(TestDiskMetadata);
+    legacyFavoriteMetadata.crc = testMetadataCrc(
+        &legacyFavoriteMetadata, offsetof(TestDiskMetadata, crc));
+    if (_fseeki64(legacyFlagFile, 0, SEEK_SET) != 0 ||
+        std::fwrite(&legacyFavoriteHeader, sizeof(legacyFavoriteHeader), 1, legacyFlagFile) != 1 ||
+        std::fwrite(&legacyFavoriteMetadata, sizeof(legacyFavoriteMetadata), 1, legacyFlagFile) != 1 ||
+        std::fclose(legacyFlagFile) != 0) return 107;
+    ClipStore migratedLegacyFavorite(10);
+    if (!migratedLegacyFavorite.open() || migratedLegacyFavorite.activeCount() != 1 ||
+        !migratedLegacyFavorite.items()[0].favorite || migratedLegacyFavorite.items()[0].pinned) return 108;
+    migratedLegacyFavorite.clear();
+    legacyFavorite.clear();
     return 0;
 }

@@ -131,6 +131,8 @@ constexpr int kSettingThemeSave = 75;
 constexpr int kSettingThemeName = 99;
 constexpr int kSettingThemeColorBase = 100;
 constexpr int kSettingThemeSwatchBase = 120;
+constexpr int kSettingProtectPinnedCleanup = 140;
+constexpr int kSettingSpecialAcrossCategories = 141;
 constexpr std::array<std::size_t, 14> kEditableThemeColorIndices = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14, 17,
 };
@@ -145,11 +147,12 @@ constexpr int kMenuPreviewAutomatic = 108;
 constexpr int kMenuPreviewByKey = 109;
 constexpr int kMenuPreviewDisabled = 110;
 constexpr int kMenuSearchOnOpen = 111;
+constexpr int kMenuSpecialAcrossCategories = 112;
 constexpr int kFilterAll = 130;
 constexpr int kFilterText = 131;
 constexpr int kFilterFiles = 132;
 constexpr int kFilterImage = 133;
-constexpr int kFilterPinned = 134;
+constexpr int kFilterFavorites = 134;
 constexpr int kFilterOther = 135;
 constexpr int kFilterTimeBase = 420;
 constexpr int kFilterLengthBase = 430;
@@ -247,6 +250,7 @@ constexpr int kPopupListTop = 96;
 constexpr int kPopupBottomPadding = 14;
 constexpr int kPopupCardHeight = 88;
 constexpr int kPopupCardGap = 6;
+constexpr int kPopupCardInset = 14;
 constexpr int kPopupPreviewSize = 60;
 constexpr int kSettingsWidth = 740;
 constexpr int kSettingsHeight = 520;
@@ -300,6 +304,8 @@ struct Settings {
     bool previewAutomatic = true;
     bool previewByKey = true;
     bool historyWindowPinned = false;
+    bool protectPinnedFromAutoCleanup = false;
+    bool showSpecialAcrossCategories = true;
     bool runAsAdministrator = false;
     bool encryptData = false;
     int maxItems = 1000;
@@ -489,6 +495,7 @@ struct AppState {
     int hoveredFilter = -1;
     int hoveredDeleteRow = -1;
     int hoveredPinRow = -1;
+    int hoveredFavoriteRow = -1;
     int pressedRow = -1;
     bool hoveredHeader = false;
     int hoveredSettingsTab = -1;
@@ -533,7 +540,7 @@ struct AppState {
     std::wstring shortcutRegistrationDetail;
     std::wstring shortcutConflictFeedback;
     int filterType = 0;
-    bool pinnedOnly = false;
+    bool favoritesOnly = false;
     int filterTimeRange = 0;
     int filterLength = 0;
     int filterSort = 0;
@@ -1185,17 +1192,17 @@ const SettingsLocale kEnglishSettingsLocale{
     L"Custom shortcuts require at least one modifier key.",
     L"Sensitive markers: password, token, api_key, secret, and private keys; detected by content pattern.",
         L"Application    ClipLite", L"Version        1.4.0 x64", L"Storage format  v4",
-     L"Data directory  %LOCALAPPDATA%\\ClipLite", L"Browse", L"Clear unpinned history", L"Clear unpinned text",
-     L"Clear unpinned images", L"Clear unpinned files", L"Press shortcut", L"Need modifier", L"One application per line", L"Auto",
+      L"Data directory  %LOCALAPPDATA%\\ClipLite", L"Browse", L"Clear non-favorite history", L"Clear non-favorite text",
+      L"Clear non-favorite images", L"Clear non-favorite files", L"Press shortcut", L"Need modifier", L"One application per line", L"Auto",
     L"ClipLite Settings", L"Choose a valid cache directory.", L"Unable to create the cache directory.",
     L"The target directory already contains history. Choose an empty directory.",
     L"Unable to migrate clipboard history.", L"Unable to open the new cache directory.",
     L"Choose a cache directory", L"Unable to change history encryption.", L"history", L"text", L"images",
-     L"files", L"This will permanently remove %zu unpinned clipboard records. Pinned records will be kept. Continue?",
-     L"This will permanently remove %zu unpinned %ls records. Pinned records will be kept. Continue?", L"Confirm clear", L"Clear cancelled",
-     L"No unpinned %ls records to clear", L"Cleared %zu unpinned %ls records; pinned records were kept", L"Clear failed; history was not changed",
+      L"files", L"This will permanently remove %zu non-favorite clipboard records. Favorites will be kept. Continue?",
+      L"This will permanently remove %zu non-favorite %ls records. Favorites will be kept. Continue?", L"Confirm clear", L"Clear cancelled",
+      L"No non-favorite %ls records to clear", L"Cleared %zu non-favorite %ls records; favorites were kept", L"Clear failed; history was not changed",
     L"Confirm retention change", L"Reducing retention limits may permanently remove existing clipboard records. Continue?",
-    L"Clipboard history", L"Clear", L"All", L"Pinned", L"Text", L"Images", L"Files", L"Other",
+     L"Clipboard history", L"Clear", L"All", L"Favorites", L"Text", L"Images", L"Files", L"Other",
     L"Clipboard", L"No clipboard history", L"Paste", L"Paste as plain text", L"Paste as rich text",
     L"Pin history window", L"Unpin history window", L"Delete", L"Filter", L"Search clipboard history",
     L"Text", L"Image", L"Files", L"Other", L"Just now", L" min ago", L" hr ago", L" d ago",
@@ -1229,22 +1236,22 @@ const SettingsLocale kChineseSettingsLocale{
      L"关于 ClipLite", L"通用", L"外观", L"快捷键", L"存储管理", L"安全与隐私", L"关于 ClipLite",
      L"通用设置", L"外观", L"快捷键", L"存储管理", L"安全与隐私", L"关于 ClipLite", L"已自动保存",
      L"当前历史总计：%zu 条记录，%ls", L"置顶", L"记录", L"空间",
-     L"当前 %zu 条 \xB7 %ls", L"设置为 0 表示不限；置顶记录不会被自动清理。",
+      L"当前 %zu 条 \xB7 %ls", L"设置为 0 表示不限；收藏记录不会被清理，置顶保护可单独设置。",
      L"未检测到快捷键冲突。",
      L"快捷键冲突：“%ls”和“%ls”使用了相同组合键 %ls，请更换其中一项。",
      L"无法注册“%ls”（%ls），可能已被其他程序或 Windows 占用，已恢复为 %ls。",
      L"部分快捷键注册失败，请更换组合键。", L"自定义快捷键至少需要一个修饰键。",
     L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。",
           L"应用名称    ClipLite", L"版本        1.4.0 x64", L"存储格式    v4",
-     L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清理未置顶历史", L"清理未置顶文本", L"清理未置顶图片",
-      L"清理未置顶文件", L"按下组合键", L"需要修饰键", L"每行一个应用名称", L"自动", L"ClipLite 设置",
+      L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清理未收藏历史", L"清理未收藏文本", L"清理未收藏图片",
+       L"清理未收藏文件", L"按下组合键", L"需要修饰键", L"每行一个应用名称", L"自动", L"ClipLite 设置",
     L"请选择有效的缓存目录。", L"无法创建缓存目录。", L"目标目录已有历史数据，请选择空目录。",
     L"无法迁移剪贴板历史。", L"无法打开新的缓存目录。", L"选择缓存目录", L"无法更改历史加密设置。",
-      L"历史", L"文本", L"图片", L"文件", L"此操作将永久删除 %zu 条未置顶剪贴板记录，置顶记录会保留，是否继续？",
-     L"此操作将永久删除 %zu 条未置顶%ls记录，置顶记录会保留，是否继续？", L"确认清理", L"已取消清理",
-     L"没有可清理的未置顶%ls记录", L"已清理 %zu 条未置顶%ls记录，置顶记录已保留", L"清理失败，历史记录未改变",
+       L"历史", L"文本", L"图片", L"文件", L"此操作将永久删除 %zu 条未收藏剪贴板记录，收藏记录会保留，是否继续？",
+      L"此操作将永久删除 %zu 条未收藏%ls记录，收藏记录会保留，是否继续？", L"确认清理", L"已取消清理",
+      L"没有可清理的未收藏%ls记录", L"已清理 %zu 条未收藏%ls记录，收藏记录已保留", L"清理失败，历史记录未改变",
     L"确认保留策略变更", L"降低保留限制可能永久删除现有剪贴板记录，是否继续？",
-    L"剪贴板历史", L"清空", L"全部", L"置顶", L"文本", L"图片", L"文件", L"其他",
+     L"剪贴板历史", L"清空", L"全部", L"收藏", L"文本", L"图片", L"文件", L"其他",
     L"剪贴板", L"暂无剪贴板记录", L"粘贴", L"粘贴为纯文本", L"粘贴为富文本",
     L"置顶历史窗口", L"取消历史窗口置顶", L"删除", L"筛选", L"搜索剪贴板历史",
     L"文本", L"图片", L"文件", L"其他", L"刚刚", L"分钟前", L"小时前", L"天前",
@@ -1425,6 +1432,8 @@ void loadSettings(Settings& settings) {
         if (std::strncmp(line, "previewAutomatic=1", 18) == 0) settings.previewAutomatic = true;
         if (std::strncmp(line, "previewByKey=0", 14) == 0) settings.previewByKey = false;
         if (std::strncmp(line, "historyWindowPinned=1", 21) == 0) settings.historyWindowPinned = true;
+        if (std::strncmp(line, "protectPinnedFromAutoCleanup=1", 30) == 0) settings.protectPinnedFromAutoCleanup = true;
+        if (std::strncmp(line, "showSpecialAcrossCategories=0", 29) == 0) settings.showSpecialAcrossCategories = false;
         if (std::strncmp(line, "runAsAdministrator=1", 20) == 0) settings.runAsAdministrator = true;
         if (std::strncmp(line, "encryptData=1", 13) == 0) settings.encryptData = true;
         if (std::strncmp(line, "maxItems=", 9) == 0) settings.maxItems = std::clamp(std::atoi(line + 9), 0, 100000);
@@ -1567,6 +1576,8 @@ void saveSettings(const Settings& settings) {
            << "previewAutomatic=" << (settings.previewAutomatic ? 1 : 0) << "\n"
            << "previewByKey=" << (settings.previewByKey ? 1 : 0) << "\n"
            << "historyWindowPinned=" << (settings.historyWindowPinned ? 1 : 0) << "\n"
+           << "protectPinnedFromAutoCleanup=" << (settings.protectPinnedFromAutoCleanup ? 1 : 0) << "\n"
+           << "showSpecialAcrossCategories=" << (settings.showSpecialAcrossCategories ? 1 : 0) << "\n"
            << "runAsAdministrator=" << (settings.runAsAdministrator ? 1 : 0) << "\n"
            << "encryptData=" << (settings.encryptData ? 1 : 0) << "\n"
            << "maxItems=" << settings.maxItems << "\n"
@@ -2368,7 +2379,7 @@ bool popupSourceMatches(const ClipItem& item) {
 }
 
 int popupFilterConditionCount() {
-    return (g_app->filterType != 0 || g_app->pinnedOnly ? 1 : 0) +
+    return (g_app->filterType != 0 || g_app->favoritesOnly ? 1 : 0) +
         (g_app->filterTimeRange != 0 ? 1 : 0) +
         (g_app->filterLength != 0 ? 1 : 0) +
         static_cast<int>(g_app->filterSources.size());
@@ -2377,7 +2388,7 @@ int popupFilterConditionCount() {
 void resetPopupFilters() {
     if (!g_app) return;
     g_app->filterType = 0;
-    g_app->pinnedOnly = false;
+    g_app->favoritesOnly = false;
     g_app->filterTimeRange = 0;
     g_app->filterLength = 0;
     g_app->filterSort = 0;
@@ -2472,7 +2483,8 @@ void invalidatePopupHover(HWND hwnd, int row, int filter, bool header) {
     if (row >= 0 && row < static_cast<int>(g_app->visible.size())) {
         const int top = popupRowTop(row);
         const ClipItem& item = g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]];
-        RECT rowRect{ui(16), top, client.right - ui(16), top + popupCardHeight(item)};
+        RECT rowRect{ui(kPopupCardInset), top,
+                     client.right - ui(kPopupCardInset), top + popupCardHeight(item)};
         InvalidateRect(hwnd, &rowRect, FALSE);
     }
     if (filter >= 0 && filter < 6) {
@@ -2529,7 +2541,8 @@ void invalidatePopupImageRow(HWND hwnd, std::size_t itemIndex) {
     const int top = popupRowTop(row);
     RECT client{};
     GetClientRect(hwnd, &client);
-    RECT rowRect{ui(16), top, client.right - ui(16), top + ui(kPopupCardHeight)};
+    RECT rowRect{ui(kPopupCardInset), top,
+                 client.right - ui(kPopupCardInset), top + ui(kPopupCardHeight)};
     InvalidateRect(hwnd, &rowRect, FALSE);
 }
 
@@ -3097,17 +3110,26 @@ void applyVisibleCandidates(const std::vector<std::size_t>& candidates,
         if (index >= g_app->store.items().size()) continue;
         const ClipItem& item = g_app->store.items()[index];
         const bool typeMatches = isAutomaticTypeMatch(g_app->filterType, item.type);
-        if (typeMatches && (!g_app->pinnedOnly || item.pinned) &&
+        const bool specialItem = item.favorite || item.pinned;
+        const bool categoryMatches = g_app->filterType == 0 ||
+            (!specialItem && typeMatches) ||
+            (g_app->settingsData.showSpecialAcrossCategories && specialItem);
+        if (categoryMatches && (!g_app->favoritesOnly || item.favorite) &&
             popupTimeMatches(g_app->filterTimeRange, item) &&
             popupLengthMatches(g_app->filterLength, item) && popupSourceMatches(item)) {
             g_app->visible.push_back(index);
         }
     }
-    if (g_app->filterSort != 0) {
+    if (g_app->filterSort == 0) {
+        std::stable_partition(g_app->visible.begin(), g_app->visible.end(), [](std::size_t index) {
+            return g_app->store.items()[index].pinned;
+        });
+    } else {
         std::stable_sort(g_app->visible.begin(), g_app->visible.end(), [](std::size_t first,
                                                                           std::size_t second) {
             const ClipItem& a = g_app->store.items()[first];
             const ClipItem& b = g_app->store.items()[second];
+            if (a.pinned != b.pinned) return a.pinned;
             if (g_app->filterSort == 1) return popupItemSortTimestamp(a) > popupItemSortTimestamp(b);
             if (g_app->filterSort == 2) {
                 return a.source < b.source ||
@@ -3538,6 +3560,31 @@ bool createFileImagePreviewWic(const std::wstring& path, int boundsWidth, int bo
     CoUninitialize();
     if (success && premultipliedAlpha) *premultipliedAlpha = true;
     return success;
+}
+
+void drawFavoriteIcon(HDC dc, int right, int centerY, COLORREF color, bool filled) {
+    if (!g_app || g_app->gdiplusToken == 0) return;
+    Gdiplus::Graphics graphics(dc);
+    configureGdiGraphics(graphics);
+    const float scale = static_cast<float>(g_uiDpi) / 96.0f;
+    const float shapeScale = scale * 0.85f;
+    const float centerX = static_cast<float>(right) - 9.0f * scale;
+    const float center = static_cast<float>(centerY);
+    const Gdiplus::PointF points[] = {
+        {centerX, center - 8.0f * shapeScale}, {centerX + 2.1f * shapeScale, center - 2.5f * shapeScale},
+        {centerX + 8.0f * shapeScale, center - 2.2f * shapeScale}, {centerX + 3.5f * shapeScale, center + 1.5f * shapeScale},
+        {centerX + 5.0f * shapeScale, center + 7.5f * shapeScale}, {centerX, center + 4.2f * shapeScale},
+        {centerX - 5.0f * shapeScale, center + 7.5f * shapeScale}, {centerX - 3.5f * shapeScale, center + 1.5f * shapeScale},
+        {centerX - 8.0f * shapeScale, center - 2.2f * shapeScale}, {centerX - 2.1f * shapeScale, center - 2.5f * shapeScale},
+    };
+    Gdiplus::GraphicsPath path;
+    path.AddPolygon(points, ARRAYSIZE(points));
+    Gdiplus::Pen pen(makeGdiColor(color), 1.4f * scale);
+    if (filled) {
+        Gdiplus::SolidBrush brush(makeGdiColor(color));
+        graphics.FillPath(&brush, &path);
+    }
+    graphics.DrawPath(&pen, &path);
 }
 
 bool createFileImagePreviewGdi(const std::wstring& path, int boundsWidth, int boundsHeight,
@@ -5164,6 +5211,7 @@ void showPopup(bool openedByWinV = false) {
     g_app->hoveredFilter = -1;
     g_app->hoveredDeleteRow = -1;
     g_app->hoveredPinRow = -1;
+    g_app->hoveredFavoriteRow = -1;
     g_app->hoveredHeader = false;
     g_app->popupOpening = true;
     g_app->popupActivated = false;
@@ -6549,7 +6597,7 @@ LRESULT CALLBACK editProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 int automaticFilterCommand(int slot) {
     if (slot == 0) return kFilterAll;
-    if (slot == 1) return kFilterPinned;
+    if (slot == 1) return kFilterFavorites;
     if (slot == 2) return kFilterText;
     if (slot == 3) return kFilterImage;
     if (slot == 4) return kFilterFiles;
@@ -6590,12 +6638,12 @@ void invalidateFilterBar(HWND hwnd) {
 
 bool isAutomaticFilterActive(int slot) {
     const int command = automaticFilterCommand(slot);
-    if (command == kFilterPinned) return g_app->pinnedOnly;
-    if (command == kFilterAll) return g_app->filterType == 0 && !g_app->pinnedOnly;
-    if (command == kFilterOther) return g_app->filterType == 4 && !g_app->pinnedOnly;
-    if (command == kFilterText) return g_app->filterType == 1 && !g_app->pinnedOnly;
-    if (command == kFilterImage) return g_app->filterType == 2 && !g_app->pinnedOnly;
-    if (command == kFilterFiles) return g_app->filterType == 3 && !g_app->pinnedOnly;
+    if (command == kFilterFavorites) return g_app->favoritesOnly;
+    if (command == kFilterAll) return g_app->filterType == 0 && !g_app->favoritesOnly;
+    if (command == kFilterOther) return g_app->filterType == 4 && !g_app->favoritesOnly;
+    if (command == kFilterText) return g_app->filterType == 1 && !g_app->favoritesOnly;
+    if (command == kFilterImage) return g_app->filterType == 2 && !g_app->favoritesOnly;
+    if (command == kFilterFiles) return g_app->filterType == 3 && !g_app->favoritesOnly;
     return false;
 }
 
@@ -6807,6 +6855,9 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
                             {kSettingStartupSettings}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().showStartupNotification,
                             {kSettingStartupNotification}, {36}, {20}, contentWidth),
+            makeSettingsRow(hwnd, tr(L"Show favorites and pinned items in category lists",
+                                     L"在分类列表中显示收藏和置顶记录"),
+                            {kSettingSpecialAcrossCategories}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().runAsAdministrator,
                             {kSettingRunAsAdministrator}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().searchInputCompatibility,
@@ -6904,6 +6955,9 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
                             {kSettingMaxDiskMb}, {150}, {30}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().maximumItemSize,
                             {kSettingMaxContentMb}, {150}, {30}, contentWidth),
+            makeSettingsRow(hwnd, tr(L"Protect pinned items from automatic cleanup",
+                                     L"置顶记录不参与自动清理"),
+                            {kSettingProtectPinnedCleanup}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().cacheDirectory,
                             {kSettingDataDirectory, kSettingBrowseDataDirectory},
                             {360, 64}, {30, 30}, contentWidth)
@@ -7722,7 +7776,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         const ClipItem& item = g_app->store.items()[itemIndex];
         const int height = popupCardHeight(item);
         if (y >= listBottom) break;
-        RECT rowRect{ui(16), y, client.right - ui(16), y + height};
+        RECT rowRect{ui(kPopupCardInset), y, client.right - ui(kPopupCardInset), y + height};
         if (paintClipType != NULLREGION &&
             (rowRect.bottom <= paintClip.top || rowRect.top >= paintClip.bottom)) {
             y += height + ui(kPopupCardGap);
@@ -7784,11 +7838,17 @@ void paintPopupContent(HWND hwnd, HDC dc) {
             drawMetadataTag(dc, typeRect, kind, RGB(239, 241, 243), RGB(239, 241, 243),
                             RGB(85, 85, 85), 2);
             const std::wstring time = formatRelativeTime(item.timestamp);
-            RECT timeRect{rowRect.right - ui(92), metadataTop,
-                          rowRect.right - ui(44), metadataTop + ui(16)};
+            RECT timeRect{rowRect.right - ui(106), metadataTop,
+                          rowRect.right - ui(50), metadataTop + ui(16)};
             SetTextColor(dc, RGB(136, 136, 136));
             DrawTextW(dc, time.c_str(), -1, &timeRect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
             const bool pinHovered = row == g_app->hoveredPinRow;
+            const bool favoriteHovered = row == g_app->hoveredFavoriteRow;
+            if (item.favorite || rowHovered) {
+                drawFavoriteIcon(dc, rowRect.right - ui(26), metadataTop + ui(8),
+                    item.favorite ? (favoriteHovered ? RGB(217, 119, 6) : RGB(245, 158, 11))
+                                  : (favoriteHovered ? accent : RGB(176, 176, 176)), item.favorite);
+            }
             if (item.pinned) {
                 drawPinIcon(dc, rowRect.right - ui(10), metadataTop + ui(8),
                             pinHovered ? RGB(217, 119, 6) : RGB(245, 158, 11), true);
@@ -8335,6 +8395,10 @@ void createSettingsControlsModern(HWND hwnd) {
     createToggle(kSettingPreviewAutomatic, 640, 544, g_app->settingsData.previewAutomatic);
     createToggle(kSettingPreviewByKey, 640, 579, g_app->settingsData.previewByKey);
     createToggle(kSettingEncrypt, 640, 116, g_app->settingsData.encryptData);
+    createToggle(kSettingProtectPinnedCleanup, 640, 650,
+                 g_app->settingsData.protectPinnedFromAutoCleanup);
+    createToggle(kSettingSpecialAcrossCategories, 640, 685,
+                 g_app->settingsData.showSpecialAcrossCategories);
     createShortcut(kSettingShortcutPreview, 550, g_app->settingsData.popupPreviewHotkey);
     createShortcut(kSettingShortcutHistory, 110, g_app->settingsData.historyHotkey);
     createShortcut(kSettingShortcutSettings, 154, g_app->settingsData.settingsHotkey);
@@ -8600,8 +8664,9 @@ void updateSettingsTabControls(HWND hwnd, bool redraw) {
                            kSettingWinV, kSettingLanguage, kSettingPause,
                            kSettingStartup, kSettingStartupSettings, kSettingStartupNotification,
                            kSettingRunAsAdministrator, kSettingSearchImeCompatibility, kSettingSearchOnOpen,
-                          kSettingPreviewAutomatic, kSettingPreviewByKey,
-                         kSettingPromotePastedItem, kSettingEncrypt, kSettingMaxItems,
+                           kSettingPreviewAutomatic, kSettingPreviewByKey,
+                          kSettingProtectPinnedCleanup, kSettingSpecialAcrossCategories,
+                          kSettingPromotePastedItem, kSettingEncrypt, kSettingMaxItems,
                         kSettingRetentionDays, kSettingMaxDiskMb, kSettingMaxContentMb,
                         kSettingDataDirectory, kSettingBrowseDataDirectory,
                           kSettingIgnoredApps, kSettingSensitiveExpiry, kSettingClear,
@@ -8798,22 +8863,22 @@ void applyFilterCommand(int command) {
         g_app->filterSort = command - kFilterSortBase;
     } else if (command == kFilterAll) {
         g_app->filterType = 0;
-        g_app->pinnedOnly = false;
+        g_app->favoritesOnly = false;
     } else if (command == kFilterText) {
         g_app->filterType = 1;
-        g_app->pinnedOnly = false;
+        g_app->favoritesOnly = false;
     } else if (command == kFilterImage) {
         g_app->filterType = 2;
-        g_app->pinnedOnly = false;
+        g_app->favoritesOnly = false;
     } else if (command == kFilterFiles) {
         g_app->filterType = 3;
-        g_app->pinnedOnly = false;
-    } else if (command == kFilterPinned) {
+        g_app->favoritesOnly = false;
+    } else if (command == kFilterFavorites) {
         g_app->filterType = 0;
-        g_app->pinnedOnly = true;
+        g_app->favoritesOnly = true;
     } else if (command == kFilterOther) {
         g_app->filterType = 4;
-        g_app->pinnedOnly = false;
+        g_app->favoritesOnly = false;
     }
 }
 
@@ -9272,6 +9337,26 @@ void appendPopupSearchOnOpenMenu(HMENU menu) {
                 kMenuSearchOnOpen, settingsLocale().searchOnOpen);
 }
 
+void appendPopupSpecialAcrossCategoriesMenu(HMENU menu) {
+    AppendMenuW(menu, MF_STRING |
+                (g_app->settingsData.showSpecialAcrossCategories ? MF_CHECKED : 0),
+                kMenuSpecialAcrossCategories,
+                tr(L"Show favorites and pinned items in category lists",
+                   L"在分类列表中显示收藏和置顶记录"));
+}
+
+void togglePopupSpecialAcrossCategories() {
+    if (!g_app) return;
+    g_app->settingsData.showSpecialAcrossCategories =
+        !g_app->settingsData.showSpecialAcrossCategories;
+    if (g_app->settings) {
+        setSettingsToggleValue(settingsControl(g_app->settings, kSettingSpecialAcrossCategories),
+                               g_app->settingsData.showSpecialAcrossCategories);
+        InvalidateRect(g_app->settings, nullptr, FALSE);
+    }
+    saveSettings(g_app->settingsData);
+}
+
 void togglePopupSearchOnOpen() {
     if (!g_app) return;
     g_app->settingsData.searchOnOpen = !g_app->settingsData.searchOnOpen;
@@ -9360,9 +9445,10 @@ bool isSettingsToggle(int id) {
     return id == kSettingWinV || id == kSettingPause ||
            id == kSettingStartup || id == kSettingStartupSettings ||
            id == kSettingStartupNotification || id == kSettingRunAsAdministrator ||
-            id == kSettingSearchImeCompatibility || id == kSettingSearchOnOpen ||
-            id == kSettingPromotePastedItem ||
-           id == kSettingPreviewAutomatic || id == kSettingPreviewByKey || id == kSettingEncrypt;
+           id == kSettingSearchImeCompatibility || id == kSettingSearchOnOpen ||
+           id == kSettingPromotePastedItem ||
+           id == kSettingPreviewAutomatic || id == kSettingPreviewByKey || id == kSettingEncrypt ||
+           id == kSettingProtectPinnedCleanup || id == kSettingSpecialAcrossCategories;
 }
 
 int settingsToggleAtPoint(int tab, int x, int y) {
@@ -9581,6 +9667,8 @@ void restoreSettingsRetentionControls(HWND hwnd, const Settings& settings) {
     setValue(settingsControl(hwnd, kSettingMaxItems), settings.maxItems);
     setValue(settingsControl(hwnd, kSettingRetentionDays), settings.retentionDays);
     setValue(settingsControl(hwnd, kSettingMaxDiskMb), settings.maxDiskMb);
+    setSettingsToggleValue(settingsControl(hwnd, kSettingProtectPinnedCleanup),
+                           settings.protectPinnedFromAutoCleanup);
     for (int i = 0; i < kStorageCategoryCount; ++i) {
         const CategoryLimit& limit = settings.categoryLimits[static_cast<std::size_t>(i)];
         setValue(settingsControl(hwnd, kSettingCategoryMaxBase + i), limit.maxItems);
@@ -9605,7 +9693,13 @@ bool settingsWouldPruneExisting(const Settings& previous, const Settings& next) 
         const std::uint64_t cutoff = nowUnix() -
             static_cast<std::uint64_t>(next.retentionDays) * 86400ULL;
         for (const ClipItem& item : g_app->store.items()) {
-            if (!item.pinned && item.timestamp < cutoff) return true;
+            if (!item.favorite &&
+                !(next.protectPinnedFromAutoCleanup && item.pinned) && item.timestamp < cutoff) return true;
+        }
+    }
+    if (previous.protectPinnedFromAutoCleanup && !next.protectPinnedFromAutoCleanup) {
+        for (const ClipItem& item : g_app->store.items()) {
+            if (item.pinned) return true;
         }
     }
     const ClipType types[] = {ClipType::Text, ClipType::Image, ClipType::Files};
@@ -9647,6 +9741,8 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     HWND promotePastedItem = settingsControl(hwnd, kSettingPromotePastedItem);
     HWND previewAutomatic = settingsControl(hwnd, kSettingPreviewAutomatic);
     HWND previewByKey = settingsControl(hwnd, kSettingPreviewByKey);
+    HWND protectPinnedCleanup = settingsControl(hwnd, kSettingProtectPinnedCleanup);
+    HWND specialAcrossCategories = settingsControl(hwnd, kSettingSpecialAcrossCategories);
     HWND encrypt = settingsControl(hwnd, kSettingEncrypt);
     HWND categoryMax[kStorageCategoryCount]{};
     HWND categoryDisk[kStorageCategoryCount]{};
@@ -9658,7 +9754,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
         !maxContentMb || !dataDirectory || !updateProxy || !ignoredApps || !sensitiveExpiry || !startup ||
         !startupSettings || !startupNotification || !runAsAdministrator ||
          !searchImeCompatibility || !searchOnOpen || !promotePastedItem || !previewAutomatic ||
-         !previewByKey || !encrypt) {
+          !previewByKey || !protectPinnedCleanup || !specialAcrossCategories || !encrypt) {
         return false;
     }
     for (int i = 0; i < kStorageCategoryCount; ++i) {
@@ -9677,6 +9773,8 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     next.promotePastedItem = settingsToggleValue(promotePastedItem);
     next.previewAutomatic = settingsToggleValue(previewAutomatic);
     next.previewByKey = settingsToggleValue(previewByKey);
+    next.protectPinnedFromAutoCleanup = settingsToggleValue(protectPinnedCleanup);
+    next.showSpecialAcrossCategories = settingsToggleValue(specialAcrossCategories);
     next.language = settingsLanguageSelection(language);
     next.language = next.language <= 0 ? -1 : next.language - 1;
 
@@ -9800,6 +9898,9 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
         next.searchImeCompatibility != previous.searchImeCompatibility;
     const bool searchOnOpenChanged = next.searchOnOpen != previous.searchOnOpen;
     const bool promotePastedItemChanged = next.promotePastedItem != previous.promotePastedItem;
+    const bool protectPinnedChanged = next.protectPinnedFromAutoCleanup != previous.protectPinnedFromAutoCleanup;
+    const bool specialAcrossCategoriesChanged =
+        next.showSpecialAcrossCategories != previous.showSpecialAcrossCategories;
     const bool previewChanged = next.previewAutomatic != previous.previewAutomatic ||
         next.previewByKey != previous.previewByKey ||
         next.popupPreviewHotkey.modifiers != previous.popupPreviewHotkey.modifiers ||
@@ -9818,7 +9919,8 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
         dataDirectoryChanged ||
          next.sensitiveExpiryHours != previous.sensitiveExpiryHours || searchImeCompatibilityChanged ||
          searchOnOpenChanged ||
-        promotePastedItemChanged || previewChanged || next.updateProxy != previous.updateProxy ||
+        promotePastedItemChanged || protectPinnedChanged || specialAcrossCategoriesChanged ||
+        previewChanged || next.updateProxy != previous.updateProxy ||
         next.ignoredApps != previous.ignoredApps;
     if (!changed) return true;
 
@@ -9827,6 +9929,8 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     if (promotePastedItemChanged) {
         g_app->store.setSortByLastUsed(g_app->settingsData.promotePastedItem);
     }
+    g_app->store.setProtectPinnedFromAutoCleanup(
+        g_app->settingsData.protectPinnedFromAutoCleanup);
     if (maxContentChanged) {
         g_app->store.setMaxPayloadBytes(static_cast<std::uint32_t>(g_app->settingsData.maxContentMb) *
                                         1024u * 1024u);
@@ -9845,13 +9949,14 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
         }
         InvalidateRect(g_app->popup, nullptr, FALSE);
     }
+    if (specialAcrossCategoriesChanged && g_app->popup) refreshVisible();
     if (languageChanged) {
         g_app->settingsActionFeedback.clear();
         g_app->shortcutConflictFeedback.clear();
         refreshSettingsLocalizedControls(hwnd);
         updateSettingsTabControls(hwnd);
     }
-    if (maxItemsChanged || retentionChanged || maxDiskChanged) {
+    if (maxItemsChanged || retentionChanged || maxDiskChanged || protectPinnedChanged) {
         const std::uint64_t cutoff = g_app->settingsData.retentionDays > 0
             ? nowUnix() - static_cast<std::uint64_t>(g_app->settingsData.retentionDays) * 86400ULL
             : 0;
@@ -10352,7 +10457,7 @@ std::size_t settingsClearActionCount(int id) {
     if (!g_app) return 0;
     std::size_t count = 0;
     for (const ClipItem& item : g_app->store.items()) {
-        if (!item.pinned && settingsClearActionMatchesItem(id, item)) ++count;
+        if (!item.favorite && settingsClearActionMatchesItem(id, item)) ++count;
     }
     return count;
 }
@@ -10371,12 +10476,12 @@ bool confirmSettingsClear(HWND hwnd, int id, std::size_t count) {
 }
 
 bool clearSettingsAction(int id) {
-    if (id == kSettingClear) return g_app->store.clearUnpinned();
+    if (id == kSettingClear) return g_app->store.clearUnfavorited();
     const ClipType type = id == kSettingClearText ? ClipType::Text :
         id == kSettingClearImage ? ClipType::Image :
         id == kSettingClearFiles ? ClipType::Files :
         ClipType::Html;
-    return g_app->store.clearTypeUnpinned(type);
+    return g_app->store.clearTypeUnfavorited(type);
 }
 
 void openDiagnosticLog(HWND hwnd) {
@@ -13159,9 +13264,14 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 ? row : -1;
             const int rowHeight = row >= 0
                 ? popupCardHeight(g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]]) : 0;
-            const int pinRow = row >= 0 && x >= client.right - ui(45) &&
-                x < client.right - ui(10) && y >= rowTop + rowHeight - ui(30) &&
-                y < rowTop + rowHeight ? row : -1;
+            const bool itemActionRow = row >= 0 && y >= rowTop + rowHeight - ui(30) &&
+                y < rowTop + rowHeight;
+            const int favoriteRow = itemActionRow &&
+                x >= client.right - ui(kPopupCardInset + 50) &&
+                x < client.right - ui(kPopupCardInset + 28) ? row : -1;
+            const int pinRow = itemActionRow &&
+                x >= client.right - ui(kPopupCardInset + 22) &&
+                x < client.right - ui(kPopupCardInset + 2) ? row : -1;
             const bool headerHover = popupPointInHeader(client, x, y);
             int headerButton = -1;
             if (x >= ui(kPopupFilterButtonLeft) && x < ui(kPopupFilterButtonRight) &&
@@ -13180,7 +13290,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             const int nextFilter = filter >= 0 ? filter : headerButton;
              if (row != g_app->hoveredRow || nextFilter != g_app->hoveredFilter ||
-                deleteRow != g_app->hoveredDeleteRow || pinRow != g_app->hoveredPinRow ||
+                 deleteRow != g_app->hoveredDeleteRow || pinRow != g_app->hoveredPinRow ||
+                 favoriteRow != g_app->hoveredFavoriteRow ||
                 headerHover != g_app->hoveredHeader) {
                 const int previousRow = g_app->hoveredRow;
                 const int previousFilter = g_app->hoveredFilter;
@@ -13188,7 +13299,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 g_app->hoveredRow = row;
                 g_app->hoveredFilter = nextFilter;
                 g_app->hoveredDeleteRow = deleteRow;
-                g_app->hoveredPinRow = pinRow;
+                 g_app->hoveredPinRow = pinRow;
+                 g_app->hoveredFavoriteRow = favoriteRow;
                 g_app->hoveredHeader = headerHover;
                  invalidatePopupHover(hwnd, previousRow, previousFilter, previousHeader);
                  invalidatePopupHover(hwnd, row, nextFilter, headerHover);
@@ -13201,14 +13313,16 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         if (message == WM_MOUSELEAVE) {
              if (g_app->hoveredRow != -1 || g_app->hoveredFilter != -1 ||
-                g_app->hoveredDeleteRow != -1 || g_app->hoveredPinRow != -1 || g_app->hoveredHeader) {
+                 g_app->hoveredDeleteRow != -1 || g_app->hoveredPinRow != -1 ||
+                 g_app->hoveredFavoriteRow != -1 || g_app->hoveredHeader) {
                 const int previousRow = g_app->hoveredRow;
                 const int previousFilter = g_app->hoveredFilter;
                 const bool previousHeader = g_app->hoveredHeader;
                 g_app->hoveredRow = -1;
                 g_app->hoveredFilter = -1;
                 g_app->hoveredDeleteRow = -1;
-                g_app->hoveredPinRow = -1;
+                 g_app->hoveredPinRow = -1;
+                 g_app->hoveredFavoriteRow = -1;
                 g_app->hoveredHeader = false;
                  invalidatePopupHover(hwnd, previousRow, previousFilter, previousHeader);
                  if (!g_app->detailPreviewHeld) scheduleDetailPreview(-1);
@@ -13325,20 +13439,29 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                                                            GET_Y_LPARAM(lParam));
                 const int rowHeight = popupCardHeight(
                     g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]]);
-                const bool pinClick = GET_X_LPARAM(lParam) >= client.right - ui(45) &&
-                    GET_X_LPARAM(lParam) < client.right - ui(10) &&
-                    GET_Y_LPARAM(lParam) >= rowTop + rowHeight - ui(30) &&
+                const bool itemActionClick = GET_Y_LPARAM(lParam) >= rowTop + rowHeight - ui(30) &&
                     GET_Y_LPARAM(lParam) < rowTop + rowHeight;
+                const bool favoriteClick = itemActionClick &&
+                    GET_X_LPARAM(lParam) >= client.right - ui(kPopupCardInset + 50) &&
+                    GET_X_LPARAM(lParam) < client.right - ui(kPopupCardInset + 28);
+                const bool pinClick = itemActionClick &&
+                    GET_X_LPARAM(lParam) >= client.right - ui(kPopupCardInset + 22) &&
+                    GET_X_LPARAM(lParam) < client.right - ui(kPopupCardInset + 2);
                 if (deleteClick) {
                     g_app->store.remove(g_app->visible[static_cast<std::size_t>(row)]);
                     refreshVisible(true);
                     refreshPopupPointerState(hwnd);
                     return 0;
                 }
+                if (favoriteClick) {
+                    const std::size_t index = g_app->visible[static_cast<std::size_t>(row)];
+                    if (g_app->store.toggleFavorite(index) && g_app->favoritesOnly) refreshVisible();
+                    else invalidatePopupList(hwnd);
+                    return 0;
+                }
                 if (pinClick) {
                     if (g_app->store.togglePinned(g_app->visible[static_cast<std::size_t>(row)])) {
-                        if (g_app->pinnedOnly) refreshVisible();
-                        else invalidatePopupHover(hwnd, row, -1, false);
+                        refreshVisible();
                     }
                     return 0;
                 }
@@ -13358,9 +13481,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 HMENU menu = CreatePopupMenu();
                 const ClipItem& item = g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]];
                  appendPasteMenu(menu, item);
-                 appendPopupPinMenu(menu);
-                 appendPopupSearchOnOpenMenu(menu);
-                 appendPopupPromotePastedItemMenu(menu);
+                  appendPopupPinMenu(menu);
+                  appendPopupSearchOnOpenMenu(menu);
+                  appendPopupSpecialAcrossCategoriesMenu(menu);
+                  appendPopupPromotePastedItemMenu(menu);
                  appendPopupPreviewMenu(menu);
                 AppendMenuW(menu, MF_STRING, kMenuDelete, settingsLocale().popupDelete);
                 appendFilterMenu(menu);
@@ -13373,7 +13497,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 DestroyMenu(menu);
                 const std::size_t index = g_app->visible[static_cast<std::size_t>(g_app->selected)];
                  if (command == kMenuPopupPinned) setPopupPinned(!g_app->popupPinned);
-                 else if (command == kMenuSearchOnOpen) togglePopupSearchOnOpen();
+                  else if (command == kMenuSearchOnOpen) togglePopupSearchOnOpen();
+                  else if (command == kMenuSpecialAcrossCategories) {
+                      togglePopupSpecialAcrossCategories();
+                  }
                  else if (command == kMenuPromotePastedItem) {
                       togglePopupPromotePastedItem();
                   }
@@ -13389,9 +13516,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                  refreshVisible(command == kMenuDelete);
             } else {
                 HMENU menu = CreatePopupMenu();
-                 appendPopupPinMenu(menu);
-                 appendPopupSearchOnOpenMenu(menu);
-                 appendPopupPromotePastedItemMenu(menu);
+                  appendPopupPinMenu(menu);
+                  appendPopupSearchOnOpenMenu(menu);
+                  appendPopupSpecialAcrossCategoriesMenu(menu);
+                  appendPopupPromotePastedItemMenu(menu);
                  appendPopupPreviewMenu(menu);
                 appendFilterMenu(menu);
                 POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
@@ -13403,9 +13531,12 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 DestroyMenu(menu);
                 if (command == kMenuPopupPinned) {
                      setPopupPinned(!g_app->popupPinned);
-                 } else if (command == kMenuSearchOnOpen) {
-                     togglePopupSearchOnOpen();
-                } else if (command == kMenuPromotePastedItem) {
+                  } else if (command == kMenuSearchOnOpen) {
+                      togglePopupSearchOnOpen();
+                  } else if (command == kMenuSpecialAcrossCategories) {
+                      togglePopupSpecialAcrossCategories();
+                      refreshVisible();
+                  } else if (command == kMenuPromotePastedItem) {
                     togglePopupPromotePastedItem();
                     refreshVisible();
                 } else if (command == kMenuPreviewAutomatic) {
@@ -13552,6 +13683,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     appendDiagnosticLog("INFO", "startup: settings loaded");
     app.store.setMaxItems(static_cast<std::size_t>(app.settingsData.maxItems));
     app.store.setSortByLastUsed(app.settingsData.promotePastedItem);
+    app.store.setProtectPinnedFromAutoCleanup(app.settingsData.protectPinnedFromAutoCleanup);
     app.store.setEncryption(app.settingsData.encryptData);
     app.store.setMaxPayloadBytes(static_cast<std::uint32_t>(app.settingsData.maxContentMb) * 1024u * 1024u);
     if (commandImageBenchmark) {

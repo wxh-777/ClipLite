@@ -23,6 +23,7 @@ struct ClipItem {
     std::uint64_t lastCopiedAt = 0;
     std::uint64_t hash = 0;
     std::uint32_t category = 0;
+    bool favorite = false;
     bool pinned = false;
     std::uint64_t fileOffset = 0;
     std::uint32_t headerSize = 0;
@@ -52,6 +53,7 @@ public:
     void setMaxItems(std::size_t maxItems) { maxItems_ = maxItems; }
     bool setDataDirectory(const std::wstring& directory);
     bool setSortByLastUsed(bool enabled);
+    void setProtectPinnedFromAutoCleanup(bool enabled) { protectPinnedFromAutoCleanup_ = enabled; }
     void setEncryption(bool enabled) { encryptionEnabled_ = enabled; }
     bool encryptionEnabled() const { return encryptionEnabled_; }
     void setMaxPayloadBytes(std::uint32_t bytes) { maxPayloadBytes_ = bytes; }
@@ -66,14 +68,15 @@ public:
     bool readPayloadSnapshot(const std::wstring& path, const ClipItem& item,
                              std::string& payload) const;
     bool remove(std::size_t index);
+    bool toggleFavorite(std::size_t index);
     bool togglePinned(std::size_t index);
     bool setCategory(std::size_t index, std::uint32_t category);
     bool prune(std::size_t maxItems, std::uint64_t maxBytes, std::uint64_t minTimestamp);
     bool pruneCategory(ClipType type, std::size_t maxItems, std::uint64_t maxBytes);
     bool clear();
     bool clearType(ClipType type);
-    bool clearUnpinned();
-    bool clearTypeUnpinned(ClipType type);
+    bool clearUnfavorited();
+    bool clearTypeUnfavorited(ClipType type);
     bool pruneExpired(std::uint64_t timestamp);
 
     std::vector<std::size_t> search(const std::string& query) const;
@@ -106,6 +109,7 @@ private:
     std::uint64_t deadBytes_ = 0;
     std::uint64_t revision_ = 0;
     bool sortByLastUsed_ = false;
+    bool protectPinnedFromAutoCleanup_ = false;
     std::uint64_t nextRecordId_ = 1;
     std::vector<ClipItem> items_;
 };

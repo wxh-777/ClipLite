@@ -16,7 +16,7 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 
 - Open clipboard history with `Alt+V`, with an optional `Win+V` replacement mode.
 - Capture and restore plain text, HTML, file lists, DIB, and DIBV5 images; image files in file lists show on-demand thumbnails.
-- Search and combine type, time range, content length, source application, and sort filters; pin, delete, clear, and paste history items.
+- Search and combine type, time range, content length, source application, and sort filters; favorites and pins are independent and can both be applied to an item.
 - History items show clipboard content previews so you can confirm the target before pasting.
 - Supports a separate image and content preview window. With automatic preview enabled, hover over an item to preview it, then use the wheel to zoom around the pointer or drag the image. The window shows the zoom percentage and on-demand original-image loading status. Hold-key preview (default `F2`) and disabled preview remain available; long text scrolls with the wheel.
 - Automatic preview is enabled by default; an existing configuration that explicitly disabled it remains disabled.
@@ -27,7 +27,8 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 - English and Simplified Chinese interfaces.
 - Runs in the system tray and restores its tray icon after Explorer restarts or refreshes the taskbar.
 - Limits for record count, disk usage, retention period, item size, and monitoring pause.
-- Pinned records are protected from automatic count, capacity, expiry, and startup cleanup, and are not overwritten by new clipboard content.
+- Favorites are protected from automatic and manual non-favorite cleanup. Pinned records stay at the top of matching history results; protection from automatic cleanup is optional and off by default.
+- Favorites and pinned records are shown in type-filtered lists by default. When disabled, they remain available in All and Favorites filters.
 - Source application filtering, sensitive text expiry, and optional Windows DPAPI user encryption.
 - Installer and portable distribution modes; clipboard archiving, history reads, and usage statistics run through short-lived worker tasks without keeping the full history payload in memory.
 - The About page opens the GitHub source and checks GitHub Releases. ClipLite also performs one background update check after startup without blocking clipboard features.
