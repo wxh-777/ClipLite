@@ -522,7 +522,7 @@ struct AppState {
     int hoveredSettingsTab = -1;
     int hoveredSettingsThemeMode = -1;
     int hoveredSettingsControl = 0;
-    int settingsScrollOffset = 0;
+    int settingsScrollOffset = 0; // Physical pixels, matching scrollbar metrics.
     bool settingsScrollDragging = false;
     int settingsScrollDragStartY = 0;
     int settingsScrollDragStartOffset = 0;
@@ -7163,6 +7163,16 @@ void paintSettingsScrollbar(HWND hwnd, HDC dc, int contentHeight) {
     drawGdiRoundedSurface(dc, thumb, thumbColor, thumbColor, 5);
 }
 
+void refreshSettingsScrollbar(HWND hwnd) {
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const RECT scrollbarRect{client.right - ui(kSettingsScrollbarReserve),
+                             ui(kSettingsHeaderHeight), client.right, client.bottom};
+    // Mouse input must not postpone the thumb paint until the queue becomes idle.
+    RedrawWindow(hwnd, &scrollbarRect, nullptr,
+                 RDW_INVALIDATE | RDW_NOERASE | RDW_NOCHILDREN | RDW_UPDATENOW);
+}
+
 HFONT createCachedFont(int size, int weight, const wchar_t* face) {
     return CreateFontW(-ui(size), 0, 0, 0, weight, FALSE, FALSE, FALSE,
                        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
@@ -7219,6 +7229,14 @@ void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
     HBRUSH backgroundBrush = CreateSolidBrush(windowBackground);
     FillRect(dc, &client, backgroundBrush);
     DeleteObject(backgroundBrush);
+
+    RECT paintClip{};
+    if (!bodyOnly && GetClipBox(dc, &paintClip) > NULLREGION &&
+        paintClip.left >= client.right - ui(kSettingsScrollbarReserve) &&
+        paintClip.top >= ui(kSettingsHeaderHeight)) {
+        paintSettingsScrollbar(hwnd, dc, 0);
+        return;
+    }
 
     const int contentLeft = bodyOnly ? ui(kSettingsBodyMargin)
                                      : ui(kSettingsSidebarWidth + kSettingsBodyMargin);
@@ -7635,9 +7653,9 @@ void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
 
 }
 
-void paintSettings(HWND hwnd, HDC dc) {
+void paintSettings(HWND hwnd, HDC dc, bool bodyOnly = false) {
     RECT client{};
-    GetClientRect(hwnd, &client);
+    if (GetClipBox(dc, &client) <= NULLREGION) return;
     const int width = client.right - client.left;
     const int height = client.bottom - client.top;
     HDC buffer = CreateCompatibleDC(dc);
@@ -7645,12 +7663,16 @@ void paintSettings(HWND hwnd, HDC dc) {
     if (!buffer || !bitmap) {
         if (bitmap) DeleteObject(bitmap);
         if (buffer) DeleteDC(buffer);
-        paintSettingsContent(hwnd, dc);
+        paintSettingsContent(hwnd, dc, bodyOnly);
         return;
     }
     HGDIOBJ previousBitmap = SelectObject(buffer, bitmap);
-    paintSettingsContent(hwnd, buffer);
-    BitBlt(dc, 0, 0, width, height, buffer, 0, 0, SRCCOPY);
+    // Buffer only the visible paint region, including scrolled content coordinates.
+    SetWindowOrgEx(buffer, client.left, client.top, nullptr);
+    IntersectClipRect(buffer, client.left, client.top, client.right, client.bottom);
+    paintSettingsContent(hwnd, buffer, bodyOnly);
+    BitBlt(dc, client.left, client.top, width, height,
+           buffer, client.left, client.top, SRCCOPY);
     SelectObject(buffer, previousBitmap);
     DeleteObject(bitmap);
     DeleteDC(buffer);
@@ -8779,7 +8801,7 @@ void updateSettingsTabControls(HWND hwnd, bool redraw) {
         const int contentHeight = std::max<LONG>(
             ui(std::max(0, layout.contentBottom - kSettingsHeaderHeight)), viewport.bottom);
         SetWindowPos(g_app->settingsBodyContent, nullptr,
-                     0, -ui(g_app->settingsScrollOffset), contentWidth, contentHeight,
+                     0, -g_app->settingsScrollOffset, contentWidth, contentHeight,
                      SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW);
     }
     for (const SettingsCardLayout& card : layout.cards) {
@@ -8833,7 +8855,7 @@ void updateSettingsTabControls(HWND hwnd, bool redraw) {
     if (redraw) InvalidateRect(hwnd, nullptr, FALSE);
 }
 
-// 更新设置页滚动位置，并立即重排可见子控件。
+// Move the content with its valid pixels; repaint only newly exposed regions.
 void setSettingsScrollPosition(HWND hwnd, int position, int maximum = -1) {
     if (!g_app || !hwnd) return;
     const int next = std::clamp(position, 0,
@@ -8841,16 +8863,12 @@ void setSettingsScrollPosition(HWND hwnd, int position, int maximum = -1) {
     if (next == g_app->settingsScrollOffset) return;
     g_app->settingsScrollOffset = next;
     if (g_app->settingsBodyContent) {
+        refreshSettingsScrollbar(hwnd);
         SetWindowPos(g_app->settingsBodyContent, nullptr,
-                     0, -ui(next), 0, 0,
-                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW);
+                     0, -next, 0, 0,
+                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
         RedrawWindow(g_app->settingsBodyViewport, nullptr, nullptr,
-                     RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
-        RECT client{};
-        GetClientRect(hwnd, &client);
-        const RECT scrollbarRect{client.right - ui(kSettingsScrollbarReserve),
-                                 ui(kSettingsHeaderHeight), client.right, client.bottom};
-        InvalidateRect(hwnd, &scrollbarRect, FALSE);
+                     RDW_ALLCHILDREN | RDW_NOERASE | RDW_UPDATENOW);
     }
 }
 
@@ -9692,7 +9710,7 @@ int settingsToggleAtPoint(int tab, int x, int y) {
     if (!g_app || !g_app->settings || g_app->settingsTab != tab) return 0;
     const SettingsLayout layout = buildSettingsLayout(g_app->settings);
     const int scroll = settingsTabIsScrollable()
-        ? ui(g_app->settingsScrollOffset) : 0;
+        ? g_app->settingsScrollOffset : 0;
     for (const SettingsCardLayout& card : layout.cards) {
         for (const SettingsRowLayout& row : card.rows) {
             for (std::size_t i = 0; i < row.controlIds.size(); ++i) {
@@ -12083,7 +12101,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             HDC dc = BeginPaint(hwnd, &ps);
             if (dc) {
                 if (hwnd == g_app->settingsBodyContent && g_app->settings) {
-                    paintSettingsContent(g_app->settings, dc, true);
+                    paintSettings(g_app->settings, dc, true);
                 } else {
                     RECT client{};
                     GetClientRect(hwnd, &client);
@@ -12133,7 +12151,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             RECT client{};
             GetClientRect(hwnd, &client);
             g_app->settingsBodyViewport = CreateWindowExW(
-                0, L"ClipLiteSettingsViewport", L"",
+                WS_EX_COMPOSITED, L"ClipLiteSettingsViewport", L"",
                 WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
                 ui(kSettingsSidebarWidth), ui(kSettingsHeaderHeight),
                  std::max<LONG>(0, client.right - ui(kSettingsSidebarWidth + kSettingsScrollbarReserve)),
@@ -12245,6 +12263,17 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         HDC dc = BeginPaint(hwnd, &ps);
         paintSettings(hwnd, dc);
         EndPaint(hwnd, &ps);
+        if (g_app->settingsBodyViewport) {
+            RECT viewport{};
+            GetWindowRect(g_app->settingsBodyViewport, &viewport);
+            MapWindowPoints(nullptr, hwnd, reinterpret_cast<POINT*>(&viewport), 2);
+            RECT intersection{};
+            // Full layout/theme refreshes include the body; scrollbar paints do not.
+            if (IntersectRect(&intersection, &ps.rcPaint, &viewport)) {
+                RedrawWindow(g_app->settingsBodyViewport, nullptr, nullptr,
+                             RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE | RDW_UPDATENOW);
+            }
+        }
         return 0;
     }
     if (hwnd == g_app->languageDropdown) {
@@ -13048,7 +13077,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (settingsTabIsScrollable() &&
                 point.x >= ui(kSettingsSidebarWidth) &&
                 point.y >= ui(kSettingsHeaderHeight)) {
-                const int direction = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -48 : 48;
+                const int direction = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -ui(48) : ui(48);
                 setSettingsScrollPosition(hwnd, g_app->settingsScrollOffset + direction);
                 return 0;
             }
@@ -13123,7 +13152,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                     g_app->settingsScrollDragStartY = y;
                     g_app->settingsScrollDragStartOffset = g_app->settingsScrollOffset;
                     SetCapture(hwnd);
-                    InvalidateRect(hwnd, nullptr, FALSE);
+                    refreshSettingsScrollbar(hwnd);
                 } else {
                     const int page = std::max(1, static_cast<int>(client.bottom) - ui(kSettingsHeaderHeight));
                     setSettingsScrollPosition(hwnd,
@@ -13155,7 +13184,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == WM_LBUTTONUP && g_app->settingsScrollDragging) {
             g_app->settingsScrollDragging = false;
             ReleaseCapture();
-            InvalidateRect(hwnd, nullptr, FALSE);
+            refreshSettingsScrollbar(hwnd);
             return 0;
         }
         if (message == WM_COMMAND) {
@@ -13990,7 +14019,7 @@ void openSettings() {
         (monitorInfo.rcWork.right - monitorInfo.rcWork.left - width) / 2;
     const int y = monitorInfo.rcWork.top +
         (monitorInfo.rcWork.bottom - monitorInfo.rcWork.top - height) / 2;
-    g_app->settings = CreateWindowExW(WS_EX_APPWINDOW | WS_EX_COMPOSITED, L"ClipLiteSettings",
+    g_app->settings = CreateWindowExW(WS_EX_APPWINDOW, L"ClipLiteSettings",
                                       settingsLocale().windowTitle,
                                        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
                                            WS_MINIMIZEBOX | WS_CLIPCHILDREN,
