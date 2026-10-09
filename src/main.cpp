@@ -3112,8 +3112,7 @@ void applyVisibleCandidates(const std::vector<std::size_t>& candidates,
         const bool typeMatches = isAutomaticTypeMatch(g_app->filterType, item.type);
         const bool specialItem = item.favorite || item.pinned;
         const bool categoryMatches = g_app->filterType == 0 ||
-            (!specialItem && typeMatches) ||
-            (g_app->settingsData.showSpecialAcrossCategories && specialItem);
+            (typeMatches && (!specialItem || g_app->settingsData.showSpecialAcrossCategories));
         if (categoryMatches && (!g_app->favoritesOnly || item.favorite) &&
             popupTimeMatches(g_app->filterTimeRange, item) &&
             popupLengthMatches(g_app->filterLength, item) && popupSourceMatches(item)) {
@@ -6855,8 +6854,8 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
                             {kSettingStartupSettings}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().showStartupNotification,
                             {kSettingStartupNotification}, {36}, {20}, contentWidth),
-            makeSettingsRow(hwnd, tr(L"Show favorites and pinned items in category lists",
-                                     L"在分类列表中显示收藏和置顶记录"),
+            makeSettingsRow(hwnd, tr(L"Show favorites in other category lists",
+                                     L"在其他分类列表中显示收藏"),
                             {kSettingSpecialAcrossCategories}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().runAsAdministrator,
                             {kSettingRunAsAdministrator}, {36}, {20}, contentWidth),
@@ -9341,8 +9340,8 @@ void appendPopupSpecialAcrossCategoriesMenu(HMENU menu) {
     AppendMenuW(menu, MF_STRING |
                 (g_app->settingsData.showSpecialAcrossCategories ? MF_CHECKED : 0),
                 kMenuSpecialAcrossCategories,
-                tr(L"Show favorites and pinned items in category lists",
-                   L"在分类列表中显示收藏和置顶记录"));
+                tr(L"Show favorites in other category lists",
+                   L"在其他分类列表中显示收藏"));
 }
 
 void togglePopupSpecialAcrossCategories() {

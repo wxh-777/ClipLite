@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Fixed pinned items losing top position after history reorder or new copies. Pin priority is now applied by storage sorting and retained after restart.
+- Updated category filtering: favorites may appear across types according to Settings, while pinned items always respect the selected content type.
 - Added the category-list favorites and pins toggle to the history window context menu with immediate list refresh.
 - Split history item state into independent favorites and pins. Favorites retain cleanup protection; pins stay above other matching results and can coexist with favorites. Existing pinned flags migrate to favorites.
 - Added an automatic-cleanup protection toggle for pins (off by default), a type-list visibility toggle for favorites and pins (on by default), and a separate favorite star in each history item.

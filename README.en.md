@@ -28,7 +28,7 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 - Runs in the system tray and restores its tray icon after Explorer restarts or refreshes the taskbar.
 - Limits for record count, disk usage, retention period, item size, and monitoring pause.
 - Favorites are protected from automatic and manual non-favorite cleanup. Pinned records stay at the top of matching history results; protection from automatic cleanup is optional and off by default.
-- Favorites and pinned records are shown in type-filtered lists by default. When disabled, they remain available in All and Favorites filters.
+- Favorites appear in other type-filtered lists by default; pinned items always respect the selected type. Favorite cross-category display can be disabled in Settings; All and Favorites filters remain unaffected.
 - Source application filtering, sensitive text expiry, and optional Windows DPAPI user encryption.
 - Installer and portable distribution modes; clipboard archiving, history reads, and usage statistics run through short-lived worker tasks without keeping the full history payload in memory.
 - The About page opens the GitHub source and checks GitHub Releases. ClipLite also performs one background update check after startup without blocking clipboard features.
