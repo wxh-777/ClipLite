@@ -565,6 +565,40 @@ int main() {
     repairedOrdering.clear();
     legacyOrdering.clear();
 
+    ClipStore historyClear(10);
+    if (!historyClear.open() || !historyClear.clear() ||
+        !historyClear.clearUnfavorited(true)) return 150;
+    for (int flags = 0; flags < 4; ++flags) {
+        const std::string value = "clear-" + std::to_string(flags);
+        if (!historyClear.append(ClipType::Text, value, clipLiteHash(value))) return 151;
+        if ((flags & 1) && !historyClear.toggleFavorite(historyClear.findHash(clipLiteHash(value)))) return 152;
+        if ((flags & 2) && !historyClear.togglePinned(historyClear.findHash(clipLiteHash(value)))) return 153;
+    }
+    const std::uint64_t clearRevision = historyClear.revision();
+    HANDLE lockedHistory = CreateFileW(historyClear.path().c_str(), GENERIC_READ, FILE_SHARE_READ,
+                                       nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (lockedHistory == INVALID_HANDLE_VALUE) return 154;
+    const bool lockedClear = historyClear.clearUnfavorited(true);
+    CloseHandle(lockedHistory);
+    if (lockedClear || historyClear.activeCount() != 4 || historyClear.revision() != clearRevision) return 155;
+    if (!historyClear.clearUnfavorited(true) || historyClear.activeCount() != 3 ||
+        historyClear.findHash(clipLiteHash("clear-0")) != historyClear.activeCount()) return 156;
+    ClipStore clearReopened(10);
+    if (!clearReopened.open() || clearReopened.activeCount() != 3) return 157;
+    for (const ClipItem& item : clearReopened.items()) {
+        if ((!item.pinned && !item.favorite) || !clearReopened.readPayload(
+            clearReopened.findHash(item.hash), restored) || restored != item.preview) return 158;
+    }
+    if (!clearReopened.clearUnfavorited() || clearReopened.activeCount() != 2) return 159;
+    ClipStore favoritesReopened(10);
+    if (!favoritesReopened.open() || favoritesReopened.activeCount() != 2) return 160;
+    for (const ClipItem& item : favoritesReopened.items()) {
+        if (!item.favorite) return 161;
+    }
+    if (!favoritesReopened.clear()) return 162;
+    ClipStore emptyReopened(10);
+    if (!emptyReopened.open() || emptyReopened.activeCount() != 0) return 163;
+
     ClipStore pressure(10000);
     pressure.open();
     pressure.clear();

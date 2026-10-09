@@ -1404,12 +1404,12 @@ bool ClipStore::clearType(ClipType type) {
     return false;
 }
 
-bool ClipStore::clearUnfavorited() {
+bool ClipStore::clearUnfavorited(bool protectPinned) {
     const auto oldSize = items_.size();
     const std::vector<ClipItem> backup = items_;
     items_.erase(std::remove_if(items_.begin(), items_.end(),
-                                [](const ClipItem& item) {
-                                    return !item.favorite;
+                                [protectPinned](const ClipItem& item) {
+                                    return !item.favorite && !(protectPinned && item.pinned);
     }), items_.end());
     if (items_.size() == oldSize) return true;
     if (rebuildFile()) {

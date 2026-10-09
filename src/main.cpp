@@ -149,6 +149,10 @@ constexpr int kMenuPreviewDisabled = 110;
 constexpr int kMenuPreviewMode = 113;
 constexpr int kMenuSearchOnOpen = 111;
 constexpr int kMenuSpecialAcrossCategories = 112;
+constexpr int kMenuClearHistory = 114;
+constexpr int kMenuClearOrdinary = 115;
+constexpr int kMenuClearUnfavorited = 116;
+constexpr int kMenuClearAll = 117;
 constexpr int kFilterAll = 130;
 constexpr int kFilterText = 131;
 constexpr int kFilterFiles = 132;
@@ -491,6 +495,8 @@ struct AppState {
     bool popupContextMenuOpen = false;
     HWND popupContextMenu = nullptr;
     HWND popupContextSubmenu = nullptr;
+    int popupContextSubmenuCommand = 0;
+    bool popupConfirmingClear = false;
     int popupContextMenuHover = -1;
     int popupContextMenuPendingSubmenu = -1;
     int popupContextSubmenuHover = -1;
@@ -864,7 +870,7 @@ void closePopupContextMenu();
 bool popupContextMenuContainsPoint(POINT point);
 void showPopupContextMenu(HWND hwnd, int row);
 void executePopupContextCommand(int command);
-void showPopupContextPreviewSubmenu(int row);
+void showPopupContextSubmenu(int row);
 void closePopupContextSubmenu();
 void togglePopupPromotePastedItem();
 LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -9483,15 +9489,20 @@ void closePopupContextSubmenu() {
     g_app->popupContextSubmenuHover = -1;
     if (g_app->popupContextSubmenu) DestroyWindow(g_app->popupContextSubmenu);
     g_app->popupContextSubmenu = nullptr;
+    g_app->popupContextSubmenuCommand = 0;
 }
 
-void showPopupContextPreviewSubmenu(int row) {
-    if (!g_app || !g_app->popupContextMenu) return;
-    if (g_app->popupContextSubmenu && IsWindow(g_app->popupContextSubmenu)) return;
+void showPopupContextSubmenu(int row) {
+    if (!g_app || !g_app->popupContextMenu || row < 0 ||
+        row >= static_cast<int>(g_app->popupContextMenuItems.size())) return;
+    const int command = g_app->popupContextMenuItems[static_cast<std::size_t>(row)].command;
+    if (g_app->popupContextSubmenu && IsWindow(g_app->popupContextSubmenu) &&
+        g_app->popupContextSubmenuCommand == command) return;
     closePopupContextSubmenu();
+    g_app->popupContextSubmenuCommand = command;
     RECT mainRect{};
     GetWindowRect(g_app->popupContextMenu, &mainRect);
-    const int width = ui(kPopupContextSubmenuWidth);
+    const int width = ui(command == kMenuClearHistory ? 300 : kPopupContextSubmenuWidth);
     const int height = ui(3 * kPopupContextMenuRowHeight + 10);
     HMONITOR monitor = MonitorFromWindow(g_app->popupContextMenu, MONITOR_DEFAULTTONEAREST);
     MONITORINFO info{sizeof(info)};
@@ -9510,20 +9521,21 @@ void showPopupContextPreviewSubmenu(int row) {
     UpdateWindow(g_app->popupContextSubmenu);
 }
 
-void paintPopupContextPreviewSubmenu(HWND hwnd, HDC dc) {
+void paintPopupContextSubmenu(HWND hwnd, HDC dc) {
     RECT client{};
     GetClientRect(hwnd, &client);
     paintPopupMenuSurface(dc, client, themeColor(ThemeColorRole::SurfaceBackground),
                           themeColor(ThemeColorRole::Border));
     SetBkMode(dc, TRANSPARENT);
     SelectObject(dc, g_app->popupFilterFont);
+    const bool clearing = g_app->popupContextSubmenuCommand == kMenuClearHistory;
     const wchar_t* labels[] = {
-        settingsLocale().automaticPreview,
-        settingsLocale().keyPreview,
-        settingsLocale().previewDisabled,
+        clearing ? tr(L"Delete unpinned, non-favorite records", L"仅删除非置顶、非收藏记录") : settingsLocale().automaticPreview,
+        clearing ? tr(L"Delete all except favorites", L"删除收藏以外的所有记录") : settingsLocale().keyPreview,
+        clearing ? tr(L"Delete all, including pins and favorites", L"删除所有记录（包含置顶、收藏）") : settingsLocale().previewDisabled,
     };
-    const int active = g_app->settingsData.previewAutomatic ? 0
-        : (g_app->settingsData.previewByKey ? 1 : 2);
+    const int active = clearing ? -1 : (g_app->settingsData.previewAutomatic ? 0
+        : (g_app->settingsData.previewByKey ? 1 : 2));
     for (int row = 0; row < 3; ++row) {
         const int top = ui(5 + row * kPopupContextMenuRowHeight);
         const RECT itemRect{ui(5), top, client.right - ui(5), top + ui(kPopupContextMenuRowHeight)};
@@ -9535,10 +9547,45 @@ void paintPopupContextPreviewSubmenu(HWND hwnd, HDC dc) {
         RECT check{ui(12), top, ui(27), itemRect.bottom};
         if (row == active) DrawTextW(dc, L"\x2713", -1, &check,
                                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        RECT label{ui(32), top, client.right - ui(12), itemRect.bottom};
+        RECT label{ui(clearing ? 16 : 32), top, client.right - ui(12), itemRect.bottom};
         DrawTextW(dc, labels[row], -1, &label, DT_LEFT | DT_VCENTER | DT_SINGLELINE |
                   DT_END_ELLIPSIS);
     }
+}
+
+void clearPopupHistory(int command) {
+    const HWND hwnd = g_app->popup;
+    std::size_t count = 0;
+    for (const ClipItem& item : g_app->store.items()) {
+        if (command == kMenuClearAll ||
+            (!item.favorite && (command == kMenuClearUnfavorited || !item.pinned))) ++count;
+    }
+    const wchar_t* scope = command == kMenuClearOrdinary
+        ? tr(L"Pinned and favorite records will be kept.", L"将保留所有置顶和收藏记录。")
+        : command == kMenuClearUnfavorited
+            ? tr(L"Only favorites will be kept; non-favorite pinned records will also be deleted.",
+                 L"仅保留收藏记录，未收藏的置顶记录也会删除。")
+            : tr(L"All records, including pinned and favorite records, will be deleted.",
+                 L"所有记录都将删除，包括置顶和收藏记录。");
+    wchar_t message[512]{};
+    swprintf_s(message, tr(L"Permanently delete %zu records from the entire history?\n\n%ls\n\nThis cannot be undone. Continue?",
+                          L"将从全部历史中永久删除 %zu 条记录。\n\n%ls\n\n此操作无法撤销，是否继续？"), count, scope);
+    g_app->popupConfirmingClear = true;
+    KillTimer(hwnd, kPopupDeactivateTimer);
+    const int answer = MessageBoxW(hwnd, message, settingsLocale().confirmClearTitle,
+                                  MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+    if (answer == IDYES) {
+        const bool success = command == kMenuClearAll ? g_app->store.clear()
+            : g_app->store.clearUnfavorited(command == kMenuClearOrdinary);
+        if (success) {
+            refreshVisible(true);
+            if (g_app->settings) InvalidateRect(g_app->settings, nullptr, FALSE);
+        } else {
+            MessageBoxW(hwnd, settingsLocale().clearFailed, settingsLocale().confirmClearTitle,
+                        MB_OK | MB_ICONERROR);
+        }
+    }
+    g_app->popupConfirmingClear = false;
 }
 
 void executePopupContextCommand(int command) {
@@ -9550,6 +9597,7 @@ void executePopupContextCommand(int command) {
     else if (command == kMenuPreviewAutomatic) setPopupPreviewOptions(true, false);
     else if (command == kMenuPreviewByKey) setPopupPreviewOptions(false, true);
     else if (command == kMenuPreviewDisabled) setPopupPreviewOptions(false, false);
+    else if (command >= kMenuClearOrdinary && command <= kMenuClearAll) clearPopupHistory(command);
     else if (command == kMenuPaste) sendPaste();
     else if (command == kMenuPastePlain) sendPaste(PasteMode::PlainText);
     else if (command == kMenuPasteRich) sendPaste(PasteMode::RichText);
@@ -9598,6 +9646,7 @@ void showPopupContextMenu(HWND hwnd, int row) {
         g_app->popupContextMenuItems.push_back({kMenuDelete, settingsLocale().popupDelete});
     }
     g_app->popupContextMenuItems.push_back({kMenuFilter, settingsLocale().popupFilter});
+    g_app->popupContextMenuItems.push_back({kMenuClearHistory, tr(L"Clear history", L"清理历史记录")});
 
     POINT point{0, 0};
     GetCursorPos(&point);
@@ -9644,7 +9693,8 @@ void paintPopupContextMenuWindow(HWND hwnd, HDC dc) {
         RECT label{ui(16), top, client.right - ui(32), row.bottom};
         DrawTextW(dc, g_app->popupContextMenuItems[i].label.c_str(), -1, &label,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        if (g_app->popupContextMenuItems[i].command == kMenuPreviewMode) {
+        if (g_app->popupContextMenuItems[i].command == kMenuPreviewMode ||
+            g_app->popupContextMenuItems[i].command == kMenuClearHistory) {
             RECT arrow{client.right - ui(26), top, client.right - ui(10), row.bottom};
             SetTextColor(dc, themeColor(ThemeColorRole::SecondaryText));
             DrawTextW(dc, L">", -1, &arrow, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -11706,8 +11756,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == WM_LBUTTONUP) {
             const int row = (GET_Y_LPARAM(lParam) - ui(5)) / ui(kPopupContextMenuRowHeight);
             if (row >= 0 && row < 3) {
+                const int command = (g_app->popupContextSubmenuCommand == kMenuClearHistory
+                    ? kMenuClearOrdinary : kMenuPreviewAutomatic) + row;
                 closePopupContextMenu();
-                executePopupContextCommand(kMenuPreviewAutomatic + row);
+                executePopupContextCommand(command);
             }
             return 0;
         }
@@ -11722,7 +11774,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             HBITMAP bitmap = buffer ? CreateCompatibleBitmap(dc, width, height) : nullptr;
             if (buffer && bitmap) {
                 HGDIOBJ oldBitmap = SelectObject(buffer, bitmap);
-                paintPopupContextPreviewSubmenu(hwnd, buffer);
+                paintPopupContextSubmenu(hwnd, buffer);
                 BitBlt(dc, 0, 0, width, height, buffer, 0, 0, SRCCOPY);
                 SelectObject(buffer, oldBitmap);
                 DeleteObject(bitmap);
@@ -11730,7 +11782,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             } else {
                 if (bitmap) DeleteObject(bitmap);
                 if (buffer) DeleteDC(buffer);
-                paintPopupContextPreviewSubmenu(hwnd, dc);
+                paintPopupContextSubmenu(hwnd, dc);
             }
             EndPaint(hwnd, &ps);
             return 0;
@@ -11755,28 +11807,34 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const int row = (GET_Y_LPARAM(lParam) - ui(5)) / ui(kPopupContextMenuRowHeight);
             const int next = row >= 0 && row < static_cast<int>(g_app->popupContextMenuItems.size())
                 ? row : -1;
-            if (next != g_app->popupContextMenuHover) {
+            const bool hoverChanged = next != g_app->popupContextMenuHover;
+            if (hoverChanged) {
                 g_app->popupContextMenuHover = next;
-                if (next >= 0 && next < static_cast<int>(g_app->popupContextMenuItems.size()) &&
-                    g_app->popupContextMenuItems[static_cast<std::size_t>(next)].command == kMenuPreviewMode) {
-                    if (next != g_app->popupContextMenuPendingSubmenu) {
-                        g_app->popupContextMenuPendingSubmenu = next;
-                        KillTimer(hwnd, kFilterSubmenuHoverTimer);
-                        SetTimer(hwnd, kFilterSubmenuHoverTimer,
-                                 kFilterSubmenuHoverDelayMs, nullptr);
-                    }
-                } else {
-                    KillTimer(hwnd, kFilterSubmenuHoverTimer);
-                    g_app->popupContextMenuPendingSubmenu = -1;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            const int command = next >= 0
+                ? g_app->popupContextMenuItems[static_cast<std::size_t>(next)].command : 0;
+            if (command == kMenuPreviewMode || command == kMenuClearHistory) {
+                KillTimer(hwnd, kPopupContextSubmenuHideTimer);
+                if ((!g_app->popupContextSubmenu || g_app->popupContextSubmenuCommand != command) &&
+                    next != g_app->popupContextMenuPendingSubmenu) {
+                    g_app->popupContextMenuPendingSubmenu = next;
+                    SetTimer(hwnd, kFilterSubmenuHoverTimer,
+                             kFilterSubmenuHoverDelayMs, nullptr);
+                }
+            } else {
+                KillTimer(hwnd, kFilterSubmenuHoverTimer);
+                g_app->popupContextMenuPendingSubmenu = -1;
+                if (g_app->popupContextSubmenu && hoverChanged) {
                     SetTimer(hwnd, kPopupContextSubmenuHideTimer,
                              kFilterSubmenuHoverDelayMs, nullptr);
                 }
-                InvalidateRect(hwnd, nullptr, FALSE);
             }
             return 0;
         }
         if (message == WM_TIMER && wParam == kPopupContextSubmenuHideTimer) {
             KillTimer(hwnd, kPopupContextSubmenuHideTimer);
+            if (g_app->popupContextMenuPendingSubmenu >= 0) return 0;
             POINT cursor{};
             GetCursorPos(&cursor);
             RECT submenuRect{};
@@ -11786,32 +11844,31 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 return 0;
             }
             RECT menuRect{};
-            bool keepForPreviewRow = false;
+            bool keepForSubmenuRow = false;
             if (g_app->popupContextMenu && GetWindowRect(g_app->popupContextMenu, &menuRect) &&
                 PtInRect(&menuRect, cursor)) {
                 POINT clientPoint = cursor;
                 ScreenToClient(g_app->popupContextMenu, &clientPoint);
                 const int row = (clientPoint.y - ui(5)) / ui(kPopupContextMenuRowHeight);
-                keepForPreviewRow = row >= 0 &&
+                keepForSubmenuRow = row >= 0 &&
                     row < static_cast<int>(g_app->popupContextMenuItems.size()) &&
                     g_app->popupContextMenuItems[static_cast<std::size_t>(row)].command ==
-                        kMenuPreviewMode;
+                        g_app->popupContextSubmenuCommand;
             }
-            if (!keepForPreviewRow) closePopupContextSubmenu();
+            if (!keepForSubmenuRow) closePopupContextSubmenu();
             return 0;
         }
         if (message == WM_TIMER && wParam == kFilterSubmenuHoverTimer) {
             KillTimer(hwnd, kFilterSubmenuHoverTimer);
             const int pending = g_app->popupContextMenuPendingSubmenu;
+            g_app->popupContextMenuPendingSubmenu = -1;
             POINT cursor{};
             GetCursorPos(&cursor);
             ScreenToClient(hwnd, &cursor);
             const int row = (cursor.y - ui(5)) / ui(kPopupContextMenuRowHeight);
             if (g_app->popupContextMenuOpen && pending >= 0 && row == pending &&
                 cursor.x >= ui(5) && cursor.x < ui(kPopupContextMenuWidth - 5)) {
-                showPopupContextPreviewSubmenu(pending);
-            } else {
-                g_app->popupContextMenuPendingSubmenu = -1;
+                showPopupContextSubmenu(pending);
             }
             return 0;
         }
@@ -11829,7 +11886,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const int row = (GET_Y_LPARAM(lParam) - ui(5)) / ui(kPopupContextMenuRowHeight);
             if (row >= 0 && row < static_cast<int>(g_app->popupContextMenuItems.size())) {
                 const int command = g_app->popupContextMenuItems[static_cast<std::size_t>(row)].command;
-                if (command == kMenuPreviewMode) return 0;
+                if (command == kMenuPreviewMode || command == kMenuClearHistory) {
+                    showPopupContextSubmenu(row);
+                    return 0;
+                }
                 closePopupContextMenu();
                 executePopupContextCommand(command);
             } else {
@@ -13379,6 +13439,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
 
     if (hwnd == g_app->popup) {
+        if (g_app->popupConfirmingClear &&
+            (message == WM_ACTIVATE || message == WM_ACTIVATEAPP || message == WM_CLOSE ||
+             (message == WM_TIMER && wParam == kPopupDeactivateTimer))) return 0;
         if (message == WM_MOUSEACTIVATE) {
             return g_app->popupImeMode ? MA_ACTIVATE : MA_NOACTIVATE;
         }

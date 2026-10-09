@@ -75,7 +75,7 @@ public:
     bool pruneCategory(ClipType type, std::size_t maxItems, std::uint64_t maxBytes);
     bool clear();
     bool clearType(ClipType type);
-    bool clearUnfavorited();
+    bool clearUnfavorited(bool protectPinned = false);
     bool clearTypeUnfavorited(ClipType type);
     bool pruneExpired(std::uint64_t timestamp);
 
