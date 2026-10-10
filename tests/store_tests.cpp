@@ -333,6 +333,26 @@ int main() {
         htmlSearch.search("personal").size() != 1 || htmlSearch.search("23").size() != 0) return 83;
     htmlSearch.clear();
 
+    const std::string longHtmlText(5000, 'x');
+    const std::string longHtmlBody = "<p>formatting</p>";
+    const TestStoredHtmlHeader longHtmlHeader{0x314D5448,
+                                              static_cast<std::uint32_t>(longHtmlText.size()),
+                                              static_cast<std::uint32_t>(longHtmlBody.size())};
+    std::string longHtmlPayload(reinterpret_cast<const char*>(&longHtmlHeader),
+                                sizeof(longHtmlHeader));
+    longHtmlPayload += longHtmlText;
+    longHtmlPayload += longHtmlBody;
+    ClipStore longHtml(10);
+    longHtml.open();
+    longHtml.clear();
+    if (!longHtml.append(ClipType::Html, longHtmlPayload, clipLiteHash(longHtmlPayload)) ||
+        longHtml.items()[0].preview != std::string(256, 'x')) return 264;
+    ClipStore longHtmlReopened(10);
+    if (!longHtmlReopened.open() || longHtmlReopened.activeCount() != 1 ||
+        longHtmlReopened.items()[0].preview != std::string(256, 'x')) return 265;
+    longHtmlReopened.clear();
+    longHtml.clear();
+
     ClipStore textEditing(10);
     textEditing.open();
     textEditing.clear();

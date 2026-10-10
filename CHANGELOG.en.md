@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added configurable shortcuts for editing text, pinning the history window, showing favorites across categories, and opening filters; the defaults are `Ctrl + E`, `Ctrl + Alt + P`, `Ctrl + Alt + F`, and `Ctrl + Shift + F`, while `Ctrl + F` focuses the search box.
+- The history window context menu now shows the configured paste, delete, and hold-to-preview shortcuts in a right-aligned column.
+- Fixed long HTML text being shown as invalid text after the history was restored on restart; detail previews now extract scrollable text from the full payload and handle UTF-8 boundaries more strictly.
 - Added plain-text editing for Text and HTML history items from the context menu, with save in place, save as new, and save-and-paste actions; saving an HTML item may discard its formatting.
 - Edit saves now append only the replacement version and mark the old record deleted instead of rewriting all v4 history. In-place saves retain the original record identity, while save-as-new compares complete plain-text content and reuses an existing match instead of creating duplicates.
 - Improved history performance: single deletes, batch cleanup, expiry cleanup, category changes, and ordinary updates no longer immediately rewrite all of `history.bin`; obsolete space is compacted on startup when it crosses the threshold.

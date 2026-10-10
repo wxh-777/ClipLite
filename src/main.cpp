@@ -120,6 +120,11 @@ constexpr int kSettingShortcutClosePopup = 56;
 constexpr int kSettingShortcutPopupSettings = 57;
 constexpr int kSettingShortcutClearFilter = 58;
 constexpr int kSettingShortcutDelete = 59;
+constexpr int kSettingShortcutEditText = 142;
+constexpr int kSettingShortcutPinPopup = 143;
+constexpr int kSettingShortcutSpecialCategories = 144;
+constexpr int kSettingShortcutFilter = 145;
+constexpr int kShortcutSearchFocus = 146;
 constexpr int kSettingCategoryMaxBase = 60;
 constexpr int kSettingCategoryDiskBase = 64;
 constexpr int kSettingFixedTheme = 70;
@@ -350,6 +355,10 @@ struct Settings {
     ShortcutBinding popupClearFilterHotkey{MOD_CONTROL, '0'};
     ShortcutBinding popupDeleteHotkey{0, VK_DELETE};
     ShortcutBinding popupPreviewHotkey{0, VK_F2};
+    ShortcutBinding popupEditTextHotkey{MOD_CONTROL, 'E'};
+    ShortcutBinding popupPinHotkey{MOD_CONTROL | MOD_ALT, 'P'};
+    ShortcutBinding popupSpecialCategoriesHotkey{MOD_CONTROL | MOD_ALT, 'F'};
+    ShortcutBinding popupFilterHotkey{MOD_CONTROL | MOD_SHIFT, 'F'};
     std::array<CategoryLimit, kStorageCategoryCount> categoryLimits{};
 };
 
@@ -932,6 +941,7 @@ void closePopupContextSubmenu();
 void togglePopupPromotePastedItem();
 LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 UINT shortcutModifiersFromKeyboard();
+bool shortcutMatches(const ShortcutBinding& binding, UINT virtualKey);
 const wchar_t* shortcutActionLabel(int id);
 std::wstring formatShortcut(const ShortcutBinding& binding);
 struct ShortcutConflict {
@@ -1109,6 +1119,10 @@ struct SettingsLocale {
     const wchar_t* openSettingsInHistory;
     const wchar_t* clearHistoryFilter;
     const wchar_t* deleteSelectedRecord;
+    const wchar_t* editSelectedText;
+    const wchar_t* pinHistoryWindow;
+    const wchar_t* showFavoritesOtherCategories;
+    const wchar_t* openHistoryFilter;
     const wchar_t* registrationStatus;
     const wchar_t* dataRetention;
     const wchar_t* maximumRecords;
@@ -1263,10 +1277,11 @@ const SettingsLocale kEnglishSettingsLocale{
     L"Pause clipboard monitoring", L"Start with Windows", L"Open settings after startup",
     L"Show startup notification", L"Run ClipLite as administrator (restart required to disable)",
     L"Important system shortcut", L"Force replace Win + V", L"Global shortcuts", L"Open clipboard history", L"Open settings",
-    L"Pause/resume clipboard monitoring", L"History window shortcuts", L"Paste selected item",
-    L"Move pasted item to top", L"Paste as plain text", L"Paste as rich text", L"Close history window",
-    L"Open settings in history window", L"Clear history filter", L"Delete selected record",
-    L"Registration status", L"Data retention", L"Maximum records", L"Retention days (0 = forever)",
+     L"Pause/resume clipboard monitoring", L"History window shortcuts", L"Paste selected item",
+     L"Move pasted item to top", L"Paste as plain text", L"Paste as rich text", L"Close history window",
+     L"Open settings in history window", L"Clear history filter", L"Delete selected record",
+     L"Edit selected text", L"Pin history window", L"Show favorites in other categories", L"Open history filter",
+     L"Registration status", L"Data retention", L"Maximum records", L"Retention days (0 = forever)",
     L"Maximum disk space (MB)", L"Maximum item size (MB)", L"Cache directory", L"Text", L"Images",
     L"Files", L"Category storage", L"History statistics", L"Privacy protection",
     L"Protect history with Windows user encryption",
@@ -1319,8 +1334,9 @@ const SettingsLocale kChineseSettingsLocale{
     L"搜索输入兼容模式\n保持原应用前台；按 Ctrl + Space 使用中文输入法。", L"暂停剪贴板监听", L"随 Windows 启动",
     L"启动后打开设置", L"启动后显示系统提示", L"以管理员权限运行（关闭后下次启动生效）",
     L"重要系统快捷键", L"强制替换 Win + V", L"全局快捷键", L"打开剪贴板历史", L"打开设置",
-    L"暂停/恢复剪贴板监听", L"历史窗口快捷键", L"粘贴选中项目", L"粘贴后移到首位", L"粘贴为纯文本", L"粘贴为富文本",
-    L"关闭历史窗口", L"在历史窗口打开设置", L"清除历史筛选", L"删除选中记录", L"注册状态",
+     L"暂停/恢复剪贴板监听", L"历史窗口快捷键", L"粘贴选中项目", L"粘贴后移到首位", L"粘贴为纯文本", L"粘贴为富文本",
+     L"关闭历史窗口", L"在历史窗口打开设置", L"清除历史筛选", L"删除选中记录",
+     L"编辑选中文本", L"置顶历史窗口", L"在其他分类中显示收藏", L"打开历史筛选", L"注册状态",
     L"数据保留策略", L"最大记录数", L"保留天数（0 = 永久）", L"最大磁盘空间（MB）",
     L"单条内容上限（MB）", L"缓存目录", L"文本", L"图片", L"文件", L"分类存储设置",
     L"历史记录统计", L"隐私保护", L"使用 Windows 用户加密保护历史",
@@ -1616,6 +1632,16 @@ void loadSettings(Settings& settings) {
         readShortcutValue("shortcutPopupDeleteKey=", settings.popupDeleteHotkey.virtualKey);
         readShortcutValue("shortcutPopupPreviewModifiers=", settings.popupPreviewHotkey.modifiers);
         readShortcutValue("shortcutPopupPreviewKey=", settings.popupPreviewHotkey.virtualKey);
+        readShortcutValue("shortcutPopupEditTextModifiers=", settings.popupEditTextHotkey.modifiers);
+        readShortcutValue("shortcutPopupEditTextKey=", settings.popupEditTextHotkey.virtualKey);
+        readShortcutValue("shortcutPopupPinModifiers=", settings.popupPinHotkey.modifiers);
+        readShortcutValue("shortcutPopupPinKey=", settings.popupPinHotkey.virtualKey);
+        readShortcutValue("shortcutPopupSpecialCategoriesModifiers=",
+                          settings.popupSpecialCategoriesHotkey.modifiers);
+        readShortcutValue("shortcutPopupSpecialCategoriesKey=",
+                          settings.popupSpecialCategoriesHotkey.virtualKey);
+        readShortcutValue("shortcutPopupFilterModifiers=", settings.popupFilterHotkey.modifiers);
+        readShortcutValue("shortcutPopupFilterKey=", settings.popupFilterHotkey.virtualKey);
     }
     std::fclose(file);
     if (settings.themeMode < 0) settings.themeMode = settings.dark ? 2 : 1;
@@ -1646,6 +1672,12 @@ void loadSettings(Settings& settings) {
     normalizePopupShortcut(settings.popupClearFilterHotkey, ShortcutBinding{MOD_CONTROL, '0'});
     normalizePopupShortcut(settings.popupDeleteHotkey, ShortcutBinding{0, VK_DELETE});
     normalizePopupShortcut(settings.popupPreviewHotkey, ShortcutBinding{0, VK_F2});
+    normalizePopupShortcut(settings.popupEditTextHotkey, ShortcutBinding{MOD_CONTROL, 'E'});
+    normalizePopupShortcut(settings.popupPinHotkey, ShortcutBinding{MOD_CONTROL | MOD_ALT, 'P'});
+    normalizePopupShortcut(settings.popupSpecialCategoriesHotkey,
+                           ShortcutBinding{MOD_CONTROL | MOD_ALT, 'F'});
+    normalizePopupShortcut(settings.popupFilterHotkey,
+                           ShortcutBinding{MOD_CONTROL | MOD_SHIFT, 'F'});
 }
 
 void saveSettings(const Settings& settings) {
@@ -1700,9 +1732,19 @@ void saveSettings(const Settings& settings) {
            << "shortcutPopupClearFilterModifiers=" << settings.popupClearFilterHotkey.modifiers << "\n"
            << "shortcutPopupClearFilterKey=" << settings.popupClearFilterHotkey.virtualKey << "\n"
            << "shortcutPopupDeleteModifiers=" << settings.popupDeleteHotkey.modifiers << "\n"
-           << "shortcutPopupDeleteKey=" << settings.popupDeleteHotkey.virtualKey << "\n"
-           << "shortcutPopupPreviewModifiers=" << settings.popupPreviewHotkey.modifiers << "\n"
-           << "shortcutPopupPreviewKey=" << settings.popupPreviewHotkey.virtualKey << "\n";
+            << "shortcutPopupDeleteKey=" << settings.popupDeleteHotkey.virtualKey << "\n"
+            << "shortcutPopupPreviewModifiers=" << settings.popupPreviewHotkey.modifiers << "\n"
+            << "shortcutPopupPreviewKey=" << settings.popupPreviewHotkey.virtualKey << "\n"
+            << "shortcutPopupEditTextModifiers=" << settings.popupEditTextHotkey.modifiers << "\n"
+            << "shortcutPopupEditTextKey=" << settings.popupEditTextHotkey.virtualKey << "\n"
+            << "shortcutPopupPinModifiers=" << settings.popupPinHotkey.modifiers << "\n"
+            << "shortcutPopupPinKey=" << settings.popupPinHotkey.virtualKey << "\n"
+            << "shortcutPopupSpecialCategoriesModifiers=" <<
+                settings.popupSpecialCategoriesHotkey.modifiers << "\n"
+            << "shortcutPopupSpecialCategoriesKey=" <<
+                settings.popupSpecialCategoriesHotkey.virtualKey << "\n"
+            << "shortcutPopupFilterModifiers=" << settings.popupFilterHotkey.modifiers << "\n"
+            << "shortcutPopupFilterKey=" << settings.popupFilterHotkey.virtualKey << "\n";
     for (const std::string& app : settings.ignoredApps) output << "ignoredApp=" << app << "\n";
     for (int i = 0; i < 4; ++i) {
         output << "category" << i << "=" << settings.categories[static_cast<std::size_t>(i)] << "\n";
@@ -1954,9 +1996,18 @@ std::string utf8PreviewPrefix(const std::string& value, std::size_t maxBytes) {
         const unsigned char lead = static_cast<unsigned char>(value[end]);
         const std::size_t sequenceSize = lead <= 0x7F ? 1 :
             (lead >= 0xC2 && lead <= 0xDF ? 2 :
-             (lead >= 0xE0 && lead <= 0xEF ? 3 :
-              (lead >= 0xF0 && lead <= 0xF4 ? 4 : 0)));
+              (lead >= 0xE0 && lead <= 0xEF ? 3 :
+               (lead >= 0xF0 && lead <= 0xF4 ? 4 : 0)));
         if (sequenceSize == 0 || sequenceSize > length - end) break;
+        const unsigned char second = sequenceSize > 1
+            ? static_cast<unsigned char>(value[end + 1]) : 0;
+        if (sequenceSize > 1 &&
+            ((lead == 0xE0 && second < 0xA0) ||
+             (lead == 0xED && second > 0x9F) ||
+             (lead == 0xF0 && second < 0x90) ||
+             (lead == 0xF4 && second > 0x8F))) {
+            break;
+        }
         bool valid = true;
         for (std::size_t index = 1; index < sequenceSize; ++index) {
             if ((static_cast<unsigned char>(value[end + index]) & 0xC0) != 0x80) {
@@ -2083,6 +2134,40 @@ bool splitStoredHtml(const std::string& payload, std::string& text, std::string&
     text.assign(payload.data() + dataOffset, header.textSize);
     html.assign(payload.data() + dataOffset + header.textSize, header.htmlSize);
     return !html.empty();
+}
+
+// 提取 HTML 记录中的可见文本前缀，避免详情预览复用短卡片摘要。
+std::string htmlTextPreviewPrefix(const std::string& payload, std::size_t maxBytes) {
+    if (payload.size() < sizeof(StoredHtmlHeader) || maxBytes == 0) return {};
+    StoredHtmlHeader header{};
+    std::memcpy(&header, payload.data(), sizeof(header));
+    const std::size_t dataOffset = sizeof(header);
+    const std::size_t contentSize = payload.size() - dataOffset;
+    if (header.magic != kStoredHtmlMagic || header.textSize > contentSize ||
+        header.htmlSize > contentSize - header.textSize ||
+        static_cast<std::size_t>(header.textSize) + header.htmlSize != contentSize) {
+        return {};
+    }
+    if (header.textSize > 0) {
+        const std::size_t textSize = std::min<std::size_t>(header.textSize, maxBytes);
+        return utf8PreviewPrefix(std::string(payload.data() + dataOffset, textSize), maxBytes);
+    }
+
+    const char* html = payload.data() + dataOffset + header.textSize;
+    std::string visible;
+    visible.reserve(std::min<std::size_t>(header.htmlSize, maxBytes + 4));
+    bool inTag = false;
+    for (std::size_t index = 0; index < header.htmlSize; ++index) {
+        const char character = html[index];
+        if (character == '<') {
+            inTag = true;
+        } else if (character == '>') {
+            inTag = false;
+        } else if (!inTag && visible.size() < maxBytes + 4) {
+            visible.push_back(character);
+        }
+    }
+    return utf8PreviewPrefix(visible, maxBytes);
 }
 
 std::uint64_t clipboardDedupHash(ClipType type, const std::string& payload) {
@@ -4229,8 +4314,15 @@ void previewWorkerLoop(AppState* app) {
                 }
             } else if (success) {
                 constexpr std::size_t kDetailTextLimit = 128u * 1024u;
-                const std::string source = job.item.type == ClipType::Html
-                    ? job.item.preview : utf8PreviewPrefix(payload, kDetailTextLimit * 4);
+                std::string source;
+                if (job.item.type == ClipType::Html) {
+                    source = htmlTextPreviewPrefix(payload, kDetailTextLimit * 4);
+                    if (source.empty()) {
+                        source = utf8PreviewPrefix(job.item.preview, kDetailTextLimit * 4);
+                    }
+                } else {
+                    source = utf8PreviewPrefix(payload, kDetailTextLimit * 4);
+                }
                 text = utf8ToWide(source);
                 if (text.size() > kDetailTextLimit) {
                     text.resize(kDetailTextLimit);
@@ -5732,6 +5824,14 @@ bool popupPreviewKeyMatches(const KBDLLHOOKSTRUCT& key, bool keyUp) {
     return keyUp || shortcutModifiersFromKeyboard() == g_app->settingsData.popupPreviewHotkey.modifiers;
 }
 
+bool popupCommandShortcutMatches(UINT virtualKey) {
+    if (!g_app) return false;
+    return shortcutMatches(g_app->settingsData.popupEditTextHotkey, virtualKey) ||
+        shortcutMatches(g_app->settingsData.popupPinHotkey, virtualKey) ||
+        shortcutMatches(g_app->settingsData.popupSpecialCategoriesHotkey, virtualKey) ||
+        shortcutMatches(g_app->settingsData.popupFilterHotkey, virtualKey);
+}
+
 LPARAM popupKeyMessageLParam(const KBDLLHOOKSTRUCT& key, bool keyUp) {
     LPARAM value = 1L | (static_cast<LPARAM>(key.scanCode & 0xff) << 16);
     if ((key.flags & LLKHF_EXTENDED) != 0) value |= 1L << 24;
@@ -5764,6 +5864,12 @@ LRESULT CALLBACK popupKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
         if (!injected && (keyDown || keyUp) && !searchHasFocus &&
             popupPreviewKeyMatches(*key, keyUp)) {
             PostMessageW(g_app->hidden, kPopupPreviewKeyMessage, 0, keyDown ? 1 : 0);
+            return 1;
+        }
+        if (!injected && keyDown && popupHasNoSystemFocus && !searchHasFocus &&
+            (popupCommandShortcutMatches(key->vkCode) ||
+             (key->vkCode == 'F' && shortcutModifiersFromKeyboard() == MOD_CONTROL))) {
+            PostMessageW(g_app->hidden, kPopupKeyboardMessage, key->vkCode, 0);
             return 1;
         }
         if (!injected && searchHasFocus && (keyDown || keyUp)) {
@@ -6689,6 +6795,26 @@ LRESULT CALLBACK editProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         return result;
     }
     if (message == WM_KEYDOWN) {
+        if (shortcutMatches(g_app->settingsData.popupEditTextHotkey, static_cast<UINT>(wParam))) {
+            closePopupContextMenu();
+            executePopupContextCommand(kMenuEditText);
+            return 0;
+        }
+        if (shortcutMatches(g_app->settingsData.popupPinHotkey, static_cast<UINT>(wParam))) {
+            closePopupContextMenu();
+            executePopupContextCommand(kMenuPopupPinned);
+            return 0;
+        }
+        if (shortcutMatches(g_app->settingsData.popupSpecialCategoriesHotkey,
+                            static_cast<UINT>(wParam))) {
+            closePopupContextMenu();
+            executePopupContextCommand(kMenuSpecialAcrossCategories);
+            return 0;
+        }
+        if (shortcutMatches(g_app->settingsData.popupFilterHotkey, static_cast<UINT>(wParam))) {
+            executePopupContextCommand(kMenuFilter);
+            return 0;
+        }
         if (shortcutMatches(g_app->settingsData.popupPlainPasteHotkey, static_cast<UINT>(wParam))) {
             sendPaste(PasteMode::PlainText);
             return 0;
@@ -7062,10 +7188,18 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
                             {kSettingShortcutPopupSettings}, {150}, {30}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().clearHistoryFilter,
                             {kSettingShortcutClearFilter}, {150}, {30}, contentWidth),
-            makeSettingsRow(hwnd, settingsLocale().deleteSelectedRecord,
-                             {kSettingShortcutDelete}, {150}, {30}, contentWidth),
+             makeSettingsRow(hwnd, settingsLocale().deleteSelectedRecord,
+                              {kSettingShortcutDelete}, {150}, {30}, contentWidth),
              makeSettingsRow(hwnd, settingsLocale().previewKey,
-                             {kSettingShortcutPreview}, {150}, {30}, contentWidth)
+                             {kSettingShortcutPreview}, {150}, {30}, contentWidth),
+             makeSettingsRow(hwnd, settingsLocale().editSelectedText,
+                             {kSettingShortcutEditText}, {150}, {30}, contentWidth),
+             makeSettingsRow(hwnd, settingsLocale().pinHistoryWindow,
+                             {kSettingShortcutPinPopup}, {150}, {30}, contentWidth),
+             makeSettingsRow(hwnd, settingsLocale().showFavoritesOtherCategories,
+                             {kSettingShortcutSpecialCategories}, {150}, {30}, contentWidth),
+             makeSettingsRow(hwnd, settingsLocale().openHistoryFilter,
+                             {kSettingShortcutFilter}, {150}, {30}, contentWidth)
         });
     } else if (g_app->settingsTab == kSettingsStoragePage) {
         makeCard(settingsLocale().dataRetention, {
@@ -8394,7 +8528,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
                                  rowRect.right - ui(missingFiles ? 144 : 12),
                                  metadataTop - ui(4)};
             DrawTextW(dc, preview.c_str(), -1, &textPreviewRect,
-                      DT_LEFT | DT_VCENTER | DT_WORDBREAK | DT_END_ELLIPSIS);
+                      DT_LEFT | DT_VCENTER | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
         }
         if (missingFiles) {
             const RECT missingRect{rowRect.right - ui(132), y + ui(5),
@@ -8518,7 +8652,26 @@ bool isSettingsThemeColorEdit(int id) {
 }
 
 bool isSettingsShortcut(int id) {
-    return id >= kSettingShortcutPreview && id <= kSettingShortcutDelete;
+    switch (id) {
+    case kSettingShortcutPreview:
+    case kSettingShortcutHistory:
+    case kSettingShortcutSettings:
+    case kSettingShortcutPause:
+    case kSettingShortcutPaste:
+    case kSettingShortcutPastePlain:
+    case kSettingShortcutPasteRich:
+    case kSettingShortcutClosePopup:
+    case kSettingShortcutPopupSettings:
+    case kSettingShortcutClearFilter:
+    case kSettingShortcutDelete:
+    case kSettingShortcutEditText:
+    case kSettingShortcutPinPopup:
+    case kSettingShortcutSpecialCategories:
+    case kSettingShortcutFilter:
+        return true;
+    default:
+        return false;
+    }
 }
 
 const ShortcutBinding* settingsShortcutBinding(const Settings& settings, int id) {
@@ -8533,6 +8686,10 @@ const ShortcutBinding* settingsShortcutBinding(const Settings& settings, int id)
     if (id == kSettingShortcutPopupSettings) return &settings.popupSettingsHotkey;
     if (id == kSettingShortcutClearFilter) return &settings.popupClearFilterHotkey;
     if (id == kSettingShortcutDelete) return &settings.popupDeleteHotkey;
+    if (id == kSettingShortcutEditText) return &settings.popupEditTextHotkey;
+    if (id == kSettingShortcutPinPopup) return &settings.popupPinHotkey;
+    if (id == kSettingShortcutSpecialCategories) return &settings.popupSpecialCategoriesHotkey;
+    if (id == kSettingShortcutFilter) return &settings.popupFilterHotkey;
     return nullptr;
 }
 
@@ -8543,6 +8700,7 @@ ShortcutBinding* settingsShortcutBinding(Settings& settings, int id) {
 
 const wchar_t* shortcutActionLabel(int id) {
     switch (id) {
+    case kShortcutSearchFocus: return tr(L"Focus history search", L"聚焦历史搜索框");
     case kSettingWinV: return settingsLocale().forceReplaceWinV;
     case kHotkeyAltV: return settingsLocale().openClipboardHistory;
     case kHotkeySettings: return settingsLocale().openSettings;
@@ -8558,11 +8716,19 @@ const wchar_t* shortcutActionLabel(int id) {
     case kSettingShortcutPopupSettings: return settingsLocale().openSettingsInHistory;
     case kSettingShortcutClearFilter: return settingsLocale().clearHistoryFilter;
     case kSettingShortcutDelete: return settingsLocale().deleteSelectedRecord;
+    case kSettingShortcutEditText: return settingsLocale().editSelectedText;
+    case kSettingShortcutPinPopup: return settingsLocale().pinHistoryWindow;
+    case kSettingShortcutSpecialCategories: return settingsLocale().showFavoritesOtherCategories;
+    case kSettingShortcutFilter: return settingsLocale().openHistoryFilter;
     default: return L"Shortcut";
     }
 }
 
 const ShortcutBinding* shortcutBindingForConflict(const Settings& settings, int id) {
+    if (id == kShortcutSearchFocus) {
+        static const ShortcutBinding searchFocus{MOD_CONTROL, 'F'};
+        return &searchFocus;
+    }
     if (id == kSettingWinV) {
         static const ShortcutBinding winV{MOD_WIN, 'V'};
         return &winV;
@@ -8570,12 +8736,14 @@ const ShortcutBinding* shortcutBindingForConflict(const Settings& settings, int 
     return settingsShortcutBinding(settings, id);
 }
 
-const std::array<int, 11>& shortcutSettingIds() {
-    static const std::array<int, 11> ids = {
+const std::array<int, 15>& shortcutSettingIds() {
+    static const std::array<int, 15> ids = {
         kSettingShortcutPreview, kSettingShortcutHistory, kSettingShortcutSettings,
         kSettingShortcutPause, kSettingShortcutPaste, kSettingShortcutPastePlain,
         kSettingShortcutPasteRich, kSettingShortcutClosePopup,
-        kSettingShortcutPopupSettings, kSettingShortcutClearFilter, kSettingShortcutDelete
+        kSettingShortcutPopupSettings, kSettingShortcutClearFilter, kSettingShortcutDelete,
+        kSettingShortcutEditText, kSettingShortcutPinPopup,
+        kSettingShortcutSpecialCategories, kSettingShortcutFilter
     };
     return ids;
 }
@@ -8590,6 +8758,7 @@ bool shortcutBindingIsEmpty(const ShortcutBinding& binding) {
 
 ShortcutConflict findShortcutConflict(const Settings& settings, int targetId) {
     std::vector<int> ids(shortcutSettingIds().begin(), shortcutSettingIds().end());
+    ids.push_back(kShortcutSearchFocus);
     if (settings.winV) ids.push_back(kSettingWinV);
     if (targetId >= 0) {
         const ShortcutBinding* target = shortcutBindingForConflict(settings, targetId);
@@ -8684,7 +8853,9 @@ void refreshSettingsShortcutControls(HWND hwnd) {
     const int ids[] = {kSettingShortcutPreview, kSettingShortcutHistory, kSettingShortcutSettings, kSettingShortcutPause,
                        kSettingShortcutPaste, kSettingShortcutPastePlain, kSettingShortcutPasteRich,
                        kSettingShortcutClosePopup, kSettingShortcutPopupSettings,
-                       kSettingShortcutClearFilter, kSettingShortcutDelete};
+                       kSettingShortcutClearFilter, kSettingShortcutDelete,
+                       kSettingShortcutEditText, kSettingShortcutPinPopup,
+                       kSettingShortcutSpecialCategories, kSettingShortcutFilter};
     for (const int id : ids) {
         HWND control = settingsControl(hwnd, id);
         ShortcutBinding* binding = settingsShortcutBinding(g_app->settingsData, id);
@@ -8994,6 +9165,11 @@ void createSettingsControlsModern(HWND hwnd) {
     createShortcut(kSettingShortcutPopupSettings, 418, g_app->settingsData.popupSettingsHotkey);
     createShortcut(kSettingShortcutClearFilter, 462, g_app->settingsData.popupClearFilterHotkey);
     createShortcut(kSettingShortcutDelete, 506, g_app->settingsData.popupDeleteHotkey);
+    createShortcut(kSettingShortcutEditText, 594, g_app->settingsData.popupEditTextHotkey);
+    createShortcut(kSettingShortcutPinPopup, 638, g_app->settingsData.popupPinHotkey);
+    createShortcut(kSettingShortcutSpecialCategories, 682,
+                   g_app->settingsData.popupSpecialCategoriesHotkey);
+    createShortcut(kSettingShortcutFilter, 726, g_app->settingsData.popupFilterHotkey);
 
     HWND language = CreateWindowW(L"STATIC", L"",
                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | SS_NOTIFY,
@@ -9260,9 +9436,11 @@ void updateSettingsTabControls(HWND hwnd, bool redraw) {
                              kSettingShortcutPreview, kSettingShortcutHistory,
                          kSettingShortcutSettings, kSettingShortcutPause,
                          kSettingShortcutPaste, kSettingShortcutPastePlain,
-                         kSettingShortcutPasteRich, kSettingShortcutClosePopup,
-                         kSettingShortcutPopupSettings, kSettingShortcutClearFilter,
-                         kSettingShortcutDelete,
+                          kSettingShortcutPasteRich, kSettingShortcutClosePopup,
+                          kSettingShortcutPopupSettings, kSettingShortcutClearFilter,
+                          kSettingShortcutDelete, kSettingShortcutEditText,
+                          kSettingShortcutPinPopup, kSettingShortcutSpecialCategories,
+                          kSettingShortcutFilter,
                         kSettingCategoryMaxBase, kSettingCategoryMaxBase + 1,
                         kSettingCategoryMaxBase + 2,
                          kSettingCategoryDiskBase, kSettingCategoryDiskBase + 1,
@@ -9939,6 +10117,7 @@ void togglePopupSpecialAcrossCategories() {
                                g_app->settingsData.showSpecialAcrossCategories);
         InvalidateRect(g_app->settings, nullptr, FALSE);
     }
+    if (g_app->popup) refreshVisible();
     saveSettings(g_app->settingsData);
 }
 
@@ -10018,6 +10197,27 @@ void closePopupContextSubmenu() {
     g_app->popupContextSubmenuCommand = 0;
 }
 
+// 获取历史窗口右键菜单项当前配置的快捷键。
+std::wstring popupContextMenuShortcut(int command) {
+    if (!g_app) return {};
+    const ShortcutBinding* binding = nullptr;
+    if (command == kMenuPaste) binding = &g_app->settingsData.popupPasteHotkey;
+    else if (command == kMenuPastePlain) binding = &g_app->settingsData.popupPlainPasteHotkey;
+    else if (command == kMenuPasteRich) binding = &g_app->settingsData.popupRichPasteHotkey;
+    else if (command == kMenuDelete) binding = &g_app->settingsData.popupDeleteHotkey;
+    else if (command == kMenuEditText) binding = &g_app->settingsData.popupEditTextHotkey;
+    else if (command == kMenuPopupPinned) binding = &g_app->settingsData.popupPinHotkey;
+    else if (command == kMenuSpecialAcrossCategories) {
+        binding = &g_app->settingsData.popupSpecialCategoriesHotkey;
+    } else if (command == kMenuFilter) {
+        binding = &g_app->settingsData.popupFilterHotkey;
+    } else if (command == kMenuPreviewByKey) {
+        binding = &g_app->settingsData.popupPreviewHotkey;
+    }
+    if (!binding || shortcutBindingIsEmpty(*binding)) return {};
+    return formatShortcut(*binding);
+}
+
 void showPopupContextSubmenu(int row) {
     if (!g_app || !g_app->popupContextMenu || row < 0 ||
         row >= static_cast<int>(g_app->popupContextMenuItems.size())) return;
@@ -10062,6 +10262,8 @@ void paintPopupContextSubmenu(HWND hwnd, HDC dc) {
     };
     const int active = clearing ? -1 : (g_app->settingsData.previewAutomatic ? 0
         : (g_app->settingsData.previewByKey ? 1 : 2));
+    const std::wstring previewShortcut = clearing ? std::wstring{} :
+        popupContextMenuShortcut(kMenuPreviewByKey);
     for (int row = 0; row < 3; ++row) {
         const int top = ui(5 + row * kPopupContextMenuRowHeight);
         const RECT itemRect{ui(5), top, client.right - ui(5), top + ui(kPopupContextMenuRowHeight)};
@@ -10074,6 +10276,21 @@ void paintPopupContextSubmenu(HWND hwnd, HDC dc) {
         if (row == active) DrawTextW(dc, L"\x2713", -1, &check,
                                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         RECT label{ui(clearing ? 16 : 32), top, client.right - ui(12), itemRect.bottom};
+        if (!clearing && row == 1 && !previewShortcut.empty()) {
+            SIZE shortcutSize{};
+            GetTextExtentPoint32W(dc, previewShortcut.c_str(),
+                                  static_cast<int>(previewShortcut.size()), &shortcutSize);
+            const LONG shortcutRight = client.right - ui(12);
+            const LONG shortcutLeft = std::max<LONG>(label.left,
+                                                      shortcutRight - shortcutSize.cx);
+            label.right = std::max<LONG>(label.left, shortcutLeft - ui(8));
+            RECT shortcut{shortcutLeft, top, shortcutRight, itemRect.bottom};
+            SetTextColor(dc, themeColor(ThemeColorRole::SecondaryText));
+            DrawTextW(dc, previewShortcut.c_str(), -1, &shortcut,
+                      DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+            SetTextColor(dc, row == active ? settingsAccentColor() :
+                         themeColor(ThemeColorRole::Text));
+        }
         DrawTextW(dc, labels[row], -1, &label, DT_LEFT | DT_VCENTER | DT_SINGLELINE |
                   DT_END_ELLIPSIS);
     }
@@ -10223,7 +10440,26 @@ void paintPopupContextMenuWindow(HWND hwnd, HDC dc) {
             drawGdiRoundedSurface(dc, row, hover, hover, 5);
         }
         SetTextColor(dc, text);
+        const bool hasArrow = g_app->popupContextMenuItems[i].command == kMenuPreviewMode ||
+            g_app->popupContextMenuItems[i].command == kMenuClearHistory;
+        const bool hasCheck = g_app->popupContextMenuItems[i].checked;
+        const std::wstring shortcut = popupContextMenuShortcut(
+            g_app->popupContextMenuItems[i].command);
         RECT label{ui(16), top, client.right - ui(32), row.bottom};
+        if (!shortcut.empty()) {
+            SIZE shortcutSize{};
+            GetTextExtentPoint32W(dc, shortcut.c_str(),
+                                  static_cast<int>(shortcut.size()), &shortcutSize);
+            const LONG shortcutRight = client.right - ui(hasArrow || hasCheck ? 32 : 12);
+            const LONG shortcutLeft = std::max<LONG>(label.left,
+                                                      shortcutRight - shortcutSize.cx);
+            label.right = std::max<LONG>(label.left, shortcutLeft - ui(8));
+            RECT shortcutRect{shortcutLeft, top, shortcutRight, row.bottom};
+            SetTextColor(dc, themeColor(ThemeColorRole::SecondaryText));
+            DrawTextW(dc, shortcut.c_str(), -1, &shortcutRect,
+                      DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+            SetTextColor(dc, text);
+        }
         DrawTextW(dc, g_app->popupContextMenuItems[i].label.c_str(), -1, &label,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         if (g_app->popupContextMenuItems[i].command == kMenuPreviewMode ||
@@ -14424,6 +14660,28 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             else if (g_app->popupContextMenuOpen && wParam == VK_ESCAPE) {
                 closePopupContextMenu();
+            }
+            else if (wParam == 'F' && shortcutModifiersFromKeyboard() == MOD_CONTROL) {
+                activatePopupSearchFocus(false);
+            }
+            else if (shortcutMatches(g_app->settingsData.popupEditTextHotkey,
+                                     static_cast<UINT>(wParam))) {
+                closePopupContextMenu();
+                executePopupContextCommand(kMenuEditText);
+            }
+            else if (shortcutMatches(g_app->settingsData.popupPinHotkey,
+                                     static_cast<UINT>(wParam))) {
+                closePopupContextMenu();
+                executePopupContextCommand(kMenuPopupPinned);
+            }
+            else if (shortcutMatches(g_app->settingsData.popupSpecialCategoriesHotkey,
+                                     static_cast<UINT>(wParam))) {
+                closePopupContextMenu();
+                executePopupContextCommand(kMenuSpecialAcrossCategories);
+            }
+            else if (shortcutMatches(g_app->settingsData.popupFilterHotkey,
+                                     static_cast<UINT>(wParam))) {
+                executePopupContextCommand(kMenuFilter);
             }
             else if (shortcutMatches(g_app->settingsData.popupCloseHotkey, static_cast<UINT>(wParam))) {
                 closePopup();

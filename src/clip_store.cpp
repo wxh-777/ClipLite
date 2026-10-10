@@ -364,13 +364,28 @@ std::string truncateUtf8(const std::string& value, std::size_t maxBytes) {
     while (offset < limit) {
         const unsigned char lead = static_cast<unsigned char>(value[offset]);
         std::size_t sequenceSize = 0;
-        if (lead <= 0x7F) sequenceSize = 1;
-        else if (lead >= 0xC2 && lead <= 0xDF) sequenceSize = 2;
-        else if (lead >= 0xE0 && lead <= 0xEF) sequenceSize = 3;
-        else if (lead >= 0xF0 && lead <= 0xF4) sequenceSize = 4;
-        else return value.substr(0, limit);
+        if (lead <= 0x7F) {
+            sequenceSize = 1;
+        } else if (lead >= 0xC2 && lead <= 0xDF) {
+            sequenceSize = 2;
+        } else if (lead >= 0xE0 && lead <= 0xEF) {
+            sequenceSize = 3;
+        } else if (lead >= 0xF0 && lead <= 0xF4) {
+            sequenceSize = 4;
+        } else {
+            return value.substr(0, limit);
+        }
 
         if (sequenceSize > limit - offset) break;
+        const unsigned char second = sequenceSize > 1
+            ? static_cast<unsigned char>(value[offset + 1]) : 0;
+        if (sequenceSize > 1 &&
+            ((lead == 0xE0 && second < 0xA0) ||
+             (lead == 0xED && second > 0x9F) ||
+             (lead == 0xF0 && second < 0x90) ||
+             (lead == 0xF4 && second > 0x8F))) {
+            return value.substr(0, limit);
+        }
         for (std::size_t index = 1; index < sequenceSize; ++index) {
             const unsigned char continuation = static_cast<unsigned char>(value[offset + index]);
             if ((continuation & 0xC0) != 0x80) return value.substr(0, limit);
@@ -398,11 +413,14 @@ std::string htmlTextPreview(const std::string& payload) {
         std::memcpy(&magic, payload.data(), sizeof(magic));
         std::memcpy(&textSize, payload.data() + 4, sizeof(textSize));
         const std::size_t contentSize = payload.size() - kStoredHtmlHeaderSize;
-        if (magic == kStoredHtmlMagic && textSize <= contentSize) {
-            const std::string text(payload.data() + kStoredHtmlHeaderSize, textSize);
-            if (!text.empty()) return text;
-            const std::uint32_t htmlSize = static_cast<std::uint32_t>(contentSize - textSize);
-            html.assign(payload.data() + kStoredHtmlHeaderSize + textSize, htmlSize);
+        if (magic == kStoredHtmlMagic) {
+            const std::size_t availableText = std::min<std::size_t>(textSize, contentSize);
+            if (availableText > 0) {
+                return std::string(payload.data() + kStoredHtmlHeaderSize, availableText);
+            }
+            if (textSize == 0) {
+                html.assign(payload.data() + kStoredHtmlHeaderSize, contentSize);
+            }
         }
     }
     std::string text;
