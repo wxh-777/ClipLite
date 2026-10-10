@@ -8,7 +8,8 @@ if(MSVC)
     add_compile_options(/W4 /utf-8)
     add_compile_options($<$<CONFIG:Release>:/O1> $<$<CONFIG:Release>:/Gy>
                         $<$<CONFIG:Release>:/Gw>
-                        $<$<CONFIG:Release>:/GF> $<$<CONFIG:Release>:/Zc:inline>)
+                        $<$<CONFIG:Release>:/GF> $<$<CONFIG:Release>:/Zc:inline>
+                        $<$<CONFIG:Release>:/GR->)
     add_link_options($<$<CONFIG:Release>:/OPT:REF> $<$<CONFIG:Release>:/OPT:ICF>
                      $<$<CONFIG:Release>:/INCREMENTAL:NO>)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
