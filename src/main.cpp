@@ -748,12 +748,14 @@ bool ensureGdiplus() {
 
 void shutdownGdiplusIfIdle() {
     if (!g_app || g_app->popup || g_app->settings || g_app->detailPreview ||
-        g_app->support || g_app->previewWorker.joinable()) return;
+        g_app->textEditor || g_app->support || g_app->previewWorker.joinable()) return;
     std::lock_guard<std::recursive_mutex> lock(g_gdiplusMutex);
     if (g_app->gdiplusToken != 0) {
         Gdiplus::GdiplusShutdown(g_app->gdiplusToken);
         g_app->gdiplusToken = 0;
     }
+    SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1),
+                             static_cast<SIZE_T>(-1));
 }
 
 HANDLE createSingleInstanceMutex() {
@@ -5695,8 +5697,6 @@ void closePopup() {
     closePopupContextMenu();
     g_app->popupOpenInputTick = 0;
     shutdownGdiplusIfIdle();
-    SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1),
-                             static_cast<SIZE_T>(-1));
     if (IsWindow(target)) restorePasteTargetFocus(target);
 }
 
@@ -7797,6 +7797,7 @@ void closeTextEditor(bool restorePopup) {
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
         refreshPopupPointerState(g_app->popup);
     }
+    shutdownGdiplusIfIdle();
 }
 
 bool createTextEditorWindow(const ClipItem& item, const std::wstring& text) {
@@ -12657,6 +12658,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     if (message == kStoreChangedMessage) {
         if (g_app->popup) refreshVisible(true);
         scheduleStorageMaintenance();
+        shutdownGdiplusIfIdle();
         return 0;
     }
     if (message == kTextEditorPayloadLoadedMessage) {

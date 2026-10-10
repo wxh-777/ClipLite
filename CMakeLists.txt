@@ -30,7 +30,10 @@ add_executable(ClipLite WIN32
 
 target_include_directories(ClipLite PRIVATE include)
 target_compile_definitions(ClipLite PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(ClipLite PRIVATE user32 gdi32 msimg32 shell32 shcore ole32 oleaut32 taskschd comctl32 comdlg32 crypt32 gdiplus windowscodecs d2d1 dwmapi advapi32 winhttp)
+if(MSVC)
+    target_link_options(ClipLite PRIVATE /DELAYLOAD:d2d1.dll)
+endif()
+target_link_libraries(ClipLite PRIVATE user32 gdi32 msimg32 shell32 shcore ole32 oleaut32 taskschd comctl32 comdlg32 crypt32 gdiplus windowscodecs d2d1 delayimp dwmapi advapi32 winhttp)
 
 include(CTest)
 if(BUILD_TESTING)
