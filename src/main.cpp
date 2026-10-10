@@ -2262,6 +2262,68 @@ bool isValidDibPayload(const std::string& payload) {
     return validateDibPayload(payload, nullptr);
 }
 
+bool makeOpaqueClipboardDib(const std::string& payload, std::string& normalized) {
+    DibLayout layout{};
+    if (!validateDibPayload(payload, &layout)) return false;
+
+    BITMAPINFOHEADER sourceHeader{};
+    std::memcpy(&sourceHeader, payload.data(), sizeof(sourceHeader));
+    const LONG sourceWidth = sourceHeader.biWidth;
+    const LONG sourceHeight = static_cast<LONG>(std::llabs(
+        static_cast<long long>(sourceHeader.biHeight)));
+    const std::size_t outputRowBytes = static_cast<std::size_t>(sourceWidth) * 4u;
+    const std::size_t outputBytes = outputRowBytes * static_cast<std::size_t>(sourceHeight);
+    if (outputRowBytes == 0 || outputBytes > 32u * 1024u * 1024u - sizeof(BITMAPINFOHEADER)) {
+        return false;
+    }
+
+    BITMAPINFO outputInfo{};
+    outputInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    outputInfo.bmiHeader.biWidth = sourceWidth;
+    outputInfo.bmiHeader.biHeight = -sourceHeight;
+    outputInfo.bmiHeader.biPlanes = 1;
+    outputInfo.bmiHeader.biBitCount = 32;
+    outputInfo.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(nullptr, &outputInfo, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!bitmap || !bits) {
+        if (bitmap) DeleteObject(bitmap);
+        return false;
+    }
+
+    HDC dc = CreateCompatibleDC(nullptr);
+    if (!dc) {
+        DeleteObject(bitmap);
+        return false;
+    }
+    HGDIOBJ previous = SelectObject(dc, bitmap);
+    const int result = StretchDIBits(dc, 0, 0, sourceWidth, sourceHeight,
+                                     0, 0, sourceWidth, sourceHeight,
+                                     payload.data() + layout.bitsOffset,
+                                     reinterpret_cast<const BITMAPINFO*>(payload.data()),
+                                     DIB_RGB_COLORS, SRCCOPY);
+    SelectObject(dc, previous);
+    DeleteDC(dc);
+    if (result <= 0 || result == GDI_ERROR) {
+        DeleteObject(bitmap);
+        return false;
+    }
+
+    // CF_DIB is widely supported, but its alpha channel is commonly ignored.
+    // Make the compatibility copy explicitly opaque so V5 zero-alpha data from QQ
+    // cannot become a completely transparent image in the target application.
+    for (std::size_t offset = 3; offset < outputBytes; offset += 4) {
+        static_cast<BYTE*>(bits)[offset] = 255;
+    }
+    BITMAPINFOHEADER outputHeader = outputInfo.bmiHeader;
+    outputHeader.biHeight = -sourceHeight;
+    normalized.resize(sizeof(outputHeader) + outputBytes);
+    std::memcpy(normalized.data(), &outputHeader, sizeof(outputHeader));
+    std::memcpy(normalized.data() + sizeof(outputHeader), bits, outputBytes);
+    DeleteObject(bitmap);
+    return true;
+}
+
 bool captureClipboard(HWND owner, ClipType& type, std::string& payload, std::string& source) {
     source = clipboardSource();
     if (!openClipboardWithRetry(owner)) return false;
@@ -2501,17 +2563,33 @@ bool setClipboardDataForItem(const ClipItem& item, const std::string& payload,
     if (item.type == ClipType::Text) {
         ok = setUnicodeText(payload);
     } else if (item.type == ClipType::Image || item.type == ClipType::ImageV5) {
-        memory = GlobalAlloc(GMEM_MOVEABLE, payload.size());
-        if (memory) {
-            void* destination = GlobalLock(memory);
-            if (!destination) {
-                GlobalFree(memory);
-            } else {
-                std::memcpy(destination, payload.data(), payload.size());
-                GlobalUnlock(memory);
-                const UINT format = item.type == ClipType::ImageV5 ? CF_DIBV5 : CF_DIB;
-                if (SetClipboardData(format, memory)) ok = true;
-                else GlobalFree(memory);
+        std::string normalized;
+        if (makeOpaqueClipboardDib(payload, normalized)) {
+            memory = GlobalAlloc(GMEM_MOVEABLE, normalized.size());
+            if (memory) {
+                void* destination = GlobalLock(memory);
+                if (!destination) {
+                    GlobalFree(memory);
+                } else {
+                    std::memcpy(destination, normalized.data(), normalized.size());
+                    GlobalUnlock(memory);
+                    if (SetClipboardData(CF_DIB, memory)) ok = true;
+                    else GlobalFree(memory);
+                }
+            }
+        }
+        if (item.type == ClipType::ImageV5 && !ok) {
+            memory = GlobalAlloc(GMEM_MOVEABLE, payload.size());
+            if (memory) {
+                void* destination = GlobalLock(memory);
+                if (!destination) {
+                    GlobalFree(memory);
+                } else {
+                    std::memcpy(destination, payload.data(), payload.size());
+                    GlobalUnlock(memory);
+                    if (SetClipboardData(CF_DIBV5, memory)) ok = true;
+                    else GlobalFree(memory);
+                }
             }
         }
     } else if (item.type == ClipType::Html) {
