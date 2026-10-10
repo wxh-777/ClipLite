@@ -217,6 +217,7 @@ constexpr UINT_PTR kPopupDetailRenderTimer = 20;
 constexpr UINT_PTR kFilterSubmenuHoverTimer = 21;
 constexpr UINT_PTR kPopupContextSubmenuHideTimer = 22;
 constexpr UINT_PTR kStorageMaintenanceTimer = 23;
+constexpr UINT_PTR kSystemThemeRefreshTimer = 24;
 constexpr DWORD kSettingsToggleAnimationMs = 160;
 constexpr DWORD kSettingsDropdownAnimationMs = 150;
 constexpr DWORD kSettingsThemeAnimationMs = 180;
@@ -228,6 +229,7 @@ constexpr UINT kSettingsActionFeedbackMs = 2400;
 constexpr UINT kPopupSearchDelayMs = 90;
 constexpr UINT kPopupPreviewResumeMs = 50;
 constexpr UINT kStorageMaintenanceDelayMs = 2500;
+constexpr UINT kSystemThemeRefreshDelayMs = 100;
 constexpr UINT kFilterSubmenuHoverDelayMs = 120;
 constexpr UINT kPopupScrollAnimationMs = 110;
 constexpr int kPopupWheelScrollStep = 96;
@@ -312,7 +314,7 @@ constexpr int kSupportQqWidth = 560;
 constexpr int kSupportQqHeight = 700;
 constexpr std::size_t kPopupImagePreviewCacheLimit = 24;
 constexpr std::size_t kPopupSourceIconCacheLimit = 32;
-constexpr char kCurrentVersion[] = "1.5.0";
+constexpr char kCurrentVersion[] = "1.5.1";
 constexpr wchar_t kSourceUrl[] = L"https://github.com/wxh-777/ClipLite";
 constexpr wchar_t kLatestReleaseApiUrl[] =
     L"https://api.github.com/repos/wxh-777/ClipLite/releases/latest";
@@ -1315,7 +1317,7 @@ const SettingsLocale kEnglishSettingsLocale{
      L"Some shortcuts could not be registered. Choose different combinations.",
     L"Custom shortcuts require at least one modifier key.",
     L"Sensitive markers: password, token, api_key, secret, and private keys; detected by content pattern.",
-        L"Application    ClipLite", L"Version        1.5.0 x64", L"Storage format  v4",
+        L"Application    ClipLite", L"Version        1.5.1 x64", L"Storage format  v4",
       L"Data directory  %LOCALAPPDATA%\\ClipLite", L"Browse", L"Clear non-favorite history", L"Clear non-favorite text",
       L"Clear non-favorite images", L"Clear non-favorite files", L"Press shortcut", L"Need modifier", L"One application per line", L"Auto",
     L"ClipLite Settings", L"Choose a valid cache directory.", L"Unable to create the cache directory.",
@@ -1367,7 +1369,7 @@ const SettingsLocale kChineseSettingsLocale{
      L"无法注册“%ls”（%ls），可能已被其他程序或 Windows 占用，已恢复为 %ls。",
      L"部分快捷键注册失败，请更换组合键。", L"自定义快捷键至少需要一个修饰键。",
     L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。",
-          L"应用名称    ClipLite", L"版本        1.5.0 x64", L"存储格式    v4",
+          L"应用名称    ClipLite", L"版本        1.5.1 x64", L"存储格式    v4",
       L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清理未收藏历史", L"清理未收藏文本", L"清理未收藏图片",
        L"清理未收藏文件", L"按下组合键", L"需要修饰键", L"每行一个应用名称", L"自动", L"ClipLite 设置",
     L"请选择有效的缓存目录。", L"无法创建缓存目录。", L"目标目录已有历史数据，请选择空目录。",
@@ -1405,6 +1407,7 @@ std::wstring themesPath() {
 }
 
 bool systemThemeIsDark();
+void applyNativeMenuTheme();
 
 void resolveActiveTheme() {
     if (!g_app) return;
@@ -1416,6 +1419,7 @@ void resolveActiveTheme() {
     g_app->settingsData.dark = theme->appearance == ThemeAppearance::Dark;
     g_app->settingsData.themeMode = g_app->settingsData.themeSelection.followSystem
         ? 0 : (g_app->settingsData.dark ? 2 : 1);
+    applyNativeMenuTheme();
 }
 
 bool systemThemeIsDark() {
@@ -1425,11 +1429,60 @@ bool systemThemeIsDark() {
     if (RegOpenKeyExW(HKEY_CURRENT_USER,
                       L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
                       0, KEY_QUERY_VALUE, &key) == ERROR_SUCCESS) {
-        RegQueryValueExW(key, L"AppsUseLightTheme", nullptr, nullptr,
-                         reinterpret_cast<LPBYTE>(&value), &size);
+        LONG result = RegQueryValueExW(key, L"SystemUsesLightTheme", nullptr, nullptr,
+                                       reinterpret_cast<LPBYTE>(&value), &size);
+        if (result != ERROR_SUCCESS) {
+            size = sizeof(value);
+            RegQueryValueExW(key, L"AppsUseLightTheme", nullptr, nullptr,
+                             reinterpret_cast<LPBYTE>(&value), &size);
+        }
         RegCloseKey(key);
     }
     return value == 0;
+}
+
+enum class PreferredAppMode : int {
+    Default = 0,
+    AllowDark = 1,
+    ForceDark = 2,
+    ForceLight = 3,
+};
+
+using SetPreferredAppModeFunction = PreferredAppMode(WINAPI*)(PreferredAppMode);
+using FlushMenuThemesFunction = void(WINAPI*)();
+
+void applyNativeMenuTheme() {
+    if (!g_app) return;
+    // Ordinal 135 had a different signature before Windows 10 1903.
+    static const bool supported = [] {
+        using RtlGetVersionFunction = LONG(WINAPI*)(OSVERSIONINFOW*);
+        const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        const auto getVersion = ntdll ? reinterpret_cast<RtlGetVersionFunction>(
+            GetProcAddress(ntdll, "RtlGetVersion")) : nullptr;
+        OSVERSIONINFOW version{};
+        version.dwOSVersionInfoSize = sizeof(version);
+        return getVersion && getVersion(&version) == 0 &&
+            version.dwMajorVersion == 10 && version.dwBuildNumber >= 18362;
+    }();
+    if (!supported) return;
+    const HMODULE uxtheme = LoadLibraryExW(L"uxtheme.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!uxtheme) return;
+    const auto setPreferredAppMode = reinterpret_cast<SetPreferredAppModeFunction>(
+        GetProcAddress(uxtheme, MAKEINTRESOURCEA(135)));
+    const auto flushMenuThemes = reinterpret_cast<FlushMenuThemesFunction>(
+        GetProcAddress(uxtheme, MAKEINTRESOURCEA(136)));
+    using AllowDarkModeForWindowFunction = BOOL(WINAPI*)(HWND, BOOL);
+    const auto allowDarkModeForWindow = reinterpret_cast<AllowDarkModeForWindowFunction>(
+        GetProcAddress(uxtheme, MAKEINTRESOURCEA(133)));
+    const bool dark = g_app->settingsData.dark && !highContrastEnabled();
+    if (setPreferredAppMode) {
+        setPreferredAppMode(dark ? PreferredAppMode::ForceDark : PreferredAppMode::ForceLight);
+        if (g_app->hidden && allowDarkModeForWindow) {
+            allowDarkModeForWindow(g_app->hidden, dark);
+        }
+        if (flushMenuThemes) flushMenuThemes();
+    }
+    FreeLibrary(uxtheme);
 }
 
 void normalizeShortcutBinding(ShortcutBinding& binding, const ShortcutBinding& fallback) {
@@ -5919,6 +5972,7 @@ void removeTrayIcon() {
 void showTrayMenu() {
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
+    applyNativeMenuTheme();
     AppendMenuW(menu, MF_STRING, kTrayOpen, settingsLocale().trayOpen);
     AppendMenuW(menu, MF_STRING, kTraySettings, settingsLocale().traySettings);
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -10801,6 +10855,37 @@ void refreshSettingsFrame(HWND hwnd) {
     DwmSetWindowAttribute(hwnd, DWMWA_TEXT_COLOR, &captionText, sizeof(captionText));
 }
 
+void refreshSystemTheme() {
+    if (!g_app) return;
+    if (g_app->settingsData.themeSelection.followSystem &&
+        !g_app->themeEditorDraftActive) {
+        const bool wasDark = g_app->settingsData.dark;
+        resolveActiveTheme();
+        if (g_app->settings && wasDark != g_app->settingsData.dark) {
+            animateSettingsTheme(g_app->settings, wasDark, g_app->settingsData.dark);
+        }
+    } else {
+        applyNativeMenuTheme();
+    }
+    if (g_app->settings) refreshSettingsFrame(g_app->settings);
+    refreshSettingsBrushes();
+    refreshPopupBrush();
+    if (g_app->detailPreviewRenderer) {
+        g_app->detailPreviewRenderer->setBackground(g_app->themePalette.previewBackground);
+    }
+    invalidateThemeWindow(g_app->settings);
+    invalidateThemeWindow(g_app->popup);
+    invalidateThemeWindow(g_app->detailPreview);
+    clearPopupImagePreviews();
+    refreshTextEditorAppearance();
+    invalidateThemeWindow(g_app->detailPreviewTextEdit);
+    invalidateThemeWindow(g_app->languageDropdown);
+    invalidateThemeWindow(g_app->filterMenuWindow);
+    invalidateThemeWindow(g_app->filterSubmenuWindow);
+    invalidateThemeWindow(g_app->popupContextMenu);
+    invalidateThemeWindow(g_app->popupContextSubmenu);
+}
+
 bool isSettingsToggle(int id) {
     return id == kSettingWinV || id == kSettingPause ||
            id == kSettingStartup || id == kSettingStartupSettings ||
@@ -13817,28 +13902,17 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         return 0;
     }
-    if (hwnd == g_app->hidden) {
-        if (message == WM_SETTINGCHANGE || message == WM_THEMECHANGED ||
-            message == WM_SYSCOLORCHANGE) {
-            if (g_app->settingsData.themeSelection.followSystem &&
-                !g_app->themeEditorDraftActive) {
-                const bool wasDark = g_app->settingsData.dark;
-                resolveActiveTheme();
-                if (g_app->settings && wasDark != g_app->settingsData.dark) {
-                    animateSettingsTheme(g_app->settings, wasDark, g_app->settingsData.dark);
-                }
-            }
-            if (g_app->settings) refreshSettingsFrame(g_app->settings);
-            refreshSettingsBrushes();
-            refreshPopupBrush();
-            if (g_app->detailPreviewRenderer) {
-                g_app->detailPreviewRenderer->setBackground(g_app->themePalette.previewBackground);
-            }
-            invalidateThemeWindow(g_app->settings);
-            invalidateThemeWindow(g_app->popup);
-            invalidateThemeWindow(g_app->detailPreview);
-            return 0;
+    // Message-only windows do not receive broadcasts; reuse the shell listener.
+    if (hwnd == g_app->taskbarWindow && g_app->hidden &&
+        (message == WM_SETTINGCHANGE || message == WM_THEMECHANGED ||
+         message == WM_SYSCOLORCHANGE)) {
+        if (!SetTimer(g_app->hidden, kSystemThemeRefreshTimer,
+                      kSystemThemeRefreshDelayMs, nullptr)) {
+            refreshSystemTheme();
         }
+        return 0;
+    }
+    if (hwnd == g_app->hidden) {
         if (message == kTrayMessage) {
             if (lParam == WM_LBUTTONUP || lParam == WM_LBUTTONDBLCLK) showPopup();
             else if (lParam == WM_RBUTTONUP) showTrayMenu();
@@ -14008,6 +14082,11 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         if (message == kExitMessage) {
             PostQuitMessage(0);
+            return 0;
+        }
+        if (message == WM_TIMER && wParam == kSystemThemeRefreshTimer) {
+            KillTimer(hwnd, kSystemThemeRefreshTimer);
+            refreshSystemTheme();
             return 0;
         }
         if (message == WM_TIMER && wParam == kWinVReleaseTimer) {
@@ -15702,6 +15781,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     KillTimer(app.hidden, kExpiryTimer);
     KillTimer(app.hidden, kPasteInputTimer);
     KillTimer(app.hidden, kStorageMaintenanceTimer);
+    KillTimer(app.hidden, kSystemThemeRefreshTimer);
     removeTrayIcon();
     DestroyWindow(app.taskbarWindow);
     UnregisterHotKey(app.hidden, kHotkeyAltV);

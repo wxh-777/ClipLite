@@ -2,7 +2,7 @@
 
 ClipLite is a lightweight native clipboard history manager for Windows. It is built with C++17, the Win32 API, and GDI/GDI+, without WebView, Electron, WinUI, Qt, or another large runtime. The project prioritizes low idle memory usage, reliable clipboard format handling, and portable distribution.
 
-Current release: **1.5.0** (Windows x64)
+Current release: **1.5.1** (Windows x64)
 
 中文文档：[README.md](README.md)
 
@@ -50,6 +50,10 @@ History window with an image record:
 Settings window:
 
 ![ClipLite settings window](https://raw.githubusercontent.com/wxh-777/ClipLite/main/docs/screenshots/settings.png)
+
+Appearance settings with separate system light and dark themes:
+
+![ClipLite appearance settings](https://raw.githubusercontent.com/wxh-777/ClipLite/main/docs/screenshots/appearance.png)
 
 Task Manager memory (screenshot measurement):
 
@@ -100,8 +104,8 @@ Features and versions vary across tools. This table describes product positionin
 
 The Windows x64 release provides:
 
-- Installer: `ClipLite-Setup-1.5.0-x64.exe`, with English and Simplified Chinese wizard languages, automatic selection based on the Windows UI language, a selectable installation directory, shortcuts, and standard uninstall support.
-- Portable package: `ClipLite-1.5.0-portable-win-x64.zip`, which can be extracted and moved as a directory. Data is stored in its `data\\` directory.
+- Installer: `ClipLite-Setup-1.5.1-x64.exe`, with English and Simplified Chinese wizard languages, automatic selection based on the Windows UI language, a selectable installation directory, shortcuts, and standard uninstall support.
+- Portable package: `ClipLite-1.5.1-portable-win-x64.zip`, which can be extracted and moved as a directory. Data is stored in its `data\\` directory.
 
 Use `SHA256SUM.txt` in the portable package to verify `ClipLite.exe`. Verify the download source before running the application.
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1] - 2026-10-10
+
+- Fixed blank images pasted from some QQ clipboard history items by providing a compatible opaque `CF_DIB` image.
+- Fixed system-theme notifications being handled by a message-only window. The existing invisible top-level window now receives notifications and schedules a one-shot refresh without persistent polling.
+- Refreshed theme caches, editors, and menus; added Windows version checks and window dark-mode support for the native tray menu.
+- Added an appearance-page screenshot to both READMEs.
+
 ## [1.5.0] - 2026-10-10
 
 - Added six built-in themes and a custom theme editor, with fixed-theme selection and separate Windows light/dark theme assignments applied across Settings, history, and detail previews.

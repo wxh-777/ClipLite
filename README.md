@@ -2,7 +2,7 @@
 
 ClipLite 是一款仅支持 Windows 的原生剪贴板历史工具。它使用 C++17、Win32 API 和 GDI/GDI+ 构建，不依赖 WebView、Electron、WinUI、Qt 或其他大型运行时，重点是低常驻内存、可靠保存剪贴板格式和便携发布。
 
-当前正式版本：**1.5.0**（x64）
+当前正式版本：**1.5.1**（x64）
 
 完整中文使用说明：[USAGE.md](USAGE.md)
 英文文档：[README.en.md](README.en.md)
@@ -27,6 +27,7 @@ ClipLite 从一开始就希望把剪贴板历史做得更克制：程序尽量�
 - 文本和 HTML 历史记录支持右键编辑为纯文本，可保存并替换原记录、另存为新记录或保存并粘贴；另存为遇到相同文本时会复用已有记录，避免重复数据。
 - 历史项支持添加单行备注；备注最多 200 个 UTF-8 字节，列表中超出宽度会省略，详情预览显示完整备注。备注编辑框直接嵌入历史窗口，不会弹出独立窗口。
 - 支持浅色、深色、护眼绿、护眼夜间、纸张暖色和午夜蓝主题；可固定主题，或分别指定跟随 Windows 亮色/暗色时使用的主题。外观设置页支持创建、编辑和删除自定义主题，并调整 14 项实际用于界面的配色。
+- 跟随系统模式以 Windows 系统亮暗设置为准，通过系统通知刷新，不使用常驻轮询；Windows 10 1903 及更新版本的托盘菜单按当前主题切换亮暗，高对比度模式保留系统配色。
 - 支持英文和简体中文界面。
 - 程序运行在系统托盘中；Explorer 重启或任务栏刷新后会自动恢复托盘图标。
 - 支持最大记录数、磁盘空间、保留天数、单条内容大小和暂停监听设置。
@@ -51,6 +52,10 @@ ClipLite 从一开始就希望把剪贴板历史做得更克制：程序尽量�
 设置窗口：
 
 ![ClipLite 设置窗口](https://raw.githubusercontent.com/wxh-777/ClipLite/main/docs/screenshots/settings.png)
+
+外观设置（系统亮暗主题配置）：
+
+![ClipLite 外观设置](https://raw.githubusercontent.com/wxh-777/ClipLite/main/docs/screenshots/appearance.png)
 
 任务管理器内存（截图实测）：
 
@@ -101,8 +106,8 @@ ClipLite 更适合希望“复制过的内容方便找回，但程序不要拖�
 
 正式发布包含两种 Windows x64 形式：
 
-- 安装包：`ClipLite-Setup-1.5.0-x64.exe`。安装向导支持 English 和简体中文，会按 Windows 界面语言自动选择；同时支持自定义安装目录、开始菜单/桌面快捷方式和标准卸载。
-- 便携包：`ClipLite-1.5.0-portable-win-x64.zip`。解压后复制整个目录即可使用，数据保存在其中的 `data\\` 目录。
+- 安装包：`ClipLite-Setup-1.5.1-x64.exe`。安装向导支持 English 和简体中文，会按 Windows 界面语言自动选择；同时支持自定义安装目录、开始菜单/桌面快捷方式和标准卸载。
+- 便携包：`ClipLite-1.5.1-portable-win-x64.zip`。解压后复制整个目录即可使用，数据保存在其中的 `data\\` 目录。
 
 便携包中的 `SHA256SUM.txt` 用于校验 `ClipLite.exe`。首次运行前请确认下载来源和文件校验值。
 
