@@ -1,6 +1,6 @@
 #define AppName "ClipLite"
 #ifndef AppVersion
-  #define AppVersion "1.4.0"
+  #define AppVersion "1.5.0"
 #endif
 #ifndef SourceRoot
   #define SourceRoot ".."

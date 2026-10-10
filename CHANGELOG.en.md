@@ -1,26 +1,14 @@
 # Changelog
 
-## Unreleased
+## [1.5.0] - 2026-10-10
 
-- Added configurable shortcuts for editing text, pinning the history window, showing favorites across categories, and opening filters; the defaults are `Ctrl + E`, `Ctrl + Alt + P`, `Ctrl + Alt + F`, and `Ctrl + Shift + F`, while `Ctrl + F` focuses the search box.
-- The history window context menu now shows the configured paste, delete, and hold-to-preview shortcuts in a right-aligned column.
-- Fixed long HTML text being shown as invalid text after the history was restored on restart; detail previews now extract scrollable text from the full payload and handle UTF-8 boundaries more strictly.
-- Added plain-text editing for Text and HTML history items from the context menu, with save in place, save as new, and save-and-paste actions; saving an HTML item may discard its formatting.
-- Edit saves now append only the replacement version and mark the old record deleted instead of rewriting all v4 history. In-place saves retain the original record identity, while save-as-new compares complete plain-text content and reuses an existing match instead of creating duplicates.
-- Improved history performance: single deletes, batch cleanup, expiry cleanup, category changes, and ordinary updates no longer immediately rewrite all of `history.bin`; obsolete space is compacted on startup when it crosses the threshold.
-- Added a small recovery transaction for append replacements. If the process exits between appending the new version and tombstoning the old records, the next startup rolls back or completes the cleanup instead of leaving duplicate active records.
-- Reused the existing editor window when switching to another history item and replaced its content asynchronously. HTML items show a single plain-text conversion note; plain-text items hide it.
-- Unified the font format for existing and newly typed editor text, and enabled resizing the editor window by dragging its borders.
-- Fixed inconsistent RichEdit sizing between initial content and newly typed text by applying the default character format before inserting content and at the insertion point.
-- Switched the editor body to the native multiline text control, removing RichEdit character-format inheritance differences so existing and newly typed content use the same font.
-- Fixed pinned items losing top position after history reorder or new copies. Pin priority is now applied by storage sorting and retained after restart.
-- Updated category filtering: favorites may appear across types according to Settings, while pinned items always respect the selected content type.
-- Added the category-list favorites and pins toggle to the history window context menu with immediate list refresh.
-- Split history item state into independent favorites and pins. Favorites retain cleanup protection; pins stay above other matching results and can coexist with favorites. Existing pinned flags migrate to favorites.
-- Added an automatic-cleanup protection toggle for pins (off by default), a type-list visibility toggle for favorites and pins (on by default), and a separate favorite star in each history item.
-- Added a source-code shortcut and GitHub Releases update checks to the About page, including a background startup check and configurable proxy prefix.
-- Update checks now distinguish installed and portable modes, matching the ZIP package for portable users and labeling the package type in the prompt.
-- Fixed installer upgrades failing to close the tray process; the installer now sends the normal exit command before replacing files.
+- Added six built-in themes and a custom theme editor, with fixed-theme selection and separate Windows light/dark theme assignments applied across Settings, history, and detail previews.
+- Added history notes and plain-text editing for Text/HTML items, including save in place, save as new, and save-and-paste; edited content, notes, and themes survive restart.
+- Added configurable shortcuts for editing, pinning, cross-category favorites, and filters. The history context menu now shows active shortcuts and provides cleanup scopes for non-favorite, non-pinned, or all records.
+- Improved append replacement, recovery transactions, deferred compaction, and category cleanup to avoid unnecessary full history rewrites; also fixed long-HTML recovery, ordering, and submenu interaction issues.
+- Improved settings scrolling and high-DPI layout, fixing delayed scrollbar repaint, duplicated scaling offsets, and theme refresh issues.
+- Added a source-code shortcut and GitHub Releases update checks that distinguish installed and portable packages; installer upgrades now close the running tray process first.
+- Delayed Direct2D loading and trimmed idle resources and Working Set after preview, window, clipboard, and storage operations to reduce background memory pressure.
 
 ## [1.4.0] - 2026-09-28
 

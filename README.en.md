@@ -2,7 +2,7 @@
 
 ClipLite is a lightweight native clipboard history manager for Windows. It is built with C++17, the Win32 API, and GDI/GDI+, without WebView, Electron, WinUI, Qt, or another large runtime. The project prioritizes low idle memory usage, reliable clipboard format handling, and portable distribution.
 
-Current release: **1.4.0** (Windows x64)
+Current release: **1.5.0** (Windows x64)
 
 中文文档：[README.md](README.md)
 
@@ -24,7 +24,9 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 - Long settings pages show a scrollbar on the right, with wheel scrolling, page jumps on the track, and a draggable thumb.
 - Paste as plain text or rich text; images are loaded on demand with bounded memory and disk thumbnail caches.
 - Text and HTML history items can be edited as plain text from the context menu, then saved in place, saved as a new record, or saved and pasted; saving as new reuses matching text instead of creating duplicates.
-- Automatic, light, and dark themes with blue, purple, green, and orange accents.
+- History items support single-line notes with ellipsis in the list and full text in the detail preview.
+- Six built-in themes and a custom theme editor support fixed themes or separate Windows light/dark theme assignments.
+- The history context menu provides cleanup scopes for non-favorite, non-pinned, or all records with confirmation counts.
 - English and Simplified Chinese interfaces.
 - Runs in the system tray and restores its tray icon after Explorer restarts or refreshes the taskbar.
 - Limits for record count, disk usage, retention period, item size, and monitoring pause.
@@ -49,18 +51,19 @@ Settings window:
 
 ![ClipLite settings window](https://raw.githubusercontent.com/wxh-777/ClipLite/main/docs/screenshots/settings.png)
 
-Idle memory shown in Task Manager:
+Task Manager memory (screenshot measurement):
 
 ![ClipLite Task Manager memory usage](https://raw.githubusercontent.com/wxh-777/ClipLite/main/docs/screenshots/task-manager-memory.png)
 
-## Performance and Size
+## Task Manager Memory
 
-ClipLite is designed to stay quietly in the tray. It uses less memory than many clipboard history tools, making it suitable for long-running background use without requiring a separate runtime.
+ClipLite is designed to stay quietly in the tray. After its windows close and it becomes idle, ClipLite releases memory that is no longer needed; it also releases more temporary memory during regular background history maintenance.
+
+The value shown in Task Manager may rise briefly between maintenance passes and fall again afterward. The exact number depends on Windows and the current state of the computer.
 
 Clipboard capture, history archiving, and pre-paste history reads run in the background. When an application delays providing HTML, text, or image formats after copying, disk writes and decryption do not block ClipLite's history window, paste flow, or global shortcuts.
 
-- Task Manager showed about `0.7 MB` of idle memory in a local screenshot measurement.
-- A separate local Release measurement showed about `2.5 MB` of Private Bytes; this uses a different accounting method.
+- Task Manager memory: `0.2 MB+` (screenshot measurement).
 - The main executable is under `1 MB`.
 - Startup took about `0.05 seconds`, while full history and images are read only when needed.
 - The history popup caches recently displayed image thumbnails, so continuous scrolling does not reread and decode the same source image.
@@ -70,7 +73,7 @@ This makes ClipLite suitable for long-running background use and portable folder
 <details>
 <summary>Show detailed measurements</summary>
 
-Reference measurements from the current Windows x64 Release build on this machine: Task Manager idle memory about `0.7 MB`, Working Set `13.73 MB`, Private Bytes `2.50 MB`, main executable under `1 MB`, startup time `53.03 ms`, GDI `13`, and USER `10`. Task Manager, Working Set, and Private Bytes use different memory definitions, so their displayed values can differ; the `0.7 MB` value is the idle Task Manager observation.
+Reference values from the current Windows x64 Release build on this machine: startup about `55 ms` and an `832 KB` executable. Task Manager values vary across computers, and brief idle fluctuations are normal.
 
 The values were sampled by `tools/measure.ps1` about one second after startup while idle, with the history window closed. Actual values vary with Windows version, DPI, system state, history data, and runtime scenario. These figures describe the local Release baseline and are not a fixed guarantee for every device.
 
@@ -82,7 +85,7 @@ ClipLite is for people who want clipboard history to be easy to find without mak
 
 | Comparison | ClipLite | Common clipboard tools |
 | --- | --- | --- |
-| Background usage | About `0.7 MB` idle memory shown by Task Manager; about `2.5 MB` Private Bytes | Resident usage often grows with feature scope |
+| Background usage | Stays low while idle and releases temporary memory during background maintenance | Resident usage often grows with feature scope |
 | Program size | Main executable under `1 MB` | Usually larger when bundled with runtimes or extra features |
 | Runtime | Native Win32, without WebView or a large runtime | Some tools depend on an additional runtime or framework |
 | Data control | History stays local by default, with optional DPAPI encryption | Data location and privacy policies vary |
@@ -97,8 +100,8 @@ Features and versions vary across tools. This table describes product positionin
 
 The Windows x64 release provides:
 
-- Installer: `ClipLite-Setup-1.4.0-x64.exe`, with English and Simplified Chinese wizard languages, automatic selection based on the Windows UI language, a selectable installation directory, shortcuts, and standard uninstall support.
-- Portable package: `ClipLite-1.4.0-portable-win-x64.zip`, which can be extracted and moved as a directory. Data is stored in its `data\\` directory.
+- Installer: `ClipLite-Setup-1.5.0-x64.exe`, with English and Simplified Chinese wizard languages, automatic selection based on the Windows UI language, a selectable installation directory, shortcuts, and standard uninstall support.
+- Portable package: `ClipLite-1.5.0-portable-win-x64.zip`, which can be extracted and moved as a directory. Data is stored in its `data\\` directory.
 
 Use `SHA256SUM.txt` in the portable package to verify `ClipLite.exe`. Verify the download source before running the application.
 
