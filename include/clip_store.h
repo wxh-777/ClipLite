@@ -63,6 +63,9 @@ public:
                 const std::string& source = {}, std::uint64_t expiresAt = 0);
     bool appendOrUpdate(ClipType type, const std::string& payload, std::uint64_t hash,
                         const std::string& source = {}, std::uint64_t expiresAt = 0);
+    bool replaceWithText(std::uint64_t recordId, const std::string& payload);
+    bool appendUniqueText(const std::string& payload, const std::string& source,
+                          std::uint64_t expiresAt, std::uint64_t& savedRecordId);
     bool recordUse(std::size_t index, bool promote);
     bool readPayload(std::size_t index, std::string& payload) const;
     bool readPayloadSnapshot(const std::wstring& path, const ClipItem& item,
@@ -78,6 +81,7 @@ public:
     bool clearUnfavorited(bool protectPinned = false);
     bool clearTypeUnfavorited(ClipType type);
     bool pruneExpired(std::uint64_t timestamp);
+    bool compactIfNeeded();
 
     std::vector<std::size_t> search(const std::string& query) const;
     ClipSearchSnapshot searchSnapshot() const;
@@ -91,9 +95,18 @@ public:
     std::size_t countType(ClipType type) const;
     std::uint64_t bytesType(ClipType type) const;
     std::uint64_t diskBytes() const { return diskBytes_; }
+    std::uint32_t maxPayloadBytes() const { return maxPayloadBytes_; }
     const std::wstring& path() const { return path_; }
 
 private:
+    std::size_t findPlainTextMatch(const std::string& payload, std::uint64_t hash,
+                                   std::size_t ignoredIndex) const;
+    bool appendRecordReplacement(std::size_t targetIndex, ClipItem replacement,
+                                 const std::string& payload, std::size_t duplicateIndex);
+    bool appendTextReplacement(std::size_t targetIndex, const std::string& payload,
+                               std::size_t duplicateIndex);
+    bool markDeletedBatch(const std::vector<ClipItem>& items, bool deleted);
+    bool removeItems(const std::vector<ClipItem>& items);
     bool rebuildFile();
     bool rebuildFileRaw();
     bool markDeleted(const ClipItem& item, bool deleted);

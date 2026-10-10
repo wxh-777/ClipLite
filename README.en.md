@@ -23,6 +23,7 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 - Search focuses the input by default; an optional compatibility mode keeps the original app in the foreground and uses `Ctrl+Space` to enter Chinese IME input.
 - Long settings pages show a scrollbar on the right, with wheel scrolling, page jumps on the track, and a draggable thumb.
 - Paste as plain text or rich text; images are loaded on demand with bounded memory and disk thumbnail caches.
+- Text and HTML history items can be edited as plain text from the context menu, then saved in place, saved as a new record, or saved and pasted; saving as new reuses matching text instead of creating duplicates.
 - Automatic, light, and dark themes with blue, purple, green, and orange accents.
 - English and Simplified Chinese interfaces.
 - Runs in the system tray and restores its tray icon after Explorer restarts or refreshes the taskbar.

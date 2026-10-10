@@ -153,6 +153,7 @@ constexpr int kMenuClearHistory = 114;
 constexpr int kMenuClearOrdinary = 115;
 constexpr int kMenuClearUnfavorited = 116;
 constexpr int kMenuClearAll = 117;
+constexpr int kMenuEditText = 118;
 constexpr int kFilterAll = 130;
 constexpr int kFilterText = 131;
 constexpr int kFilterFiles = 132;
@@ -184,6 +185,8 @@ constexpr UINT kPopupPreviewKeyMessage = WM_APP + 14;
 constexpr UINT kStoreChangedMessage = WM_APP + 15;
 constexpr UINT kPastePayloadLoadedMessage = WM_APP + 16;
 constexpr UINT kUpdateCheckCompleteMessage = WM_APP + 17;
+constexpr UINT kTextEditorPayloadLoadedMessage = WM_APP + 19;
+constexpr UINT kTextEditorSavedMessage = WM_APP + 20;
 constexpr UINT_PTR kExpiryTimer = 3;
 constexpr UINT_PTR kClipboardCaptureTimer = 7;
 constexpr UINT_PTR kSettingsToggleTimer = 4;
@@ -206,6 +209,7 @@ constexpr UINT_PTR kPopupScrollAnimationTimer = 19;
 constexpr UINT_PTR kPopupDetailRenderTimer = 20;
 constexpr UINT_PTR kFilterSubmenuHoverTimer = 21;
 constexpr UINT_PTR kPopupContextSubmenuHideTimer = 22;
+constexpr UINT_PTR kStorageMaintenanceTimer = 23;
 constexpr DWORD kSettingsToggleAnimationMs = 160;
 constexpr DWORD kSettingsDropdownAnimationMs = 150;
 constexpr DWORD kSettingsThemeAnimationMs = 180;
@@ -216,6 +220,7 @@ constexpr UINT kSettingsEncryptionDebounceMs = 800;
 constexpr UINT kSettingsActionFeedbackMs = 2400;
 constexpr UINT kPopupSearchDelayMs = 90;
 constexpr UINT kPopupPreviewResumeMs = 50;
+constexpr UINT kStorageMaintenanceDelayMs = 2500;
 constexpr UINT kFilterSubmenuHoverDelayMs = 120;
 constexpr UINT kPopupScrollAnimationMs = 110;
 constexpr int kPopupWheelScrollStep = 96;
@@ -287,6 +292,12 @@ constexpr int kTraySettings = 201;
 constexpr int kTrayExit = 202;
 constexpr int kIconResource = 101;
 constexpr int kSupportCopyGroup = 300;
+constexpr int kTextEditorEdit = 600;
+constexpr int kTextEditorSave = 601;
+constexpr int kTextEditorSaveAsNew = 602;
+constexpr int kTextEditorSaveAndPaste = 603;
+constexpr int kTextEditorCancel = 604;
+constexpr int kTextEditorNotice = 605;
 constexpr int kSupportPaymentWidth = 720;
 constexpr int kSupportPaymentHeight = 630;
 constexpr int kSupportQqWidth = 560;
@@ -442,6 +453,13 @@ struct AppState {
     HWND settingsBodyViewport = nullptr;
     HWND settingsBodyContent = nullptr;
     HWND support = nullptr;
+    HWND textEditor = nullptr;
+    HWND textEditorEdit = nullptr;
+    HWND textEditorNotice = nullptr;
+    HWND textEditorSaveButton = nullptr;
+    HWND textEditorSaveAsNewButton = nullptr;
+    HWND textEditorSaveAndPasteButton = nullptr;
+    HWND textEditorCancelButton = nullptr;
     HANDLE supportProcess = nullptr;
     DWORD supportProcessId = 0;
     HWND targetWindow = nullptr;
@@ -457,6 +475,9 @@ struct AppState {
     HFONT settingsTitleFont = nullptr;
     HFONT settingsCardTitleFont = nullptr;
     HFONT settingsBodyFont = nullptr;
+    HFONT textEditorFont = nullptr;
+    HBRUSH textEditorBackgroundBrush = nullptr;
+    HBRUSH textEditorInputBrush = nullptr;
     HBRUSH popupInputBrush = nullptr;
     HBRUSH settingsBackgroundBrush = nullptr;
     HBRUSH settingsCardBrush = nullptr;
@@ -558,6 +579,14 @@ struct AppState {
     float languageDropdownTo = 0.0f;
     bool restoringSettingsControls = false;
     bool settingsClosing = false;
+    bool textEditorLoading = false;
+    bool textEditorSaving = false;
+    bool textEditorSaveAsNew = false;
+    bool textEditorSaveAndPaste = false;
+    std::uint64_t textEditorRecordId = 0;
+    std::uint64_t textEditorPendingRecordId = 0;
+    ClipItem textEditorPendingItem;
+    ClipItem textEditorItem;
     bool updateCheckRunning = false;
     int settingsTab = 0;
     std::wstring settingsActionFeedback;
@@ -752,6 +781,21 @@ struct PastePayloadResult {
     bool success = false;
 };
 
+struct TextEditorPayloadResult {
+    ClipItem item;
+    std::string payload;
+    bool success = false;
+};
+
+struct TextEditorSaveResult {
+    HWND editor = nullptr;
+    std::uint64_t originalRecordId = 0;
+    std::uint64_t savedRecordId = 0;
+    bool saveAsNew = false;
+    bool saveAndPaste = false;
+    bool success = false;
+};
+
 struct PopupFilePreviewResult {
     HWND popup = nullptr;
     std::uint64_t storeRevision = 0;
@@ -864,6 +908,19 @@ void updateDetailPreviewTextEdit();
 void updateDetailPreviewKeyState(bool down);
 RECT detailPreviewContentRect(HWND hwnd);
 void fitDetailPreviewImage();
+void refreshSettingsFrame(HWND hwnd);
+void fillSettingsControlBackdrop(HDC dc, const RECT& rect);
+void openTextEditorForSelected();
+void closeTextEditor(bool restorePopup = true);
+LRESULT CALLBACK textEditorEditSubclass(HWND hwnd, UINT message, WPARAM wParam,
+                                        LPARAM lParam, UINT_PTR subclassId,
+                                        DWORD_PTR refData);
+LRESULT CALLBACK textEditorButtonSubclass(HWND hwnd, UINT message, WPARAM wParam,
+                                          LPARAM lParam, UINT_PTR subclassId,
+                                          DWORD_PTR refData);
+bool textEditorContainsPoint(POINT point);
+void refreshTextEditorAppearance();
+void refreshTextEditorNotice();
 void closeFilterMenu();
 bool filterMenuContainsPoint(POINT point);
 void closePopupContextMenu();
@@ -899,6 +956,8 @@ struct BenchmarkDirectoryGuard {
         if (!path.empty()) {
             DeleteFileW((path + L"\\history.bin").c_str());
             DeleteFileW((path + L"\\history.bin.tmp").c_str());
+            DeleteFileW((path + L"\\history.bin.txn").c_str());
+            DeleteFileW((path + L"\\history.bin.txn.tmp").c_str());
             RemoveDirectoryW(path.c_str());
         }
     }
@@ -2242,6 +2301,28 @@ bool enqueueStorageJob(std::function<void()> job, bool urgent = false) {
     }
     g_app->storeCondition.notify_one();
     return true;
+}
+
+void scheduleStorageMaintenance() {
+    if (!g_app || !g_app->hidden) return;
+    KillTimer(g_app->hidden, kStorageMaintenanceTimer);
+    SetTimer(g_app->hidden, kStorageMaintenanceTimer,
+             kStorageMaintenanceDelayMs, nullptr);
+}
+
+void runStorageMaintenance() {
+    if (!g_app || !g_app->hidden) return;
+    if (g_app->popup || g_app->settings || g_app->textEditor || g_app->textEditorLoading) {
+        scheduleStorageMaintenance();
+        return;
+    }
+    if (!enqueueStorageJob([] {
+        if (!g_app->store.compactIfNeeded()) {
+            appendDiagnosticLog("WARN", "storage: deferred history compaction failed");
+        }
+    })) {
+        scheduleStorageMaintenance();
+    }
 }
 
 // 捕获线程只读取系统剪贴板，线程对象由 AppState 持有并在完成或退出时 join。
@@ -4249,6 +4330,13 @@ void clearDetailPreviewSourceBitmap() {
     g_app->detailPreviewState.sourceBitmapHeight = 0;
 }
 
+void releaseRichEditModuleIfIdle() {
+    if (!g_app || g_app->detailPreviewTextEdit || g_app->textEditorEdit ||
+        !g_app->richEditModule) return;
+    FreeLibrary(g_app->richEditModule);
+    g_app->richEditModule = nullptr;
+}
+
 void scheduleDetailPreviewRender() {
     if (!g_app || !g_app->popup || !g_app->detailPreview ||
         (g_app->detailPreviewState.loading && !g_app->detailPreviewState.sourceBitmap) ||
@@ -4323,10 +4411,7 @@ void destroyDetailPreview() {
     }
     g_app->detailPreviewRenderer.reset();
     g_app->detailPreviewTextEdit = nullptr;
-    if (g_app->richEditModule) {
-        FreeLibrary(g_app->richEditModule);
-        g_app->richEditModule = nullptr;
-    }
+    releaseRichEditModuleIfIdle();
 }
 
 // 按需创建不抢焦点的详情预览窗口。
@@ -4352,7 +4437,7 @@ bool ensureDetailPreviewWindow() {
         if (region && SetWindowRgn(g_app->detailPreview, region, TRUE) == 0) {
             DeleteObject(region);
         }
-        g_app->richEditModule = LoadLibraryW(L"Msftedit.dll");
+        if (!g_app->richEditModule) g_app->richEditModule = LoadLibraryW(L"Msftedit.dll");
         if (g_app->richEditModule) {
             g_app->detailPreviewTextEdit = CreateWindowExW(
                 0, MSFTEDIT_CLASS, L"",
@@ -5501,7 +5586,8 @@ LRESULT CALLBACK popupMouseProc(int code, WPARAM wParam, LPARAM lParam) {
         const auto* mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
         RECT popupRect{};
         GetWindowRect(g_app->popup, &popupRect);
-        if (!PtInRect(&popupRect, mouse->pt) && !detailPreviewContainsPoint(mouse->pt)) {
+        if (!PtInRect(&popupRect, mouse->pt) && !detailPreviewContainsPoint(mouse->pt) &&
+            !textEditorContainsPoint(mouse->pt)) {
             if ((g_app->filterMenuOpen && filterMenuContainsPoint(mouse->pt)) ||
                 (g_app->popupContextMenuOpen && popupContextMenuContainsPoint(mouse->pt))) {
                 return CallNextHookEx(nullptr, code, wParam, lParam);
@@ -7210,6 +7296,446 @@ void createPopupPaintFonts() {
     g_app->popupFilterFont = createCachedFont(11, FW_NORMAL, L"Microsoft YaHei");
     g_app->popupPreviewFont = createCachedFont(13, FW_NORMAL, L"Microsoft YaHei");
     g_app->popupMetaFont = createCachedFont(10, FW_NORMAL, L"Microsoft YaHei");
+}
+
+void drawTextEditorButton(const DRAWITEMSTRUCT& item) {
+    if (!g_app) return;
+    const int id = GetDlgCtrlID(item.hwndItem);
+    const bool primary = id == kTextEditorSave;
+    const bool pressed = (item.itemState & ODS_SELECTED) != 0;
+    const bool disabled = (item.itemState & ODS_DISABLED) != 0;
+    const bool focused = (item.itemState & ODS_FOCUS) != 0 || GetFocus() == item.hwndItem;
+    const bool highContrast = highContrastEnabled();
+    const COLORREF surface = highContrast ? GetSysColor(COLOR_BTNFACE) :
+        themeColor(ThemeColorRole::SurfaceBackground);
+    const COLORREF background = primary
+        ? (disabled ? themeColor(ThemeColorRole::DisabledText) :
+           (pressed ? themeColor(ThemeColorRole::PressedBackground) : settingsAccentColor()))
+        : (disabled ? surface :
+           (pressed ? themeColor(ThemeColorRole::PressedBackground) :
+             surface));
+    const COLORREF border = primary
+        ? background
+        : (disabled ? themeColor(ThemeColorRole::DisabledText) :
+           (pressed || focused ? settingsAccentColor() :
+                                            themeColor(ThemeColorRole::Border)));
+    const COLORREF text = primary
+        ? (disabled ? themeColor(ThemeColorRole::SecondaryText) : RGB(255, 255, 255))
+        : (disabled ? themeColor(ThemeColorRole::DisabledText) : themeColor(ThemeColorRole::Text));
+    RECT buttonRect = item.rcItem;
+    if (pressed) OffsetRect(&buttonRect, 0, ui(1));
+    fillSettingsControlBackdrop(item.hDC, item.rcItem);
+    drawGdiRoundedSurface(item.hDC, buttonRect, background, border, 7);
+    wchar_t label[128]{};
+    GetWindowTextW(item.hwndItem, label, ARRAYSIZE(label));
+    drawSettingsText(item.hDC, g_app->textEditorFont, label, buttonRect, text,
+                     DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if (focused && !highContrast) {
+        RECT focusRect = buttonRect;
+        InflateRect(&focusRect, -ui(3), -ui(3));
+        DrawFocusRect(item.hDC, &focusRect);
+    }
+}
+
+void refreshTextEditorAppearance() {
+    if (!g_app || !g_app->textEditor) return;
+    const COLORREF windowBackground = highContrastEnabled()
+        ? GetSysColor(COLOR_WINDOW) : themeColor(ThemeColorRole::SurfaceBackground);
+    const COLORREF inputBackground = highContrastEnabled()
+        ? GetSysColor(COLOR_WINDOW) : themeColor(ThemeColorRole::InputBackground);
+    if (g_app->textEditorBackgroundBrush) DeleteObject(g_app->textEditorBackgroundBrush);
+    if (g_app->textEditorInputBrush) DeleteObject(g_app->textEditorInputBrush);
+    g_app->textEditorBackgroundBrush = CreateSolidBrush(windowBackground);
+    g_app->textEditorInputBrush = CreateSolidBrush(inputBackground);
+    refreshSettingsFrame(g_app->textEditor);
+    InvalidateRect(g_app->textEditor, nullptr, FALSE);
+    RedrawWindow(g_app->textEditor, nullptr, nullptr,
+                 RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+}
+
+void layoutTextEditor(HWND hwnd) {
+    if (!g_app || !hwnd) return;
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const int width = client.right - client.left;
+    const int height = client.bottom - client.top;
+    const int margin = ui(16);
+    const int noticeHeight = g_app->textEditorNotice &&
+        IsWindowVisible(g_app->textEditorNotice) ? ui(24) : 0;
+    const int buttonHeight = ui(30);
+    const int gap = ui(8);
+    const int buttonTop = std::max(margin + noticeHeight + ui(40), height - margin - buttonHeight);
+    const int editBottom = buttonTop - gap;
+    if (g_app->textEditorNotice) {
+        SetWindowPos(g_app->textEditorNotice, nullptr, margin, ui(12),
+                     std::max(0, width - margin * 2), noticeHeight,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    if (g_app->textEditorEdit) {
+        SetWindowPos(g_app->textEditorEdit, nullptr, margin, margin + noticeHeight,
+                     std::max(0, width - margin * 2),
+                     std::max(ui(80), editBottom - margin - noticeHeight),
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    const int cancelWidth = ui(82);
+    const int saveWidth = ui(108);
+    const int saveAsWidth = ui(150);
+    const int pasteWidth = ui(140);
+    int buttonLeft = width - margin - cancelWidth;
+    if (g_app->textEditorCancelButton) {
+        SetWindowPos(g_app->textEditorCancelButton, nullptr, buttonLeft, buttonTop,
+                     cancelWidth, buttonHeight, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    buttonLeft -= gap + pasteWidth;
+    if (g_app->textEditorSaveAndPasteButton) {
+        SetWindowPos(g_app->textEditorSaveAndPasteButton, nullptr, buttonLeft, buttonTop,
+                     pasteWidth, buttonHeight, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    buttonLeft -= gap + saveAsWidth;
+    if (g_app->textEditorSaveAsNewButton) {
+        SetWindowPos(g_app->textEditorSaveAsNewButton, nullptr, buttonLeft, buttonTop,
+                     saveAsWidth, buttonHeight, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    buttonLeft -= gap + saveWidth;
+    if (g_app->textEditorSaveButton) {
+        SetWindowPos(g_app->textEditorSaveButton, nullptr, buttonLeft, buttonTop,
+                     saveWidth, buttonHeight, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
+void refreshTextEditorNotice() {
+    if (!g_app || !g_app->textEditorNotice) return;
+    const bool html = g_app->textEditorItem.type == ClipType::Html;
+    if (html) {
+        SetWindowTextW(g_app->textEditorNotice,
+                       tr(L"Saving will convert this item to plain text.",
+                          L"保存后将转换为纯文本。"));
+    }
+    ShowWindow(g_app->textEditorNotice, html ? SW_SHOW : SW_HIDE);
+    if (g_app->textEditor) layoutTextEditor(g_app->textEditor);
+}
+
+void setTextEditorEnabled(bool enabled) {
+    if (!g_app) return;
+    EnableWindow(g_app->textEditorEdit, enabled);
+    EnableWindow(g_app->textEditorSaveButton, enabled);
+    EnableWindow(g_app->textEditorSaveAsNewButton, enabled);
+    EnableWindow(g_app->textEditorSaveAndPasteButton, enabled);
+    EnableWindow(g_app->textEditorCancelButton, enabled);
+}
+
+bool textEditorContainsPoint(POINT point) {
+    if (!g_app || !g_app->textEditor || !IsWindowVisible(g_app->textEditor)) return false;
+    RECT rect{};
+    return GetWindowRect(g_app->textEditor, &rect) && PtInRect(&rect, point) != FALSE;
+}
+
+void destroyTextEditorControls() {
+    if (!g_app) return;
+    g_app->textEditorEdit = nullptr;
+    g_app->textEditorNotice = nullptr;
+    g_app->textEditorSaveButton = nullptr;
+    g_app->textEditorSaveAsNewButton = nullptr;
+    g_app->textEditorSaveAndPasteButton = nullptr;
+    g_app->textEditorCancelButton = nullptr;
+    if (g_app->textEditorFont) DeleteObject(g_app->textEditorFont);
+    if (g_app->textEditorBackgroundBrush) DeleteObject(g_app->textEditorBackgroundBrush);
+    if (g_app->textEditorInputBrush) DeleteObject(g_app->textEditorInputBrush);
+    g_app->textEditorFont = nullptr;
+    g_app->textEditorBackgroundBrush = nullptr;
+    g_app->textEditorInputBrush = nullptr;
+    releaseRichEditModuleIfIdle();
+}
+
+void closeTextEditor(bool restorePopup) {
+    if (!g_app) return;
+    const HWND editor = g_app->textEditor;
+    if (editor && IsWindow(editor)) DestroyWindow(editor);
+    g_app->textEditor = nullptr;
+    destroyTextEditorControls();
+    g_app->textEditorLoading = false;
+    g_app->textEditorSaving = false;
+    g_app->textEditorSaveAsNew = false;
+    g_app->textEditorSaveAndPaste = false;
+    g_app->textEditorRecordId = 0;
+    g_app->textEditorPendingRecordId = 0;
+    g_app->textEditorPendingItem = ClipItem{};
+    g_app->textEditorItem = ClipItem{};
+    if (g_app->popup) {
+        updatePopupKeyboardHook();
+        updatePopupMouseHook();
+    }
+    if (restorePopup && g_app->popup && IsWindow(g_app->popup)) {
+        refreshVisible(true);
+        ShowWindow(g_app->popup, SW_SHOWNOACTIVATE);
+        SetWindowPos(g_app->popup, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        refreshPopupPointerState(g_app->popup);
+    }
+}
+
+bool createTextEditorWindow(const ClipItem& item, const std::wstring& text) {
+    if (!g_app || g_app->textEditor || !ensureGdiplus()) return false;
+
+    POINT cursor{};
+    GetCursorPos(&cursor);
+    const HMONITOR monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO monitorInfo{sizeof(monitorInfo)};
+    GetMonitorInfoW(monitor, &monitorInfo);
+    g_uiDpi = monitorDpi(monitor);
+    const int width = ui(720);
+    const int height = ui(520);
+    const int x = monitorInfo.rcWork.left +
+        (monitorInfo.rcWork.right - monitorInfo.rcWork.left - width) / 2;
+    const int y = monitorInfo.rcWork.top +
+        (monitorInfo.rcWork.bottom - monitorInfo.rcWork.top - height) / 2;
+    g_app->textEditor = CreateWindowExW(
+        WS_EX_APPWINDOW, L"ClipLiteTextEditor", tr(L"Edit clipboard text", L"编辑剪贴板文本"),
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX |
+            WS_THICKFRAME | WS_CLIPCHILDREN,
+        x, y, width, height, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!g_app->textEditor) {
+        releaseRichEditModuleIfIdle();
+        return false;
+    }
+
+    g_app->textEditorFont = createCachedFont(13, FW_NORMAL, L"Microsoft YaHei");
+    g_app->textEditorBackgroundBrush = CreateSolidBrush(themeColor(ThemeColorRole::WindowBackground));
+    g_app->textEditorInputBrush = CreateSolidBrush(themeColor(ThemeColorRole::InputBackground));
+    g_app->textEditorNotice = CreateWindowExW(
+        0, L"STATIC", item.type == ClipType::Html
+            ? tr(L"This HTML item will be saved as plain text.", L"此 HTML 记录将按纯文本保存。")
+            : tr(L"Edit and save this history item as plain text.", L"此历史记录将按纯文本编辑并保存。"),
+        WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE, 0, 0, 0, 0,
+        g_app->textEditor, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextEditorNotice)),
+        GetModuleHandleW(nullptr), nullptr);
+    g_app->textEditorEdit = CreateWindowExW(
+        WS_EX_CLIENTEDGE, L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE |
+            ES_AUTOVSCROLL | ES_WANTRETURN | ES_NOHIDESEL,
+        0, 0, 0, 0, g_app->textEditor,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextEditorEdit)),
+        GetModuleHandleW(nullptr), nullptr);
+    if (!g_app->textEditorEdit) {
+        closeTextEditor(false);
+        return false;
+    }
+    if (g_app->popupKeyboardHook) {
+        UnhookWindowsHookEx(g_app->popupKeyboardHook);
+        g_app->popupKeyboardHook = nullptr;
+    }
+    SetWindowSubclass(g_app->textEditorEdit, textEditorEditSubclass, 1, 0);
+    SendMessageW(g_app->textEditorEdit, WM_SETFONT,
+                 reinterpret_cast<WPARAM>(g_app->textEditorFont), TRUE);
+    SendMessageW(g_app->textEditorEdit, EM_SETLIMITTEXT,
+                 static_cast<WPARAM>(g_app->store.maxPayloadBytes()), 0);
+
+    g_app->textEditorSaveButton = CreateWindowExW(
+        0, L"BUTTON", tr(L"Save", L"保存"),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+        0, 0, 0, 0, g_app->textEditor,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextEditorSave)),
+        GetModuleHandleW(nullptr), nullptr);
+    g_app->textEditorSaveAsNewButton = CreateWindowExW(
+        0, L"BUTTON", tr(L"Save as new", L"另存为新记录"),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+        0, 0, 0, 0, g_app->textEditor,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextEditorSaveAsNew)),
+        GetModuleHandleW(nullptr), nullptr);
+    g_app->textEditorSaveAndPasteButton = CreateWindowExW(
+        0, L"BUTTON", tr(L"Save and paste", L"保存并粘贴"),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+        0, 0, 0, 0, g_app->textEditor,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextEditorSaveAndPaste)),
+        GetModuleHandleW(nullptr), nullptr);
+    g_app->textEditorCancelButton = CreateWindowExW(
+        0, L"BUTTON", tr(L"Cancel", L"取消"),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+        0, 0, 0, 0, g_app->textEditor,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextEditorCancel)),
+        GetModuleHandleW(nullptr), nullptr);
+    const HWND buttons[] = {g_app->textEditorNotice, g_app->textEditorSaveButton,
+                            g_app->textEditorSaveAsNewButton,
+                            g_app->textEditorSaveAndPasteButton,
+                            g_app->textEditorCancelButton};
+    for (HWND button : buttons) {
+        if (button) SendMessageW(button, WM_SETFONT,
+                                 reinterpret_cast<WPARAM>(g_app->textEditorFont), TRUE);
+    }
+    const HWND editorButtons[] = {g_app->textEditorSaveButton,
+                                  g_app->textEditorSaveAsNewButton,
+                                  g_app->textEditorSaveAndPasteButton,
+                                  g_app->textEditorCancelButton};
+    for (HWND button : editorButtons) {
+        if (button) {
+            SetWindowSubclass(button, textEditorButtonSubclass, 1,
+                              static_cast<DWORD_PTR>(GetDlgCtrlID(button)));
+        }
+    }
+    refreshTextEditorNotice();
+    refreshTextEditorAppearance();
+    layoutTextEditor(g_app->textEditor);
+    SetWindowTextW(g_app->textEditorEdit, text.c_str());
+    SendMessageW(g_app->textEditorEdit, EM_SETSEL,
+                 static_cast<WPARAM>(-1), static_cast<LPARAM>(-1));
+    ShowWindow(g_app->textEditor, SW_SHOW);
+    UpdateWindow(g_app->textEditor);
+    SetForegroundWindow(g_app->textEditor);
+    SetActiveWindow(g_app->textEditor);
+    SetFocus(g_app->textEditorEdit);
+    return true;
+}
+
+void showTextEditorFailure() {
+    MessageBoxW(g_app ? g_app->textEditor : nullptr,
+                tr(L"Unable to load or save this history item.", L"无法读取或保存这条历史记录。"),
+                tr(L"Edit clipboard text", L"编辑剪贴板文本"), MB_OK | MB_ICONERROR);
+}
+
+void submitTextEditor(int action) {
+    if (!g_app || !g_app->textEditor || !g_app->textEditorEdit ||
+        g_app->textEditorLoading || g_app->textEditorSaving) return;
+    const int length = GetWindowTextLengthW(g_app->textEditorEdit);
+    if (length <= 0) {
+        MessageBoxW(g_app->textEditor, tr(L"Text cannot be empty.", L"文本内容不能为空。"),
+                    tr(L"Edit clipboard text", L"编辑剪贴板文本"), MB_OK | MB_ICONWARNING);
+        SetFocus(g_app->textEditorEdit);
+        return;
+    }
+    std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
+    GetWindowTextW(g_app->textEditorEdit, text.data(), length + 1);
+    text.resize(std::wcslen(text.c_str()));
+    const std::string payload = wideToUtf8(text.c_str(), text.size());
+    if (payload.empty() || payload.size() > g_app->store.maxPayloadBytes()) {
+        MessageBoxW(g_app->textEditor,
+                    payload.empty() ? tr(L"The text is invalid.", L"文本内容无效。")
+                                    : tr(L"The text is too large.", L"文本内容过大。"),
+                    tr(L"Edit clipboard text", L"编辑剪贴板文本"), MB_OK | MB_ICONWARNING);
+        SetFocus(g_app->textEditorEdit);
+        return;
+    }
+
+    g_app->textEditorSaving = true;
+    g_app->textEditorSaveAsNew = action == kTextEditorSaveAsNew;
+    g_app->textEditorSaveAndPaste = action == kTextEditorSaveAndPaste;
+    setTextEditorEnabled(false);
+    const HWND editor = g_app->textEditor;
+    const std::uint64_t originalRecordId = g_app->textEditorRecordId;
+    const ClipItem item = g_app->textEditorItem;
+    if (!enqueueStorageJob([editor, originalRecordId, item, payload,
+                            saveAsNew = g_app->textEditorSaveAsNew,
+                            saveAndPaste = g_app->textEditorSaveAndPaste] {
+        auto* result = new TextEditorSaveResult;
+        result->editor = editor;
+        result->originalRecordId = originalRecordId;
+        result->saveAsNew = saveAsNew;
+        result->saveAndPaste = saveAndPaste;
+        if (saveAsNew) {
+            result->success = g_app->store.appendUniqueText(
+                payload, item.source, item.expiresAt, result->savedRecordId);
+        } else {
+            result->success = g_app->store.replaceWithText(originalRecordId, payload);
+            result->savedRecordId = result->success ? originalRecordId : 0;
+        }
+        if (!PostMessageW(g_app->hidden, kTextEditorSavedMessage,
+                          reinterpret_cast<WPARAM>(result), 0)) {
+            delete result;
+        }
+    }, true)) {
+        g_app->textEditorSaving = false;
+        setTextEditorEnabled(true);
+        showTextEditorFailure();
+    }
+}
+
+void requestTextEditorPayload(const ClipItem& item) {
+    if (!g_app) return;
+    g_app->textEditorLoading = true;
+    g_app->textEditorPendingItem = item;
+    g_app->textEditorPendingRecordId = item.recordId;
+    if (g_app->textEditor) setTextEditorEnabled(false);
+    const std::wstring historyPath = g_app->store.path();
+    if (!enqueueStorageJob([item, historyPath] {
+        auto* result = new TextEditorPayloadResult;
+        result->item = item;
+        result->success = g_app->store.readPayloadSnapshot(historyPath, item, result->payload);
+        if (!PostMessageW(g_app->hidden, kTextEditorPayloadLoadedMessage,
+                          reinterpret_cast<WPARAM>(result), 0)) {
+            delete result;
+        }
+    }, true)) {
+        g_app->textEditorLoading = false;
+        setTextEditorEnabled(true);
+        showTextEditorFailure();
+    }
+}
+
+void openTextEditorForSelected() {
+    if (!g_app || !g_app->popup || g_app->visible.empty() ||
+        g_app->textEditorLoading || g_app->textEditorSaving) return;
+    const int selected = std::clamp(g_app->selected, 0,
+                                    static_cast<int>(g_app->visible.size()) - 1);
+    const std::size_t index = g_app->visible[static_cast<std::size_t>(selected)];
+    if (index >= g_app->store.items().size()) return;
+    const ClipItem item = g_app->store.items()[index];
+    if (item.type != ClipType::Text && item.type != ClipType::Html) return;
+
+    if (g_app->textEditor && IsWindow(g_app->textEditor) &&
+        item.recordId == g_app->textEditorRecordId) {
+        ShowWindow(g_app->textEditor, SW_SHOWNORMAL);
+        SetForegroundWindow(g_app->textEditor);
+        SetFocus(g_app->textEditorEdit);
+        return;
+    }
+    if (g_app->textEditor && !IsWindow(g_app->textEditor)) closeTextEditor(false);
+    closePopupContextMenu();
+    hideDetailPreview();
+    KillTimer(g_app->popup, kPopupDeactivateTimer);
+    requestTextEditorPayload(item);
+    if (g_app->textEditor) ShowWindow(g_app->textEditor, SW_HIDE);
+}
+
+LRESULT CALLBACK textEditorEditSubclass(HWND hwnd, UINT message, WPARAM wParam,
+                                        LPARAM lParam, UINT_PTR subclassId,
+                                        DWORD_PTR refData) {
+    (void)refData;
+    if (message == WM_KEYDOWN) {
+        const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        if (control && wParam == 'S') {
+            SendMessageW(GetParent(hwnd), WM_COMMAND,
+                         static_cast<WPARAM>(kTextEditorSave), 0);
+            return 0;
+        }
+        if (control && wParam == VK_RETURN) {
+            SendMessageW(GetParent(hwnd), WM_COMMAND,
+                         static_cast<WPARAM>(kTextEditorSaveAndPaste), 0);
+            return 0;
+        }
+        if (wParam == VK_ESCAPE) {
+            SendMessageW(GetParent(hwnd), WM_COMMAND,
+                         static_cast<WPARAM>(kTextEditorCancel), 0);
+            return 0;
+        }
+    }
+    if (message == WM_NCDESTROY) RemoveWindowSubclass(hwnd, textEditorEditSubclass, subclassId);
+    return DefSubclassProc(hwnd, message, wParam, lParam);
+}
+
+LRESULT CALLBACK textEditorButtonSubclass(HWND hwnd, UINT message, WPARAM wParam,
+                                          LPARAM lParam, UINT_PTR subclassId,
+                                          DWORD_PTR refData) {
+    (void)wParam;
+    (void)lParam;
+    (void)refData;
+    if (message == WM_SETCURSOR) {
+        SetCursor(LoadCursorW(nullptr, IDC_HAND));
+        return TRUE;
+    }
+    if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, textEditorButtonSubclass, subclassId);
+    }
+    return DefSubclassProc(hwnd, message, wParam, lParam);
 }
 
 void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
@@ -9579,6 +10105,7 @@ void clearPopupHistory(int command) {
             : g_app->store.clearUnfavorited(command == kMenuClearOrdinary);
         if (success) {
             refreshVisible(true);
+            scheduleStorageMaintenance();
             if (g_app->settings) InvalidateRect(g_app->settings, nullptr, FALSE);
         } else {
             MessageBoxW(hwnd, settingsLocale().clearFailed, settingsLocale().confirmClearTitle,
@@ -9598,12 +10125,14 @@ void executePopupContextCommand(int command) {
     else if (command == kMenuPreviewByKey) setPopupPreviewOptions(false, true);
     else if (command == kMenuPreviewDisabled) setPopupPreviewOptions(false, false);
     else if (command >= kMenuClearOrdinary && command <= kMenuClearAll) clearPopupHistory(command);
+    else if (command == kMenuEditText) openTextEditorForSelected();
     else if (command == kMenuPaste) sendPaste();
     else if (command == kMenuPastePlain) sendPaste(PasteMode::PlainText);
     else if (command == kMenuPasteRich) sendPaste(PasteMode::RichText);
     else if (command == kMenuDelete && !g_app->visible.empty()) {
         g_app->store.remove(g_app->visible[static_cast<std::size_t>(g_app->selected)]);
         refreshVisible(true);
+        scheduleStorageMaintenance();
     } else if (command == kMenuFilter) {
         showPopupFilterMenu(g_app->popup);
     } else if (command != 0) {
@@ -9627,6 +10156,10 @@ void showPopupContextMenu(HWND hwnd, int row) {
         g_app->popupContextMenuItems.push_back({kMenuPastePlain, settingsLocale().popupPastePlain});
         if (item.type == ClipType::Html) {
             g_app->popupContextMenuItems.push_back({kMenuPasteRich, settingsLocale().popupPasteRich});
+        }
+        if (item.type == ClipType::Text || item.type == ClipType::Html) {
+            g_app->popupContextMenuItems.push_back({
+                kMenuEditText, tr(L"Edit as plain text", L"编辑文本")});
         }
     }
     g_app->popupContextMenuItems.push_back({kMenuPopupPinned, g_app->popupPinned
@@ -10278,6 +10811,10 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
                                        static_cast<std::uint64_t>(limit.maxDiskMb) * 1024ULL * 1024ULL);
         }
         InvalidateRect(hwnd, nullptr, FALSE);
+    }
+    if (maxItemsChanged || retentionChanged || maxDiskChanged ||
+        protectPinnedChanged || categoryLimitsChanged) {
+        scheduleStorageMaintenance();
     }
     saveSettings(g_app->settingsData);
     if (adminModeChanged && g_app->settingsData.runAsAdministrator) {
@@ -11650,8 +12187,12 @@ void subclassSettingsControls(HWND hwnd) {
 LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     if (message == WM_PAINT && !g_supportProcessMode) ensureGdiplus();
     if (!g_app) return DefWindowProcW(hwnd, message, wParam, lParam);
+    wchar_t windowClassName[32]{};
+    GetClassNameW(hwnd, windowClassName, ARRAYSIZE(windowClassName));
+    const bool textEditorWindow = std::wcscmp(windowClassName, L"ClipLiteTextEditor") == 0;
     // UI 线程读取索引时与存储 worker 共用这把锁，避免快照之外的旧 UI 路径产生竞态。
-    std::lock_guard<std::recursive_mutex> storeLock(g_app->storeMutex);
+    std::unique_lock<std::recursive_mutex> storeLock(g_app->storeMutex, std::defer_lock);
+    if (!textEditorWindow) storeLock.lock();
     if (message == kCloseContextMenuMessage) {
         closePopupContextMenu();
         return 0;
@@ -11675,6 +12216,86 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
     if (message == kStoreChangedMessage) {
         if (g_app->popup) refreshVisible(true);
+        scheduleStorageMaintenance();
+        return 0;
+    }
+    if (message == kTextEditorPayloadLoadedMessage) {
+        std::unique_ptr<TextEditorPayloadResult> result(
+            reinterpret_cast<TextEditorPayloadResult*>(wParam));
+        if (!result || !g_app->textEditorLoading ||
+            result->item.recordId != g_app->textEditorPendingRecordId) return 0;
+        if (!result->success) {
+            g_app->textEditorLoading = false;
+            g_app->textEditorPendingRecordId = 0;
+            g_app->textEditorPendingItem = ClipItem{};
+            setTextEditorEnabled(true);
+            showTextEditorFailure();
+            return 0;
+        }
+        std::string textPayload = result->payload;
+        if (result->item.type == ClipType::Html) {
+            std::string plainText;
+            std::string html;
+            if (splitStoredHtml(result->payload, plainText, html)) {
+                textPayload = plainText.empty() ? html : plainText;
+            }
+        }
+        const std::wstring text = utf8ToWide(textPayload);
+        g_app->textEditorItem = result->item;
+        g_app->textEditorRecordId = result->item.recordId;
+        g_app->textEditorPendingRecordId = 0;
+        g_app->textEditorPendingItem = ClipItem{};
+        g_app->textEditorLoading = false;
+        if (g_app->textEditor && IsWindow(g_app->textEditor)) {
+            SetWindowTextW(g_app->textEditorEdit, text.c_str());
+            SendMessageW(g_app->textEditorEdit, EM_SETSEL,
+                         static_cast<WPARAM>(-1), static_cast<LPARAM>(-1));
+            refreshTextEditorNotice();
+            setTextEditorEnabled(true);
+            ShowWindow(g_app->textEditor, SW_SHOWNORMAL);
+            SetForegroundWindow(g_app->textEditor);
+            SetFocus(g_app->textEditorEdit);
+            if (g_app->popup) ShowWindow(g_app->popup, SW_HIDE);
+            return 0;
+        }
+        if (!createTextEditorWindow(result->item, text)) {
+            showTextEditorFailure();
+            closeTextEditor();
+            return 0;
+        }
+        if (g_app->popup) ShowWindow(g_app->popup, SW_HIDE);
+        return 0;
+    }
+    if (message == kTextEditorSavedMessage) {
+        std::unique_ptr<TextEditorSaveResult> result(
+            reinterpret_cast<TextEditorSaveResult*>(wParam));
+        if (!result || result->editor != g_app->textEditor) return 0;
+        if (!result->success) {
+            g_app->textEditorSaving = false;
+            setTextEditorEnabled(true);
+            showTextEditorFailure();
+            return 0;
+        }
+        const bool saveAndPaste = result->saveAndPaste;
+        const std::uint64_t savedRecordId = result->savedRecordId;
+        closeTextEditor(false);
+        scheduleStorageMaintenance();
+        if (g_app->popup) {
+            refreshVisible(true);
+            const auto found = std::find_if(g_app->visible.begin(), g_app->visible.end(),
+                                            [savedRecordId](std::size_t index) {
+                return index < g_app->store.items().size() &&
+                    g_app->store.items()[index].recordId == savedRecordId;
+            });
+            if (found != g_app->visible.end()) {
+                g_app->selected = static_cast<int>(found - g_app->visible.begin());
+            }
+            ShowWindow(g_app->popup, SW_SHOWNOACTIVATE);
+            SetWindowPos(g_app->popup, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            invalidatePopupList(g_app->popup);
+            if (saveAndPaste) sendPaste();
+        }
         return 0;
     }
     if (message == kPastePayloadLoadedMessage) {
@@ -11724,6 +12345,101 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         }
         return 0;
+    }
+    if (textEditorWindow) {
+        if (message == WM_ERASEBKGND) return 1;
+        if (message == WM_GETMINMAXINFO) {
+            auto* minimum = reinterpret_cast<MINMAXINFO*>(lParam);
+            minimum->ptMinTrackSize.x = ui(520);
+            minimum->ptMinTrackSize.y = ui(360);
+            return 0;
+        }
+        if (message == WM_DPICHANGED) {
+            g_uiDpi = LOWORD(wParam);
+            const auto* suggested = reinterpret_cast<const RECT*>(lParam);
+            if (suggested) {
+                SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
+                             suggested->right - suggested->left,
+                             suggested->bottom - suggested->top,
+                             SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            const HFONT oldFont = g_app->textEditorFont;
+            g_app->textEditorFont = createCachedFont(13, FW_NORMAL, L"Microsoft YaHei");
+            applyFontToChildren(hwnd, g_app->textEditorFont);
+            if (oldFont) DeleteObject(oldFont);
+            layoutTextEditor(hwnd);
+            return 0;
+        }
+        if (message == WM_SIZE) {
+            layoutTextEditor(hwnd);
+            return 0;
+        }
+        if (message == WM_PAINT) {
+            PAINTSTRUCT paint{};
+            HDC dc = BeginPaint(hwnd, &paint);
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            HBRUSH brush = g_app->textEditorBackgroundBrush
+                ? g_app->textEditorBackgroundBrush
+                : GetSysColorBrush(COLOR_WINDOW);
+            FillRect(dc, &client, brush);
+            EndPaint(hwnd, &paint);
+            return 0;
+        }
+        if (message == WM_CTLCOLORSTATIC) {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, themeColor(ThemeColorRole::SecondaryText));
+            return reinterpret_cast<LRESULT>(g_app->textEditorBackgroundBrush
+                ? g_app->textEditorBackgroundBrush : GetSysColorBrush(COLOR_WINDOW));
+        }
+        if (message == WM_CTLCOLOREDIT) {
+            HDC dc = reinterpret_cast<HDC>(wParam);
+            SetBkColor(dc, themeColor(ThemeColorRole::InputBackground));
+            SetTextColor(dc, themeColor(ThemeColorRole::Text));
+            return reinterpret_cast<LRESULT>(g_app->textEditorInputBrush
+                ? g_app->textEditorInputBrush : GetSysColorBrush(COLOR_WINDOW));
+        }
+        if (message == WM_DRAWITEM) {
+            const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
+            if (item && (item->CtlID == kTextEditorSave ||
+                         item->CtlID == kTextEditorSaveAsNew ||
+                         item->CtlID == kTextEditorSaveAndPaste ||
+                         item->CtlID == kTextEditorCancel)) {
+                drawTextEditorButton(*item);
+                return TRUE;
+            }
+        }
+        if (message == WM_COMMAND) {
+            const int command = LOWORD(wParam);
+            if (command == kTextEditorCancel) {
+                if (!g_app->textEditorSaving) closeTextEditor();
+                return 0;
+            }
+            if (command == kTextEditorSave || command == kTextEditorSaveAsNew ||
+                command == kTextEditorSaveAndPaste) {
+                submitTextEditor(command);
+                return 0;
+            }
+        }
+        if (message == WM_CLOSE) {
+            if (!g_app->textEditorSaving) closeTextEditor();
+            return 0;
+        }
+        if (message == WM_NCDESTROY) {
+            if (g_app->textEditor == hwnd) {
+                g_app->textEditor = nullptr;
+                destroyTextEditorControls();
+                g_app->textEditorLoading = false;
+                g_app->textEditorSaving = false;
+                g_app->textEditorRecordId = 0;
+                g_app->textEditorPendingRecordId = 0;
+                g_app->textEditorPendingItem = ClipItem{};
+                g_app->textEditorItem = ClipItem{};
+            }
+            return DefWindowProcW(hwnd, message, wParam, lParam);
+        }
+        return DefWindowProcW(hwnd, message, wParam, lParam);
     }
     if (hwnd == g_app->popupContextSubmenu) {
         if (message == WM_ERASEBKGND) return 1;
@@ -12779,11 +13495,17 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             return 0;
         }
+        if (message == WM_TIMER && wParam == kStorageMaintenanceTimer) {
+            KillTimer(hwnd, kStorageMaintenanceTimer);
+            runStorageMaintenance();
+            return 0;
+        }
         if (message == WM_TIMER && wParam == kExpiryTimer) {
             if (g_app->store.pruneExpired(nowUnix()) && g_app->popup) {
                 refreshVisible(true);
                 InvalidateRect(g_app->popup, nullptr, FALSE);
             }
+            scheduleStorageMaintenance();
             return 0;
         }
         if (message == WM_TIMER && wParam == kPasteInputTimer) {
@@ -13126,6 +13848,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             refreshSettingsBrushes();
             refreshPopupBrush();
             refreshDetailPreviewTextEditAppearance();
+            refreshTextEditorAppearance();
             invalidateThemeWindow(hwnd);
             invalidateThemeWindow(g_app->popup);
             invalidateThemeWindow(g_app->languageDropdown);
@@ -13412,6 +14135,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                                    count, settingsClearActionLabel(actionId));
                     }
                     setSettingsActionFeedback(hwnd, feedback, true);
+                    scheduleStorageMaintenance();
                 } else {
                     appendDiagnosticLog("ERROR", "settings: history clear operation failed");
                     setSettingsActionFeedback(hwnd, settingsLocale().clearFailed, false);
@@ -14037,7 +14761,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
         }
         if (message == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE) {
-            if (g_app->filterMenuOpen || g_app->popupContextMenuOpen) return 0;
+            if (g_app->filterMenuOpen || g_app->popupContextMenuOpen ||
+                g_app->textEditor || g_app->textEditorLoading) return 0;
             if (g_app->popupPinned || g_app->popupOpenedByWinV) {
                 const HWND target = reinterpret_cast<HWND>(lParam);
                 if (IsWindow(target) && target != hwnd) rememberPasteTarget(target, false);
@@ -14271,6 +14996,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         app.store.pruneCategory(categoryTypes[i], static_cast<std::size_t>(limit.maxItems),
                                 static_cast<std::uint64_t>(limit.maxDiskMb) * 1024ULL * 1024ULL);
     }
+    if (!app.store.compactIfNeeded()) {
+        appendDiagnosticLog("WARN", "startup: history compaction failed");
+    }
 
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&controls);
@@ -14310,6 +15038,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     previewClass.hbrBackground = nullptr;
     previewClass.lpszClassName = L"ClipLitePreview";
     RegisterClassW(&previewClass);
+    WNDCLASSW textEditorClass = popupClass;
+    textEditorClass.style = CS_HREDRAW | CS_VREDRAW;
+    textEditorClass.hbrBackground = nullptr;
+    textEditorClass.lpszClassName = L"ClipLiteTextEditor";
+    RegisterClassW(&textEditorClass);
     WNDCLASSW supportClass = popupClass;
     supportClass.style = CS_HREDRAW | CS_VREDRAW;
     supportClass.lpfnWndProc = supportWindowProc;
@@ -14403,9 +15136,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         syncSettingsFromControls(app.settings, true);
     }
     closeSupportProcess();
+    closeTextEditor(false);
+    if (app.popup) closePopup();
     RemoveClipboardFormatListener(app.hidden);
     KillTimer(app.hidden, kExpiryTimer);
     KillTimer(app.hidden, kPasteInputTimer);
+    KillTimer(app.hidden, kStorageMaintenanceTimer);
     removeTrayIcon();
     DestroyWindow(app.taskbarWindow);
     UnregisterHotKey(app.hidden, kHotkeyAltV);

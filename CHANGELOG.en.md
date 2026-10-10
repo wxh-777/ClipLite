@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Added plain-text editing for Text and HTML history items from the context menu, with save in place, save as new, and save-and-paste actions; saving an HTML item may discard its formatting.
+- Edit saves now append only the replacement version and mark the old record deleted instead of rewriting all v4 history. In-place saves retain the original record identity, while save-as-new compares complete plain-text content and reuses an existing match instead of creating duplicates.
+- Improved history performance: single deletes, batch cleanup, expiry cleanup, category changes, and ordinary updates no longer immediately rewrite all of `history.bin`; obsolete space is compacted on startup when it crosses the threshold.
+- Added a small recovery transaction for append replacements. If the process exits between appending the new version and tombstoning the old records, the next startup rolls back or completes the cleanup instead of leaving duplicate active records.
+- Reused the existing editor window when switching to another history item and replaced its content asynchronously. HTML items show a single plain-text conversion note; plain-text items hide it.
+- Unified the font format for existing and newly typed editor text, and enabled resizing the editor window by dragging its borders.
+- Fixed inconsistent RichEdit sizing between initial content and newly typed text by applying the default character format before inserting content and at the insertion point.
+- Switched the editor body to the native multiline text control, removing RichEdit character-format inheritance differences so existing and newly typed content use the same font.
 - Fixed pinned items losing top position after history reorder or new copies. Pin priority is now applied by storage sorting and retained after restart.
 - Updated category filtering: favorites may appear across types according to Settings, while pinned items always respect the selected content type.
 - Added the category-list favorites and pins toggle to the history window context menu with immediate list refresh.

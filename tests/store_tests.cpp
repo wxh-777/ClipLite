@@ -60,6 +60,31 @@ std::uint32_t testMetadataCrc(const void* data, std::size_t size) {
     return crc ^ 0xFFFFFFFFu;
 }
 
+std::string makeTestImagePayload(std::uint32_t marker, std::uint32_t width = 64,
+                                 std::uint32_t height = 64) {
+    const std::size_t pixelBytes = static_cast<std::size_t>(width) * height * sizeof(std::uint32_t);
+    BITMAPV5HEADER header{};
+    header.bV5Size = sizeof(BITMAPV5HEADER);
+    header.bV5Width = static_cast<LONG>(width);
+    header.bV5Height = static_cast<LONG>(height);
+    header.bV5Planes = 1;
+    header.bV5BitCount = 32;
+    header.bV5Compression = BI_BITFIELDS;
+    header.bV5SizeImage = static_cast<DWORD>(pixelBytes);
+    header.bV5RedMask = 0x00FF0000;
+    header.bV5GreenMask = 0x0000FF00;
+    header.bV5BlueMask = 0x000000FF;
+    header.bV5AlphaMask = 0xFF000000;
+    std::string payload(sizeof(header) + pixelBytes, '\0');
+    std::memcpy(payload.data(), &header, sizeof(header));
+    for (std::uint32_t index = 0; index < width * height; ++index) {
+        const std::uint32_t color = 0xFF000000u | ((marker + index) & 0x00FFFFFFu);
+        std::memcpy(payload.data() + sizeof(header) + index * sizeof(color),
+                    &color, sizeof(color));
+    }
+    return payload;
+}
+
 struct TestDataScope {
     std::wstring path;
 
@@ -76,6 +101,8 @@ struct TestDataScope {
     ~TestDataScope() {
         DeleteFileW((path + L"\\history.bin").c_str());
         DeleteFileW((path + L"\\history.bin.tmp").c_str());
+        DeleteFileW((path + L"\\history.bin.txn").c_str());
+        DeleteFileW((path + L"\\history.bin.txn.tmp").c_str());
         ThumbnailCache thumbnails;
         if (thumbnails.setDirectory(path)) {
             thumbnails.clear();
@@ -305,6 +332,46 @@ int main() {
     if (!htmlSearch.append(ClipType::Html, searchableHtml, clipLiteHash(searchableHtml)) ||
         htmlSearch.search("personal").size() != 1 || htmlSearch.search("23").size() != 0) return 83;
     htmlSearch.clear();
+
+    ClipStore textEditing(10);
+    textEditing.open();
+    textEditing.clear();
+    const std::string originalText = "original text";
+    if (!textEditing.append(ClipType::Text, originalText, clipLiteHash(originalText), "Editor") ||
+        !textEditing.toggleFavorite(0) || !textEditing.togglePinned(0)) return 257;
+    const std::uint64_t originalRecordId = textEditing.items()[0].recordId;
+    if (!textEditing.replaceWithText(originalRecordId, u8"修改后的文本")) return 258;
+    std::string editedPayload;
+    if (textEditing.activeCount() != 1 || textEditing.items()[0].recordId != originalRecordId ||
+        textEditing.items()[0].type != ClipType::Text || !textEditing.items()[0].favorite ||
+        !textEditing.items()[0].pinned || !textEditing.readPayload(0, editedPayload) ||
+        editedPayload != u8"修改后的文本") return 259;
+    ClipStore textEditingReopened(10);
+    if (!textEditingReopened.open() || textEditingReopened.activeCount() != 1 ||
+        textEditingReopened.items()[0].recordId != originalRecordId ||
+        !textEditingReopened.readPayload(0, editedPayload) ||
+        editedPayload != u8"修改后的文本") return 260;
+    textEditingReopened.clear();
+    textEditing.clear();
+
+    ClipStore uniqueEditedText(10);
+    uniqueEditedText.open();
+    uniqueEditedText.clear();
+    const std::string duplicateVisibleText = "same visible text";
+    const std::string duplicateHtml = "<p>same visible text</p>";
+    if (!uniqueEditedText.append(ClipType::Html, duplicateHtml,
+                                 clipLiteHash(duplicateVisibleText), "Browser")) return 261;
+    const std::uint64_t htmlRecordId = uniqueEditedText.items()[0].recordId;
+    std::uint64_t savedRecordId = 0;
+    if (!uniqueEditedText.appendUniqueText(duplicateVisibleText, "Editor", 0, savedRecordId) ||
+        savedRecordId != htmlRecordId || uniqueEditedText.activeCount() != 1 ||
+        uniqueEditedText.items()[0].type != ClipType::Text ||
+        !uniqueEditedText.readPayload(0, editedPayload) || editedPayload != duplicateVisibleText) {
+        return 262;
+    }
+    if (!uniqueEditedText.appendUniqueText(duplicateVisibleText, "Editor", 0, savedRecordId) ||
+        savedRecordId != htmlRecordId || uniqueEditedText.activeCount() != 1) return 263;
+    uniqueEditedText.clear();
 
     ClipStore streamedSearch(10);
     streamedSearch.open();
@@ -626,6 +693,102 @@ int main() {
         pressureReopened.items()[0].preview != "pressure-4999") return 34;
     pressureReopened.clear();
     pressure.clear();
+
+    ClipStore maintenance(1200);
+    maintenance.open();
+    maintenance.clear();
+    const std::string maintenancePayload(12u * 1024u, 'm');
+    for (int i = 0; i < 1000; ++i) {
+        const std::string value = maintenancePayload + std::to_string(i);
+        if (!maintenance.append(ClipType::Text, value, clipLiteHash(value))) return 164;
+    }
+    const std::uint64_t diskBeforeDeletes = maintenance.diskBytes();
+    for (int i = 0; i < 800; ++i) {
+        if (!maintenance.remove(0)) return 165;
+    }
+    if (maintenance.activeCount() != 200 || maintenance.diskBytes() != diskBeforeDeletes ||
+        !maintenance.compactIfNeeded() || maintenance.diskBytes() >= diskBeforeDeletes) return 166;
+    ClipStore maintenanceReopened(1200);
+    if (!maintenanceReopened.open() || maintenanceReopened.activeCount() != 200) return 167;
+    maintenanceReopened.clear();
+    maintenance.clear();
+
+    ClipStore imageMaintenance(1200);
+    imageMaintenance.open();
+    imageMaintenance.clear();
+    for (int i = 0; i < 1000; ++i) {
+        const std::string value = makeTestImagePayload(static_cast<std::uint32_t>(i));
+        if (!imageMaintenance.append(ClipType::ImageV5, value, clipLiteHash(value))) return 169;
+    }
+    const std::uint64_t imageDiskBeforeDeletes = imageMaintenance.diskBytes();
+    for (int i = 0; i < 800; ++i) {
+        if (!imageMaintenance.remove(0)) return 170;
+    }
+    if (imageMaintenance.countType(ClipType::Image) != 200 ||
+        imageMaintenance.diskBytes() != imageDiskBeforeDeletes ||
+        !imageMaintenance.compactIfNeeded() ||
+        imageMaintenance.diskBytes() >= imageDiskBeforeDeletes) return 171;
+    ClipStore imageMaintenanceReopened(1200);
+    if (!imageMaintenanceReopened.open() ||
+        imageMaintenanceReopened.countType(ClipType::Image) != 200) return 172;
+    imageMaintenanceReopened.clear();
+    imageMaintenance.clear();
+
+    wchar_t largeStorageFlag[8]{};
+    const DWORD largeStorageFlagLength = GetEnvironmentVariableW(
+        L"CLIPLITE_LARGE_STORAGE_TEST", largeStorageFlag, ARRAYSIZE(largeStorageFlag));
+    if (largeStorageFlagLength > 0 && largeStorageFlag[0] == L'1') {
+        constexpr int kLargeImageCount = 1024;
+        constexpr std::uint32_t kLargeImageWidth = 512;
+        constexpr std::uint32_t kLargeImageHeight = 256;
+        constexpr std::uint64_t kLargeDataMinimum = 500ULL * 1024ULL * 1024ULL;
+        ClipStore largeImages(1200);
+        largeImages.open();
+        largeImages.clear();
+        const ULONGLONG largeAppendStarted = GetTickCount64();
+        for (int index = 0; index < kLargeImageCount; ++index) {
+            const std::string payload = makeTestImagePayload(
+                static_cast<std::uint32_t>(index), kLargeImageWidth, kLargeImageHeight);
+            if (!largeImages.append(ClipType::ImageV5, payload, clipLiteHash(payload))) return 173;
+        }
+        std::printf("large-image append: %llu ms\n",
+                    static_cast<unsigned long long>(GetTickCount64() - largeAppendStarted));
+        if (largeImages.diskBytes() < kLargeDataMinimum ||
+            largeImages.countType(ClipType::Image) != kLargeImageCount) return 174;
+
+        const std::string updatedPayload = makeTestImagePayload(
+            0xABCDEFu, kLargeImageWidth, kLargeImageHeight);
+        const std::string firstPayload = makeTestImagePayload(
+            0, kLargeImageWidth, kLargeImageHeight);
+        const ULONGLONG largeUpdateStarted = GetTickCount64();
+        if (!largeImages.appendOrUpdate(ClipType::ImageV5, updatedPayload,
+                                        clipLiteHash(firstPayload))) return 175;
+        std::printf("large-image update: %llu ms\n",
+                    static_cast<unsigned long long>(GetTickCount64() - largeUpdateStarted));
+        const ULONGLONG largePruneStarted = GetTickCount64();
+        if (!largeImages.pruneCategory(ClipType::Image, 0, 128ULL * 1024ULL * 1024ULL) ||
+            largeImages.activeCount() == 0 || largeImages.activeCount() >= kLargeImageCount) {
+            return 176;
+        }
+        std::printf("large-image prune: %llu ms\n",
+                    static_cast<unsigned long long>(GetTickCount64() - largePruneStarted));
+        const std::uint64_t beforeLargeCompaction = largeImages.diskBytes();
+        const ULONGLONG largeCompactStarted = GetTickCount64();
+        if (!largeImages.compactIfNeeded() || largeImages.diskBytes() >= beforeLargeCompaction) {
+            return 177;
+        }
+        std::printf("large-image compact: %llu ms\n",
+                    static_cast<unsigned long long>(GetTickCount64() - largeCompactStarted));
+        const std::size_t remainingLargeImages = largeImages.activeCount();
+        const ULONGLONG largeReopenStarted = GetTickCount64();
+        ClipStore largeImagesReopened(1200);
+        if (!largeImagesReopened.open() ||
+            largeImagesReopened.countType(ClipType::Image) != remainingLargeImages) return 178;
+        std::printf("large-image reopen: %llu ms\n",
+                    static_cast<unsigned long long>(GetTickCount64() - largeReopenStarted));
+        largeImagesReopened.clear();
+        largeImages.clear();
+    }
 
     ClipStore legacyFavorite(10);
     legacyFavorite.open();

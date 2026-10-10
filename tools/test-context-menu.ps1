@@ -1,6 +1,6 @@
 param([string]$ExePath = "$PSScriptRoot\..\build-x64\Release\ClipLite.exe")
 $ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Drawing.Common
+Add-Type -AssemblyName System.Drawing
 Add-Type @'
 using System;
 using System.Collections.Generic;
@@ -54,13 +54,17 @@ function AssertSubmenu([int]$width) {
     throw "Expected $width px submenu did not open automatically."
 }
 try {
-    [IO.File]::WriteAllText((Join-Path $root 'settings.ini'), "language=1`npauseMonitoring=1`nstartupShowSettings=0`n")
+    [IO.File]::WriteAllText((Join-Path $root 'settings.ini'), "language=1`npauseMonitoring=1`nshowSettingsOnStartup=0`n")
     $process = Start-Process $exe -PassThru
     Start-Sleep -Milliseconds 500
     $forwarder = Start-Process $exe -ArgumentList '--history' -PassThru
     if (!$forwarder.WaitForExit(5000)) { Stop-Process -Id $forwarder.Id -Force; throw 'History command timed out.' }
-    Start-Sleep -Milliseconds 150
-    $popup = [ContextMenuTestNative]::Windows($process.Id,'ClipLitePopup')[0]
+    $popup = $null
+    for ($attempt = 0; $attempt -lt 50; ++$attempt) {
+        $popup = [ContextMenuTestNative]::Windows($process.Id,'ClipLitePopup')[0]
+        if ($popup) { break }
+        Start-Sleep -Milliseconds 100
+    }
     if (!$popup) { throw 'History window did not open.' }
     $scale = [ContextMenuTestNative]::GetDpiForWindow($popup) / 96.0
     [ContextMenuTestNative]::SetCursorPos(400,200) | Out-Null
