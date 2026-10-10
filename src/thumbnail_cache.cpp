@@ -177,8 +177,8 @@ bool ThumbnailCache::readStored(const Entry& entry, std::string& data) const {
         crc32(stored) == header.dataCrc;
     std::fclose(file);
     if (!readOk) return false;
-    return (entry.flags & kEncryptedFlag) != 0
-        ? unprotectData(stored, data) : (data = std::move(stored), true);
+    data = std::move(stored);
+    return true;
 }
 
 bool ThumbnailCache::read(std::uint64_t key, bool encrypted, std::string& data) const {
@@ -186,7 +186,13 @@ bool ThumbnailCache::read(std::uint64_t key, bool encrypted, std::string& data) 
     (void)encrypted;
     if (!ensureIndexLoaded()) return false;
     const auto found = entries_.find(key);
-    if (found == entries_.end() || !readStored(found->second, data)) return false;
+    std::string stored;
+    if (found == entries_.end() || !readStored(found->second, stored)) return false;
+    if ((found->second.flags & kEncryptedFlag) != 0) {
+        if (!unprotectData(stored, data)) return false;
+    } else {
+        data = std::move(stored);
+    }
     auto& entry = entries_[key];
     entry.lastAccess = nowUnixMillis();
     return true;
@@ -223,7 +229,7 @@ bool ThumbnailCache::write(std::uint64_t key, bool encrypted, const std::string&
     return true;
 }
 
-bool ThumbnailCache::compact() const {
+bool ThumbnailCache::compact(const std::unordered_set<std::uint64_t>* keys) const {
     if (!ensureIndexLoaded()) return false;
     const std::wstring tempPath = path_ + L".tmp";
     std::FILE* out = nullptr;
@@ -232,8 +238,14 @@ bool ThumbnailCache::compact() const {
     std::unordered_map<std::uint64_t, Entry> rebuilt;
     std::uint64_t offset = 0;
     for (const auto& pair : entries_) {
+        if (keys && keys->find(pair.first) == keys->end()) continue;
         std::string stored;
-        if (!readStored(pair.second, stored)) continue;
+        // Copy ciphertext unchanged; decryption belongs only to the public read path.
+        if (!readStored(pair.second, stored)) {
+            std::fclose(out);
+            DeleteFileW(tempPath.c_str());
+            return false;
+        }
         DiskHeader header{kMagic, kVersion, pair.second.flags, pair.first, pair.second.lastAccess,
                           static_cast<std::uint32_t>(stored.size()), crc32(stored)};
         if (std::fwrite(&header, sizeof(header), 1, out) != 1 ||
@@ -281,13 +293,28 @@ void ThumbnailCache::prune(std::uint64_t maxBytes, std::size_t maxItems) const {
     compact();
 }
 
-void ThumbnailCache::clear() const {
+bool ThumbnailCache::retain(const std::unordered_set<std::uint64_t>& keys) const {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (keys.empty()) return clear();
+    if (!ensureIndexLoaded()) return false;
+    bool removed = false;
+    bool retained = false;
+    for (const auto& pair : entries_) {
+        if (keys.find(pair.first) == keys.end()) removed = true;
+        else retained = true;
+    }
+    if (!retained) return clear();
+    return !removed || compact(&keys);
+}
+
+bool ThumbnailCache::clear() const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (path_.empty()) return false;
+    if (!DeleteFileW(path_.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND) return false;
     std::unordered_map<std::uint64_t, Entry>().swap(entries_);
     diskBytes_ = 0;
     indexLoaded_ = false;
-    DeleteFileW(path_.c_str());
-    DeleteFileW((path_ + L".tmp").c_str());
+    return DeleteFileW((path_ + L".tmp").c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND;
 }
 
 void ThumbnailCache::unloadIndex() const {

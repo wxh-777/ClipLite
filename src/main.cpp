@@ -36,6 +36,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 #include <windowsx.h>
 
@@ -675,6 +676,7 @@ struct AppState {
     std::deque<std::function<void()>> storeJobs;
     std::thread storeWorker;
     bool storeWorkerStop = false;
+    bool forceStorageCompaction = false;
     int benchmarkExitCode = 0;
     std::uint64_t ignoredClipboardHash = 0;
     std::uint64_t ignoredClipboardTextHash = 0;
@@ -1308,7 +1310,7 @@ const SettingsLocale kEnglishSettingsLocale{
     L"Sensitive content expiry (hours, 0 = off)", L"Protection scope", L"About ClipLite",
      L"General", L"Appearance", L"Shortcuts", L"Storage", L"Privacy", L"About ClipLite", L"General settings",
      L"Appearance", L"Shortcuts", L"Storage", L"Privacy", L"About ClipLite", L"Auto-saved",
-     L"Total history: %zu records, %ls", L"Pinned", L"Records", L"Space",
+     L"Total history: %zu records, active data %ls", L"Pinned", L"Records", L"Space",
      L"Current %zu \xB7 %ls",
      L"Set to 0 for unlimited. Pinned records are not removed automatically.",
      L"No shortcut conflicts detected.",
@@ -1362,7 +1364,7 @@ const SettingsLocale kChineseSettingsLocale{
     L"忽略应用（每行一个来源名称）", L"敏感内容过期时间（小时，0 = 关闭）", L"保护范围",
      L"关于 ClipLite", L"通用", L"外观", L"快捷键", L"存储管理", L"安全与隐私", L"关于 ClipLite",
      L"通用设置", L"外观", L"快捷键", L"存储管理", L"安全与隐私", L"关于 ClipLite", L"已自动保存",
-     L"当前历史总计：%zu 条记录，%ls", L"置顶", L"记录", L"空间",
+     L"当前历史总计：%zu 条记录，有效数据 %ls", L"置顶", L"记录", L"空间",
       L"当前 %zu 条 \xB7 %ls", L"设置为 0 表示不限；收藏记录不会被清理，置顶保护可单独设置。",
      L"未检测到快捷键冲突。",
      L"快捷键冲突：“%ls”和“%ls”使用了相同组合键 %ls，请更换其中一项。",
@@ -2519,8 +2521,9 @@ bool enqueueStorageJob(std::function<void()> job, bool urgent = false) {
     return true;
 }
 
-void scheduleStorageMaintenance() {
+void scheduleStorageMaintenance(bool force = false) {
     if (!g_app || !g_app->hidden) return;
+    g_app->forceStorageCompaction = g_app->forceStorageCompaction || force;
     KillTimer(g_app->hidden, kStorageMaintenanceTimer);
     SetTimer(g_app->hidden, kStorageMaintenanceTimer,
              kStorageMaintenanceDelayMs, nullptr);
@@ -2534,10 +2537,18 @@ void runStorageMaintenance() {
     }
     const HWND hidden = g_app->hidden;
     if (!enqueueStorageJob([hidden] {
-        if (!g_app->store.compactIfNeeded()) {
-            appendDiagnosticLog("WARN", "storage: deferred history compaction failed");
+        // A window may have opened while this job was waiting in the storage queue.
+        if (g_app->popup || g_app->settings || g_app->textEditor || g_app->textEditorLoading) {
+            PostMessageW(hidden, kStorageMaintenanceCompleteMessage, 1, 0);
+            return;
         }
-        PostMessageW(hidden, kStorageMaintenanceCompleteMessage, 0, 0);
+        if (!g_app->store.compactIfNeeded(g_app->forceStorageCompaction)) {
+            appendDiagnosticLog("WARN", "storage: deferred history compaction failed");
+        } else {
+            g_app->forceStorageCompaction = false;
+        }
+        PostMessageW(hidden, kStorageMaintenanceCompleteMessage,
+                     g_app->forceStorageCompaction ? 1 : 0, 0);
     })) {
         scheduleStorageMaintenance();
     }
@@ -5990,6 +6001,7 @@ void showTrayMenu() {
 
 LRESULT CALLBACK popupMouseProc(int code, WPARAM wParam, LPARAM lParam) {
     if (code == HC_ACTION && g_app && g_app->popupMouseHook && g_app->popup &&
+        !g_app->popupConfirmingClear &&
         !g_app->popupPinned &&
         !g_app->popupOpening &&
         (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN ||
@@ -6178,7 +6190,8 @@ void forwardPopupSearchKey(const KBDLLHOOKSTRUCT& key, WPARAM hookMessage) {
 }
 
 LRESULT CALLBACK popupKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
-    if (code == HC_ACTION && g_app && g_app->popupKeyboardHook && g_app->popup) {
+    if (code == HC_ACTION && g_app && g_app->popupKeyboardHook && g_app->popup &&
+        !g_app->popupConfirmingClear) {
         const auto* key = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
         const bool keyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
         const bool keyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
@@ -7562,13 +7575,13 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
         SettingsCardLayout stats;
         stats.title = settingsLocale().historyStatistics;
         stats.top = cursor;
-        stats.bottom = cursor + 160;
+        stats.bottom = cursor + 184;
         SettingsRowLayout statsAction = makeSettingsRow(
             hwnd, nullptr, {kSettingClear}, {100}, {30}, contentWidth);
-        statsAction.top = stats.top + 110;
+        statsAction.top = stats.top + 134;
         stats.rows.push_back(std::move(statsAction));
         layout.cards.push_back(std::move(stats));
-        cursor += 172;
+        cursor += 196;
     } else if (g_app->settingsTab == kSettingsPrivacyPage) {
         makeCard(settingsLocale().privacyProtection, {
             makeSettingsRow(hwnd, settingsLocale().protectHistory,
@@ -8438,7 +8451,7 @@ void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
             if (item.pinned) ++pinnedCount;
         }
         wchar_t summary[192]{};
-        const std::wstring totalSize = formatByteSize(g_app->store.diskBytes());
+        const std::wstring totalSize = formatByteSize(g_app->store.activeBytes());
         swprintf_s(summary, settingsLocale().totalHistoryFormat,
                    g_app->store.activeCount(), totalSize.c_str());
         SelectObject(dc, bodyFont);
@@ -8446,6 +8459,13 @@ void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
         RECT summaryRect{contentLeft + ui(14), settingsContentY(top + 37), contentRight - ui(14),
                          settingsContentY(top + 61)};
         drawSettingsText(dc, bodyFont, summary, summaryRect, secondary,
+                          DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        const std::wstring fileSize = formatByteSize(g_app->store.diskBytes());
+        wchar_t fileSummary[128]{};
+        swprintf_s(fileSummary, tr(L"History file: %ls", L"历史文件占用：%ls"), fileSize.c_str());
+        RECT fileSummaryRect{contentLeft + ui(14), settingsContentY(top + 61), contentRight - ui(14),
+                             settingsContentY(top + 85)};
+        drawSettingsText(dc, bodyFont, fileSummary, fileSummaryRect, secondary,
                          DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         const wchar_t* labels[] = {
             settingsLocale().text, settingsLocale().images,
@@ -8456,7 +8476,7 @@ void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
             wchar_t value[64]{};
             swprintf_s(value, L"%zu", counts[i]);
             const int x = contentLeft + ui(16 + (i % 2) * 190);
-            const int y = top + 68 + (i / 2) * 23;
+            const int y = top + 92 + (i / 2) * 23;
             SetTextColor(dc, secondary);
             RECT labelRect{x, settingsContentY(y), x + ui(42), settingsContentY(y + 20)};
             DrawTextW(dc, labels[i], -1, &labelRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
@@ -10631,6 +10651,29 @@ void paintPopupContextSubmenu(HWND hwnd, HDC dc) {
     }
 }
 
+bool clearUnusedThumbnails() {
+    // Finish in-flight writes before removing their records' disk thumbnails.
+    hideDetailPreview();
+    stopPreviewWorker();
+    clearPopupImagePreviews();
+    std::unordered_set<std::uint64_t> keys;
+    const auto& items = g_app->store.items();
+    for (std::size_t index = 0; index < items.size(); ++index) {
+        const ClipItem& item = items[index];
+        if (item.type == ClipType::Image || item.type == ClipType::ImageV5) {
+            keys.insert(normalPreviewCacheKey(item));
+        } else if (item.type == ClipType::Files) {
+            std::string payload;
+            std::wstring path;
+            if (!g_app->store.readPayload(index, payload)) return false;
+            if (findImageFilePath(payload, path)) keys.insert(filePreviewCacheKey(item, path));
+        }
+    }
+    const bool success = g_app->thumbnailCache.retain(keys);
+    if (!g_app->popup) g_app->thumbnailCache.unloadIndex();
+    return success;
+}
+
 void clearPopupHistory(int command) {
     const HWND hwnd = g_app->popup;
     std::size_t count = 0;
@@ -10656,9 +10699,17 @@ void clearPopupHistory(int command) {
         const bool success = command == kMenuClearAll ? g_app->store.clear()
             : g_app->store.clearUnfavorited(command == kMenuClearOrdinary);
         if (success) {
+            const bool cacheCleared = clearUnusedThumbnails();
             refreshVisible(true);
-            scheduleStorageMaintenance();
+            scheduleStorageMaintenance(true);
             if (g_app->settings) InvalidateRect(g_app->settings, nullptr, FALSE);
+            if (!cacheCleared) {
+                appendDiagnosticLog("WARN", "storage: history cleared but thumbnail cleanup failed");
+                MessageBoxW(hwnd,
+                    tr(L"History was cleared, but unused thumbnail cache could not be removed.",
+                       L"历史记录已清理，但未能移除无用的缩略图缓存。"),
+                    settingsLocale().confirmClearTitle, MB_OK | MB_ICONWARNING);
+            }
         } else {
             MessageBoxW(hwnd, settingsLocale().clearFailed, settingsLocale().confirmClearTitle,
                         MB_OK | MB_ICONERROR);
@@ -12828,6 +12879,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         return 0;
     }
     if (message == kStorageMaintenanceCompleteMessage) {
+        if (wParam) scheduleStorageMaintenance();
         shutdownGdiplusIfIdle();
         return 0;
     }
@@ -13919,7 +13971,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == kClosePopupMessage) {
-            if (!g_app->popupPinned) closePopup();
+            // Modal clear dialogs own the input until their answer has been processed.
+            if (!g_app->popupPinned && !g_app->popupConfirmingClear) closePopup();
             return 0;
         }
         if (message == WM_HOTKEY) {
@@ -14741,7 +14794,13 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                                    count, settingsClearActionLabel(actionId));
                     }
                     setSettingsActionFeedback(hwnd, feedback, true);
-                    scheduleStorageMaintenance();
+                    scheduleStorageMaintenance(true);
+                    if (!clearUnusedThumbnails()) {
+                        appendDiagnosticLog("WARN", "storage: history cleared but thumbnail cleanup failed");
+                        setSettingsActionFeedback(hwnd,
+                            tr(L"History was cleared, but unused thumbnail cache could not be removed.",
+                               L"历史记录已清理，但未能移除无用的缩略图缓存。"), false);
+                    }
                 } else {
                     appendDiagnosticLog("ERROR", "settings: history clear operation failed");
                     setSettingsActionFeedback(hwnd, settingsLocale().clearFailed, false);
@@ -15803,6 +15862,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     }
     app.storeCondition.notify_all();
     if (app.storeWorker.joinable()) app.storeWorker.join();
+    // Do not discard manual cleanup when exiting before the maintenance timer fires.
+    if (app.forceStorageCompaction && !app.store.compactIfNeeded(true)) {
+        appendDiagnosticLog("WARN", "storage: requested history compaction failed during exit");
+    }
     if (app.gdiplusToken != 0) Gdiplus::GdiplusShutdown(app.gdiplusToken);
     ReleaseMutex(mutex);
     CloseHandle(mutex);

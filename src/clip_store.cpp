@@ -1499,8 +1499,8 @@ bool ClipStore::rebuildFileRaw() {
     return true;
 }
 
-bool ClipStore::compactIfNeeded() {
-    if (deadBytes_ < kCompactionThreshold) return true;
+bool ClipStore::compactIfNeeded(bool force) {
+    if (deadBytes_ == 0 || (!force && deadBytes_ < kCompactionThreshold)) return true;
     if (!rebuildFileRaw()) return false;
     ++revision_;
     return true;
@@ -1824,6 +1824,12 @@ std::uint64_t ClipStore::bytesType(ClipType type) const {
     for (const ClipItem& item : items_) {
         if (matchesType(type, item.type)) bytes += item.payloadSize;
     }
+    return bytes;
+}
+
+std::uint64_t ClipStore::activeBytes() const {
+    std::uint64_t bytes = 0;
+    for (const ClipItem& item : items_) bytes += item.payloadSize;
     return bytes;
 }
 

@@ -183,6 +183,56 @@ int main() {
     thumbnailCache.unloadIndex();
     restoredThumbnail.clear();
     if (!thumbnailCache.read(1, false, restoredThumbnail) || restoredThumbnail != thumbnailData) return 53;
+    const std::wstring thumbnailPath = testData.path + L"\\thumbnails.bin";
+    const std::string encryptedThumbnail("private-retained-thumbnail");
+    if (!thumbnailCache.write(2, true, encryptedThumbnail)) return 179;
+    if (!thumbnailCache.retain({1, 2}) || thumbnailCache.read(1000, false, restoredThumbnail) ||
+        !thumbnailCache.read(1, false, restoredThumbnail) || restoredThumbnail != thumbnailData ||
+        !thumbnailCache.read(2, true, restoredThumbnail) || restoredThumbnail != encryptedThumbnail) return 180;
+    ThumbnailCache reopenedThumbnails;
+    if (!reopenedThumbnails.setDirectory(testData.path) ||
+        !reopenedThumbnails.read(2, true, restoredThumbnail) || restoredThumbnail != encryptedThumbnail ||
+        reopenedThumbnails.read(1000, false, restoredThumbnail)) return 181;
+    const HANDLE lockedThumbnails = CreateFileW(thumbnailPath.c_str(), GENERIC_READ,
+        FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (lockedThumbnails == INVALID_HANDLE_VALUE) return 182;
+    const bool lockedRetain = thumbnailCache.retain({2});
+    const bool lockedCacheClear = thumbnailCache.clear();
+    CloseHandle(lockedThumbnails);
+    if (lockedRetain || lockedCacheClear ||
+        GetFileAttributesW((thumbnailPath + L".tmp").c_str()) != INVALID_FILE_ATTRIBUTES ||
+        !thumbnailCache.read(1, false, restoredThumbnail) || restoredThumbnail != thumbnailData ||
+        !thumbnailCache.read(2, true, restoredThumbnail) || restoredThumbnail != encryptedThumbnail) return 183;
+    thumbnailCache.unloadIndex();
+    if (!thumbnailCache.read(1, false, restoredThumbnail) || restoredThumbnail != thumbnailData ||
+        !thumbnailCache.retain({2}) || thumbnailCache.read(1, false, restoredThumbnail)) return 184;
+    thumbnailCache.unloadIndex();
+    if (!thumbnailCache.read(2, true, restoredThumbnail) || restoredThumbnail != encryptedThumbnail) return 185;
+    WIN32_FILE_ATTRIBUTE_DATA thumbnailAttributes{};
+    if (!GetFileAttributesExW(thumbnailPath.c_str(), GetFileExInfoStandard, &thumbnailAttributes)) return 186;
+    if (!thumbnailCache.retain({2, 9999})) return 187;
+    WIN32_FILE_ATTRIBUTE_DATA retainedAttributes{};
+    if (!GetFileAttributesExW(thumbnailPath.c_str(), GetFileExInfoStandard, &retainedAttributes) ||
+        retainedAttributes.nFileSizeLow != thumbnailAttributes.nFileSizeLow ||
+        retainedAttributes.nFileSizeHigh != thumbnailAttributes.nFileSizeHigh) return 188;
+    if (!thumbnailCache.retain({}) || !thumbnailCache.retain({}) ||
+        GetFileAttributesW(thumbnailPath.c_str()) != INVALID_FILE_ATTRIBUTES ||
+        thumbnailCache.read(2, true, restoredThumbnail)) return 189;
+    if (!thumbnailCache.write(3, false, thumbnailData) || !thumbnailCache.retain({9999}) ||
+        GetFileAttributesW(thumbnailPath.c_str()) != INVALID_FILE_ATTRIBUTES) return 190;
+    // Retention must not replace the original cache if a retained record becomes corrupt.
+    if (!thumbnailCache.write(1, false, thumbnailData) ||
+        !thumbnailCache.write(2, true, encryptedThumbnail)) return 191;
+    std::FILE* corruptThumbnail = nullptr;
+    _wfopen_s(&corruptThumbnail, thumbnailPath.c_str(), L"r+b");
+    if (!corruptThumbnail) return 192;
+    const bool corruptedThumbnail = _fseeki64(corruptThumbnail, 32, SEEK_SET) == 0 &&
+        std::fputc('X', corruptThumbnail) != EOF;
+    const bool closedThumbnail = std::fclose(corruptThumbnail) == 0;
+    if (!corruptedThumbnail || !closedThumbnail || thumbnailCache.retain({1}) ||
+        GetFileAttributesW((thumbnailPath + L".tmp").c_str()) != INVALID_FILE_ATTRIBUTES ||
+        !thumbnailCache.read(2, true, restoredThumbnail) || restoredThumbnail != encryptedThumbnail) return 193;
+    if (!thumbnailCache.clear()) return 194;
     const std::wstring tempPath = store.path() + L".tmp";
     std::FILE* tempFile = nullptr;
     _wfopen_s(&tempFile, tempPath.c_str(), L"wb");
@@ -713,6 +763,63 @@ int main() {
     if (!favoritesReopened.clear()) return 162;
     ClipStore emptyReopened(10);
     if (!emptyReopened.open() || emptyReopened.activeCount() != 0) return 163;
+
+    for (const bool encrypted : {false, true}) {
+        ClipStore forcedMaintenance(10);
+        forcedMaintenance.setEncryption(encrypted);
+        if (!forcedMaintenance.open() || !forcedMaintenance.clear()) return 195;
+        const std::string discarded(300u * 1024u, 'd');
+        const std::string favorite("retained favorite");
+        const std::string pinned("retained pin");
+        if (!forcedMaintenance.append(ClipType::Text, discarded, clipLiteHash(discarded)) ||
+            !forcedMaintenance.append(ClipType::Text, favorite, clipLiteHash(favorite)) ||
+            !forcedMaintenance.toggleFavorite(forcedMaintenance.findHash(clipLiteHash(favorite))) ||
+            !forcedMaintenance.append(ClipType::Text, pinned, clipLiteHash(pinned)) ||
+            !forcedMaintenance.togglePinned(forcedMaintenance.findHash(clipLiteHash(pinned))) ||
+            !forcedMaintenance.setNote(forcedMaintenance.findHash(clipLiteHash(pinned)), "retained note") ||
+            !forcedMaintenance.clearUnfavorited(true)) return 196;
+        const std::uint64_t forcedDiskBytes = forcedMaintenance.diskBytes();
+        const std::uint64_t forcedActiveBytes = forcedMaintenance.activeBytes();
+        const std::uint64_t forcedRevision = forcedMaintenance.revision();
+        if (forcedMaintenance.activeCount() != 2 || forcedActiveBytes == 0 ||
+            forcedActiveBytes != forcedMaintenance.bytesType(ClipType::Text) ||
+            forcedActiveBytes >= forcedDiskBytes || !forcedMaintenance.compactIfNeeded() ||
+            forcedMaintenance.diskBytes() != forcedDiskBytes ||
+            forcedMaintenance.revision() != forcedRevision) return 197;
+        HANDLE lockedCompaction = CreateFileW(forcedMaintenance.path().c_str(), GENERIC_READ,
+            FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (lockedCompaction == INVALID_HANDLE_VALUE) return 198;
+        const bool lockedCompact = forcedMaintenance.compactIfNeeded(true);
+        CloseHandle(lockedCompaction);
+        if (lockedCompact || forcedMaintenance.diskBytes() != forcedDiskBytes ||
+            forcedMaintenance.revision() != forcedRevision ||
+            GetFileAttributesW((forcedMaintenance.path() + L".tmp").c_str()) != INVALID_FILE_ATTRIBUTES ||
+            !forcedMaintenance.readPayload(forcedMaintenance.findHash(clipLiteHash(pinned)), restored) ||
+            restored != pinned) return 199;
+        if (!forcedMaintenance.compactIfNeeded(true) ||
+            forcedMaintenance.diskBytes() >= forcedDiskBytes ||
+            forcedMaintenance.activeBytes() != forcedActiveBytes) return 200;
+        ClipStore forcedReopened(10);
+        if (!forcedReopened.open() || forcedReopened.activeCount() != 2 ||
+            forcedReopened.diskBytes() != forcedMaintenance.diskBytes() ||
+            forcedReopened.activeBytes() != forcedActiveBytes) return 201;
+        const std::size_t favoriteIndex = forcedReopened.findHash(clipLiteHash(favorite));
+        const std::size_t pinIndex = forcedReopened.findHash(clipLiteHash(pinned));
+        if (favoriteIndex == forcedReopened.activeCount() || pinIndex == forcedReopened.activeCount() ||
+            !forcedReopened.items()[favoriteIndex].favorite || !forcedReopened.items()[pinIndex].pinned ||
+            forcedReopened.items()[pinIndex].note != "retained note" ||
+            forcedReopened.items()[pinIndex].encrypted != encrypted ||
+            !forcedReopened.readPayload(favoriteIndex, restored) || restored != favorite ||
+            !forcedReopened.readPayload(pinIndex, restored) || restored != pinned) return 202;
+        const std::uint64_t compactedRevision = forcedReopened.revision();
+        if (!forcedReopened.compactIfNeeded(true) || forcedReopened.revision() != compactedRevision ||
+            !forcedReopened.clearType(ClipType::Text) || forcedReopened.activeBytes() != 0 ||
+            !forcedReopened.compactIfNeeded(true) || forcedReopened.diskBytes() != 0) return 203;
+        ClipStore compactedEmpty(10);
+        if (!compactedEmpty.open() || compactedEmpty.activeCount() != 0 ||
+            compactedEmpty.activeBytes() != 0 || compactedEmpty.diskBytes() != 0 ||
+            !compactedEmpty.compactIfNeeded(true)) return 204;
+    }
 
     ClipStore pressure(10000);
     pressure.open();

@@ -83,7 +83,7 @@ public:
     bool clearUnfavorited(bool protectPinned = false);
     bool clearTypeUnfavorited(ClipType type);
     bool pruneExpired(std::uint64_t timestamp);
-    bool compactIfNeeded();
+    bool compactIfNeeded(bool force = false);
 
     std::vector<std::size_t> search(const std::string& query) const;
     ClipSearchSnapshot searchSnapshot() const;
@@ -96,6 +96,7 @@ public:
     std::size_t activeCount() const { return items_.size(); }
     std::size_t countType(ClipType type) const;
     std::uint64_t bytesType(ClipType type) const;
+    std::uint64_t activeBytes() const;
     std::uint64_t diskBytes() const { return diskBytes_; }
     std::uint32_t maxPayloadBytes() const { return maxPayloadBytes_; }
     const std::wstring& path() const { return path_; }

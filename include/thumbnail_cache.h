@@ -6,6 +6,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 class ThumbnailCache {
 public:
@@ -14,7 +15,8 @@ public:
     bool read(std::uint64_t key, bool encrypted, std::string& data) const;
     bool write(std::uint64_t key, bool encrypted, const std::string& data) const;
     void prune(std::uint64_t maxBytes, std::size_t maxItems) const;
-    void clear() const;
+    bool retain(const std::unordered_set<std::uint64_t>& keys) const;
+    bool clear() const;
     void unloadIndex() const;
 
 private:
@@ -27,7 +29,7 @@ private:
 
     bool loadIndex() const;
     bool ensureIndexLoaded() const;
-    bool compact() const;
+    bool compact(const std::unordered_set<std::uint64_t>* keys = nullptr) const;
     bool readStored(const Entry& entry, std::string& data) const;
     std::wstring directory_;
     std::wstring path_;
