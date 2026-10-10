@@ -159,6 +159,7 @@ constexpr int kMenuClearOrdinary = 115;
 constexpr int kMenuClearUnfavorited = 116;
 constexpr int kMenuClearAll = 117;
 constexpr int kMenuEditText = 118;
+constexpr int kMenuEditNote = 119;
 constexpr int kFilterAll = 130;
 constexpr int kFilterText = 131;
 constexpr int kFilterFiles = 132;
@@ -303,6 +304,7 @@ constexpr int kTextEditorSaveAsNew = 602;
 constexpr int kTextEditorSaveAndPaste = 603;
 constexpr int kTextEditorCancel = 604;
 constexpr int kTextEditorNotice = 605;
+constexpr int kPopupNoteEdit = 610;
 constexpr int kSupportPaymentWidth = 720;
 constexpr int kSupportPaymentHeight = 630;
 constexpr int kSupportQqWidth = 560;
@@ -456,6 +458,7 @@ struct AppState {
     HWND popup = nullptr;
     HWND detailPreview = nullptr;
     HWND detailPreviewTextEdit = nullptr;
+    HWND popupNoteEdit = nullptr;
     std::unique_ptr<PopupPreviewRenderer> detailPreviewRenderer;
     HWND searchEdit = nullptr;
     HWND settings = nullptr;
@@ -553,6 +556,8 @@ struct AppState {
     int hoveredDeleteRow = -1;
     int hoveredPinRow = -1;
     int hoveredFavoriteRow = -1;
+    int popupNoteEditRow = -1;
+    std::uint64_t popupNoteEditRecordId = 0;
     int pressedRow = -1;
     bool hoveredHeader = false;
     int hoveredSettingsTab = -1;
@@ -909,13 +914,21 @@ void requestDetailPreview(int row, bool upgrade = false);
 void positionDetailPreview(int row);
 void scheduleDetailPreview(int row);
 LRESULT CALLBACK detailPreviewTextEditSubclass(HWND hwnd, UINT message, WPARAM wParam,
-                                               LPARAM lParam, UINT_PTR subclassId,
-                                               DWORD_PTR refData);
+                                                LPARAM lParam, UINT_PTR subclassId,
+                                                DWORD_PTR refData);
+LRESULT CALLBACK popupNoteEditSubclass(HWND hwnd, UINT message, WPARAM wParam,
+                                       LPARAM lParam, UINT_PTR subclassId,
+                                       DWORD_PTR refData);
 void positionDetailPreviewTextEdit(bool show);
 void refreshDetailPreviewTextEditAppearance();
 void updateDetailPreviewTextEdit();
+void refreshVisible(bool preserveScrollPosition = false);
+RECT popupNoteRect(int row);
+void beginPopupNoteEdit(int row);
+void closePopupNoteEdit(bool save);
 void updateDetailPreviewKeyState(bool down);
 RECT detailPreviewContentRect(HWND hwnd);
+RECT detailPreviewNoteRect(HWND hwnd);
 void fitDetailPreviewImage();
 void refreshSettingsFrame(HWND hwnd);
 void fillSettingsControlBackdrop(HDC dc, const RECT& rect);
@@ -2630,6 +2643,134 @@ int popupCardHeight(const ClipItem& item) {
     return ui(kPopupCardHeight);
 }
 
+int popupRowTop(int row);
+
+RECT popupNoteRect(int row) {
+    if (!g_app || row < 0 || row >= static_cast<int>(g_app->visible.size())) return {};
+    const int top = popupRowTop(row);
+    if (top < 0) return {};
+    RECT client{};
+    GetClientRect(g_app->popup, &client);
+    const ClipItem& item = g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]];
+    const int metadataTop = top + popupCardHeight(item) - ui(20);
+    return RECT{ui(kPopupCardInset + 148), metadataTop,
+                client.right - ui(kPopupCardInset + 112), metadataTop + ui(16)};
+}
+
+void limitPopupNoteEditText(HWND hwnd) {
+    if (!hwnd) return;
+    wchar_t buffer[256]{};
+    const int length = GetWindowTextW(hwnd, buffer, ARRAYSIZE(buffer));
+    std::wstring value(buffer, static_cast<std::size_t>(std::max(0, length)));
+    while (!value.empty() && wideToUtf8(value.c_str(), value.size()).size() > 200) {
+        value.pop_back();
+    }
+    if (value.size() != static_cast<std::size_t>(std::max(0, length))) {
+        const DWORD selection = static_cast<DWORD>(SendMessageW(hwnd, EM_GETSEL, 0, 0));
+        SetWindowTextW(hwnd, value.c_str());
+        SendMessageW(hwnd, EM_SETSEL, LOWORD(selection), HIWORD(selection));
+    }
+}
+
+LRESULT CALLBACK popupNoteEditSubclass(HWND hwnd, UINT message, WPARAM wParam,
+                                       LPARAM lParam, UINT_PTR subclassId,
+                                       DWORD_PTR refData) {
+    (void)lParam;
+    (void)refData;
+    if (message == WM_CHAR && (wParam == L'\r' || wParam == L'\n')) return 0;
+    if (message == WM_KEYDOWN && wParam == VK_RETURN) {
+        closePopupNoteEdit(true);
+        return 0;
+    }
+    if (message == WM_KEYDOWN && wParam == VK_ESCAPE) {
+        closePopupNoteEdit(false);
+        return 0;
+    }
+    if (message == WM_KEYUP || message == WM_CHAR) limitPopupNoteEditText(hwnd);
+    if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, popupNoteEditSubclass, subclassId);
+    }
+    return DefSubclassProc(hwnd, message, wParam, lParam);
+}
+
+void beginPopupNoteEdit(int row) {
+    if (!g_app || !g_app->popup || row < 0 || row >= static_cast<int>(g_app->visible.size())) return;
+    closePopupNoteEdit(false);
+    const std::size_t index = g_app->visible[static_cast<std::size_t>(row)];
+    if (index >= g_app->store.items().size()) return;
+    const ClipItem& item = g_app->store.items()[index];
+    const RECT rect = popupNoteRect(row);
+    if (rect.right <= rect.left || rect.bottom <= rect.top) return;
+    g_app->popupNoteEditRow = row;
+    g_app->popupNoteEditRecordId = item.recordId;
+    g_app->popupNoteEdit = CreateWindowExW(
+        0, L"EDIT", utf8ToWide(item.note).c_str(),
+        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_LEFT | ES_NOHIDESEL,
+        rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
+        g_app->popup, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPopupNoteEdit)),
+        GetModuleHandleW(nullptr), nullptr);
+    if (!g_app->popupNoteEdit) {
+        g_app->popupNoteEditRow = -1;
+        g_app->popupNoteEditRecordId = 0;
+        return;
+    }
+    SendMessageW(g_app->popupNoteEdit, WM_SETFONT,
+                 reinterpret_cast<WPARAM>(g_app->popupMetaFont), TRUE);
+    SendMessageW(g_app->popupNoteEdit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
+                 MAKELPARAM(ui(4), ui(4)));
+    HDC editDc = GetDC(g_app->popupNoteEdit);
+    TEXTMETRICW textMetrics{};
+    if (editDc) {
+        HGDIOBJ oldFont = SelectObject(editDc, g_app->popupMetaFont);
+        GetTextMetricsW(editDc, &textMetrics);
+        SelectObject(editDc, oldFont);
+        ReleaseDC(g_app->popupNoteEdit, editDc);
+    }
+    const int editHeight = rect.bottom - rect.top;
+    const int textHeight = textMetrics.tmHeight > 0 ? static_cast<int>(textMetrics.tmHeight) : ui(12);
+    const int verticalPadding = std::max(ui(1), (editHeight - textHeight) / 2);
+    RECT editFormat{0, verticalPadding, rect.right - rect.left,
+                    editHeight - verticalPadding};
+    SendMessageW(g_app->popupNoteEdit, EM_SETRECTNP, 0,
+                 reinterpret_cast<LPARAM>(&editFormat));
+    SendMessageW(g_app->popupNoteEdit, EM_SETLIMITTEXT, 200, 0);
+    SetWindowSubclass(g_app->popupNoteEdit, popupNoteEditSubclass, 1, 0);
+    KillTimer(g_app->popup, kPopupDeactivateTimer);
+    SetForegroundWindow(g_app->popup);
+    SetActiveWindow(g_app->popup);
+    SetFocus(g_app->popupNoteEdit);
+    g_app->popupActivated = GetForegroundWindow() == g_app->popup;
+    SendMessageW(g_app->popupNoteEdit, EM_SETSEL, 0, -1);
+}
+
+void closePopupNoteEdit(bool save) {
+    if (!g_app || !g_app->popupNoteEdit) return;
+    HWND edit = g_app->popupNoteEdit;
+    const int row = g_app->popupNoteEditRow;
+    const std::uint64_t recordId = g_app->popupNoteEditRecordId;
+    if (save) {
+        limitPopupNoteEditText(edit);
+        wchar_t buffer[256]{};
+        const int length = GetWindowTextW(edit, buffer, ARRAYSIZE(buffer));
+        const std::string note = wideToUtf8(buffer, static_cast<std::size_t>(std::max(0, length)));
+        if (row >= 0 && row < static_cast<int>(g_app->visible.size())) {
+            const std::size_t index = g_app->visible[static_cast<std::size_t>(row)];
+            if (index < g_app->store.items().size() &&
+                g_app->store.items()[index].recordId == recordId &&
+                !g_app->store.setNote(index, note)) {
+                MessageBoxW(g_app->popup, tr(L"Unable to save the note.", L"无法保存备注。"),
+                            L"ClipLite", MB_OK | MB_ICONWARNING);
+            }
+        }
+    }
+    DestroyWindow(edit);
+    g_app->popupNoteEdit = nullptr;
+    g_app->popupNoteEditRow = -1;
+    g_app->popupNoteEditRecordId = 0;
+    refreshVisible(true);
+    if (g_app->popup) InvalidateRect(g_app->popup, nullptr, FALSE);
+}
+
 int popupScrollStride();
 
 int popupRowAt(int clickY) {
@@ -3359,7 +3500,7 @@ void applyVisibleCandidates(const std::vector<std::size_t>& candidates,
     else if (g_app->settingsData.previewAutomatic) scheduleDetailPreview(g_app->hoveredRow);
 }
 
-void refreshVisible(bool preserveScrollPosition = false) {
+void refreshVisible(bool preserveScrollPosition) {
     if (!g_app->popup) return;
     KillTimer(g_app->popup, kPopupSearchTimer);
     cancelPopupSearch();
@@ -4749,6 +4890,33 @@ RECT detailPreviewContentRect(HWND hwnd) {
     return RECT{ui(16), ui(62), client.right - ui(16), client.bottom - ui(16)};
 }
 
+RECT detailPreviewNoteRect(HWND hwnd) {
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const int rightReserved = g_app && g_app->detailPreviewState.sourceBitmap ? ui(110) : ui(16);
+    int left = ui(16);
+    if (g_app && g_app->detailPreviewState.sourceBitmap && g_app->popupMetaFont) {
+        const std::wstring status = g_app->detailPreviewHighQuality && g_app->detailPreviewState.loading
+            ? tr(L"Loading original image...", L"正在加载原图...")
+            : (g_app->detailPreviewUpgradeFailed
+                ? tr(L"Original image failed; showing preview", L"原图加载失败，仍显示预览图")
+                : (g_app->detailPreviewHighQuality &&
+                   g_app->detailPreviewState.sourceBitmapWidth == g_app->detailPreviewState.sourceWidth &&
+                   g_app->detailPreviewState.sourceBitmapHeight == g_app->detailPreviewState.sourceHeight
+                    ? tr(L"Original image loaded", L"原图已加载") : L""));
+        HDC dc = GetDC(hwnd);
+        if (dc) {
+            HGDIOBJ oldFont = SelectObject(dc, g_app->popupMetaFont);
+            SIZE size{};
+            GetTextExtentPoint32W(dc, status.c_str(), static_cast<int>(status.size()), &size);
+            SelectObject(dc, oldFont);
+            ReleaseDC(hwnd, dc);
+            left += size.cx + ui(12);
+        }
+    }
+    return RECT{left, ui(33), client.right - rightReserved - ui(4), ui(47)};
+}
+
 // 预览文本只作为滚动内容展示，屏蔽文本选中、右键菜单和复制操作。
 LRESULT CALLBACK detailPreviewTextEditSubclass(HWND hwnd, UINT message, WPARAM wParam,
                                                LPARAM lParam, UINT_PTR subclassId,
@@ -4959,10 +5127,21 @@ void paintDetailPreview(HWND hwnd, HDC dc) {
             status = tr(L"Original image loaded", L"原图已加载");
         }
         if (status) {
-            RECT statusRect{ui(16), ui(33), zoomRect.left - ui(4), ui(47)};
+            const RECT noteRect = detailPreviewNoteRect(hwnd);
+            RECT statusRect{ui(16), ui(33),
+                            item && !item->note.empty() ? noteRect.left - ui(4) : zoomRect.left - ui(4),
+                            ui(47)};
             DrawTextW(buffer, status, -1, &statusRect,
                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         }
+    }
+    if (item && !item->note.empty()) {
+        SelectObject(buffer, g_app->popupMetaFont);
+        SetTextColor(buffer, secondary);
+        RECT noteRect = detailPreviewNoteRect(hwnd);
+        const std::wstring note = utf8ToWide(item->note);
+        DrawTextW(buffer, note.c_str(), -1, &noteRect,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
     }
     drawGdiLine(buffer, ui(16), ui(48), width - ui(16), ui(48), divider, 1.0f);
     RECT content = detailPreviewContentRect(hwnd);
@@ -5273,8 +5452,12 @@ void completePaste(PastePayloadResult& result) {
     if (keepPopup) {
         ShowWindow(g_app->popup, SW_HIDE);
     } else {
+        closePopupNoteEdit(false);
         DestroyWindow(g_app->popup);
         g_app->popup = nullptr;
+        g_app->popupNoteEdit = nullptr;
+        g_app->popupNoteEditRow = -1;
+        g_app->popupNoteEditRecordId = 0;
         g_app->searchEdit = nullptr;
     }
     if (!IsWindow(target)) {
@@ -5468,6 +5651,7 @@ void showPopup(bool openedByWinV = false) {
 }
 
 void closePopup() {
+    closePopupNoteEdit(false);
     cancelPopupSearch();
     closeFilterMenu();
     destroyDetailPreview();
@@ -5745,6 +5929,11 @@ bool popupSearchHasFocus() {
            IsWindow(g_app->searchEdit) && g_app->popupSearchInputActive;
 }
 
+bool popupNoteHasFocus() {
+    return g_app && g_app->popup && g_app->popupNoteEdit &&
+        IsWindow(g_app->popupNoteEdit) && GetFocus() == g_app->popupNoteEdit;
+}
+
 bool popupShouldEnterImeMode(const KBDLLHOOKSTRUCT& key) {
     if (!g_app || g_app->popupImeMode) return false;
     if (key.vkCode == VK_PROCESSKEY) return true;
@@ -5861,6 +6050,7 @@ LRESULT CALLBACK popupKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
         const bool injected = (key->flags & LLKHF_INJECTED) != 0;
         const bool popupHasNoSystemFocus = GetForegroundWindow() != g_app->popup;
         const bool searchHasFocus = popupSearchHasFocus();
+        const bool noteHasFocus = popupNoteHasFocus();
         if (!injected && (keyDown || keyUp) && !searchHasFocus &&
             popupPreviewKeyMatches(*key, keyUp)) {
             PostMessageW(g_app->hidden, kPopupPreviewKeyMessage, 0, keyDown ? 1 : 0);
@@ -5891,12 +6081,12 @@ LRESULT CALLBACK popupKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
             return 1;
         }
         if (!injected && (keyDown || keyUp) && isPopupKeyboardCommand(key->vkCode) &&
-            popupHasNoSystemFocus && !searchHasFocus) {
+            popupHasNoSystemFocus && !searchHasFocus && !noteHasFocus) {
             if (keyDown) PostMessageW(g_app->hidden, kPopupKeyboardMessage, key->vkCode, 0);
             return 1;
         }
         if (!injected && keyDown && isPopupTextInputKey(key->vkCode) &&
-            popupHasNoSystemFocus && !searchHasFocus) {
+            popupHasNoSystemFocus && !searchHasFocus && !noteHasFocus) {
             PostMessageW(g_app->hidden, kClosePopupMessage, 0, 0);
         }
     }
@@ -8530,6 +8720,15 @@ void paintPopupContent(HWND hwnd, HDC dc) {
             DrawTextW(dc, preview.c_str(), -1, &textPreviewRect,
                       DT_LEFT | DT_VCENTER | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
         }
+        if (!item.note.empty() && !(g_app->popupNoteEdit && g_app->popupNoteEditRow == row)) {
+            RECT noteRect{rowRect.left + ui(148), metadataTop,
+                          rowRect.right - ui(112), metadataTop + ui(16)};
+            const std::wstring note = utf8ToWide(item.note);
+            SelectObject(dc, metaFont);
+            SetTextColor(dc, secondary);
+            DrawTextW(dc, note.c_str(), -1, &noteRect,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        }
         if (missingFiles) {
             const RECT missingRect{rowRect.right - ui(132), y + ui(5),
                                    rowRect.right - ui(28), y + ui(23)};
@@ -10343,6 +10542,7 @@ void executePopupContextCommand(int command) {
     else if (command == kMenuPreviewDisabled) setPopupPreviewOptions(false, false);
     else if (command >= kMenuClearOrdinary && command <= kMenuClearAll) clearPopupHistory(command);
     else if (command == kMenuEditText) openTextEditorForSelected();
+    else if (command == kMenuEditNote) beginPopupNoteEdit(g_app->selected);
     else if (command == kMenuPaste) sendPaste();
     else if (command == kMenuPastePlain) sendPaste(PasteMode::PlainText);
     else if (command == kMenuPasteRich) sendPaste(PasteMode::RichText);
@@ -10360,6 +10560,7 @@ void executePopupContextCommand(int command) {
 
 void showPopupContextMenu(HWND hwnd, int row) {
     if (!g_app || !hwnd) return;
+    closePopupNoteEdit(false);
     closeFilterMenu();
     closePopupContextMenu();
     hideDetailPreview();
@@ -10378,6 +10579,9 @@ void showPopupContextMenu(HWND hwnd, int row) {
             g_app->popupContextMenuItems.push_back({
                 kMenuEditText, tr(L"Edit as plain text", L"编辑文本")});
         }
+        g_app->popupContextMenuItems.push_back({
+            kMenuEditNote, item.note.empty() ? tr(L"Add note", L"添加备注")
+                                              : tr(L"Edit note", L"编辑备注")});
     }
     g_app->popupContextMenuItems.push_back({kMenuPopupPinned, g_app->popupPinned
         ? settingsLocale().popupUnpin : settingsLocale().popupPin, false, true, g_app->popupPinned});
@@ -14519,6 +14723,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 SetTimer(hwnd, kPopupDeactivateTimer, kPopupDeactivateDelayMs, nullptr);
                 return 0;
             }
+            if (popupNoteHasFocus()) {
+                SetTimer(hwnd, kPopupDeactivateTimer, kPopupDeactivateDelayMs, nullptr);
+                return 0;
+            }
             if (!g_app->popupOpenedByWinV && !g_app->popupActivated) return 0;
             if (g_app->popupOpenedByWinV && g_app->popupOpenInputTick != 0 &&
                 lastInputTick() == g_app->popupOpenInputTick &&
@@ -14655,6 +14863,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == WM_KEYDOWN) {
+            if (g_app->popupNoteEdit) return 0;
             if (g_app->filterMenuOpen && wParam == VK_ESCAPE) {
                 closeFilterMenu();
             }
@@ -14724,6 +14933,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == WM_MOUSEWHEEL) {
+            if (g_app->popupNoteEdit) closePopupNoteEdit(true);
             POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             ScreenToClient(hwnd, &point);
             if (point.y >= ui(kPopupFilterTop) && point.y < ui(kPopupFilterBottom)) {
@@ -14960,6 +15170,11 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             const int row = popupRowAt(clickY);
             if (row >= 0 && row < static_cast<int>(g_app->visible.size())) {
+                const RECT noteRect = popupNoteRect(row);
+                if (PtInRect(&noteRect, POINT{GET_X_LPARAM(lParam), clickY})) {
+                    beginPopupNoteEdit(row);
+                    return 0;
+                }
                 const int rowTop = popupRowTop(row);
                 const bool deleteClick = popupDeleteHitAt(client, rowTop,
                                                            GET_X_LPARAM(lParam),

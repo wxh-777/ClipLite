@@ -17,6 +17,7 @@ constexpr std::uint32_t kMagic = 0x314C4343; // CCL1
 constexpr std::uint16_t kVersion = 4;
 constexpr std::uint32_t kMaxPayload = 32u * 1024u * 1024u;
 constexpr std::uint32_t kMaxSource = 256;
+constexpr std::size_t kMaxNoteBytes = 200;
 constexpr std::uint8_t kMetadataFlag = 4;
 constexpr std::uint8_t kDeletedFlag = 8;
 // Metadata v2 reserves the high contentSize bits for state without changing record size.
@@ -24,7 +25,7 @@ constexpr std::uint64_t kPinnedMetadataBit = 1ULL << 63;
 constexpr std::uint64_t kFavoriteMetadataBit = 1ULL << 62;
 constexpr std::uint64_t kCompactionThreshold = 8u * 1024u * 1024u;
 constexpr std::uint32_t kMetadataMagic = 0x31444D43; // CMD1
-constexpr std::uint16_t kMetadataVersion = 2;
+constexpr std::uint16_t kMetadataVersion = 3;
 constexpr std::uint32_t kMaxMetadataSize = 4096;
 constexpr std::uint32_t kTransactionMagic = 0x314E5854; // TXN1
 constexpr std::uint16_t kTransactionVersion = 1;
@@ -86,6 +87,22 @@ struct DiskMetadataV2 {
     std::uint32_t crc;
 };
 
+struct DiskMetadataV3 {
+    std::uint32_t magic;
+    std::uint16_t version;
+    std::uint16_t size;
+    std::uint64_t recordId;
+    std::uint64_t createdAt;
+    std::uint64_t lastCopiedAt;
+    std::uint64_t lastUsedAt;
+    std::uint64_t useCount;
+    std::uint64_t contentSize;
+    std::uint64_t copyCount;
+    std::uint32_t noteSize;
+    char note[kMaxNoteBytes];
+    std::uint32_t crc;
+};
+
 struct DiskTransaction {
     std::uint32_t magic;
     std::uint16_t version;
@@ -99,6 +116,9 @@ struct DiskTransaction {
 #pragma pack(pop)
 
 static_assert(sizeof(DiskMetadataV1) == sizeof(DiskMetadataV2));
+static_assert(sizeof(DiskMetadataV3) == 272);
+
+std::string truncateUtf8(const std::string& value, std::size_t maxBytes);
 static_assert(sizeof(DiskTransaction) == 36);
 
 const std::array<std::uint32_t, 256>& crc32Table() {
@@ -273,14 +293,17 @@ bool writeRecordHeader(std::FILE* file, const ClipItem& item) {
     header.sourceSize = static_cast<std::uint32_t>(item.source.size());
     header.sourceCrc = crc32(item.source);
     header.expiresAt = item.expiresAt;
-    DiskMetadataV2 metadata{kMetadataMagic, kMetadataVersion,
-                             static_cast<std::uint16_t>(sizeof(DiskMetadataV2)),
+    DiskMetadataV3 metadata{kMetadataMagic, kMetadataVersion,
+                             static_cast<std::uint16_t>(sizeof(DiskMetadataV3)),
                              item.recordId, item.createdAt, item.lastCopiedAt, item.lastUsedAt,
                              item.useCount,
                              item.contentSize | (item.pinned ? kPinnedMetadataBit : 0) |
                                  (item.favorite ? kFavoriteMetadataBit : 0),
-                             item.copyCount, 0};
-    metadata.crc = metadataCrc(&metadata, offsetof(DiskMetadataV2, crc));
+                             item.copyCount, 0, {}};
+    const std::string note = truncateUtf8(item.note, kMaxNoteBytes);
+    metadata.noteSize = static_cast<std::uint32_t>(note.size());
+    if (!note.empty()) std::memcpy(metadata.note, note.data(), note.size());
+    metadata.crc = metadataCrc(&metadata, offsetof(DiskMetadataV3, crc));
     return std::fwrite(&header, sizeof(header), 1, file) == 1 &&
            std::fwrite(&metadata, sizeof(metadata), 1, file) == 1;
 }
@@ -612,6 +635,7 @@ bool ClipStore::open() {
         std::uint64_t useCount = 0;
         std::uint64_t copyCount = 1;
         std::uint64_t contentSize = header.payloadSize;
+        std::string note;
         bool favorite = (header.flags & 1) != 0;
         bool pinned = false;
         if (hasMetadata) {
@@ -649,7 +673,7 @@ bool ClipStore::open() {
                         if (copyCount == 0) copyCount = 1;
                         contentSize = metadata.contentSize;
                     }
-                } else if (version == kMetadataVersion && size == sizeof(DiskMetadataV2)) {
+                } else if (version == 2 && size == sizeof(DiskMetadataV2)) {
                     DiskMetadataV2 metadata{};
                     std::memcpy(&metadata, bytes.data(), sizeof(metadata));
                     const bool recordFavorite = (metadata.contentSize & kFavoriteMetadataBit) != 0;
@@ -667,7 +691,29 @@ bool ClipStore::open() {
                         copyCount = metadata.copyCount == 0 ? 1 : metadata.copyCount;
                         contentSize = storedContentSize;
                         favorite = recordFavorite;
+                         pinned = recordPinned && (header.flags & 1) != 0;
+                     }
+                } else if (version == kMetadataVersion && size == sizeof(DiskMetadataV3)) {
+                    DiskMetadataV3 metadata{};
+                    std::memcpy(&metadata, bytes.data(), sizeof(metadata));
+                    const bool recordFavorite = (metadata.contentSize & kFavoriteMetadataBit) != 0;
+                    const bool recordPinned = (metadata.contentSize & kPinnedMetadataBit) != 0;
+                    const std::uint64_t storedContentSize = metadata.contentSize &
+                        ~(kFavoriteMetadataBit | kPinnedMetadataBit);
+                    if (metadata.noteSize <= kMaxNoteBytes && metadata.createdAt != 0 &&
+                        storedContentSize <= kMaxPayload &&
+                        metadata.crc == metadataCrc(bytes.data(), bytes.size() - sizeof(metadata.crc))) {
+                        recordId = metadata.recordId;
+                        createdAt = metadata.createdAt;
+                        lastCopiedAt = metadata.lastCopiedAt != 0
+                            ? metadata.lastCopiedAt : header.timestamp * 1000ULL;
+                        lastUsedAt = metadata.lastUsedAt;
+                        useCount = metadata.useCount;
+                        copyCount = metadata.copyCount == 0 ? 1 : metadata.copyCount;
+                        contentSize = storedContentSize;
+                        favorite = recordFavorite;
                         pinned = recordPinned && (header.flags & 1) != 0;
+                        note.assign(metadata.note, metadata.noteSize);
                     }
                 }
             } else {
@@ -719,6 +765,7 @@ bool ClipStore::open() {
         item.useCount = useCount;
         item.copyCount = copyCount;
         item.contentSize = contentSize;
+        item.note = std::move(note);
         maximumRecordId = std::max(maximumRecordId, item.recordId);
 
         std::string preview;
@@ -899,9 +946,9 @@ bool ClipStore::append(ClipType type, const std::string& payload, std::uint64_t 
     item.payloadSize = static_cast<std::uint32_t>(storedPayload.size());
     item.payloadCrc = crc32(storedPayload);
     item.fileOffset = static_cast<std::uint64_t>(_ftelli64(file));
-    item.headerSize = static_cast<std::uint32_t>(sizeof(DiskHeader) + sizeof(DiskMetadataV2));
+    item.headerSize = static_cast<std::uint32_t>(sizeof(DiskHeader) + sizeof(DiskMetadataV3));
     item.preview = makePreview(type, payload);
-    const std::uint64_t recordSize = sizeof(DiskHeader) + sizeof(DiskMetadataV2) +
+    const std::uint64_t recordSize = sizeof(DiskHeader) + sizeof(DiskMetadataV3) +
                                      item.source.size() + storedPayload.size();
     const bool ok = writeRecord(file, item, storedPayload);
     const bool flushed = ok && std::fflush(file) == 0;
@@ -962,18 +1009,21 @@ bool ClipStore::recordUse(std::size_t index, bool promote) {
     if (item.useCount != std::numeric_limits<std::uint64_t>::max()) ++item.useCount;
 
     bool persisted = false;
-    if (item.headerSize >= sizeof(DiskHeader) + sizeof(DiskMetadataV2)) {
+    if (item.headerSize >= sizeof(DiskHeader) + sizeof(DiskMetadataV3)) {
         const std::uint64_t metadataOffset = item.fileOffset + sizeof(DiskHeader);
         if (metadataOffset >= item.fileOffset &&
             metadataOffset <= static_cast<std::uint64_t>(std::numeric_limits<__int64>::max())) {
-            DiskMetadataV2 metadata{kMetadataMagic, kMetadataVersion,
-                                    static_cast<std::uint16_t>(sizeof(DiskMetadataV2)),
+            DiskMetadataV3 metadata{kMetadataMagic, kMetadataVersion,
+                                    static_cast<std::uint16_t>(sizeof(DiskMetadataV3)),
                                     item.recordId, item.createdAt, item.lastCopiedAt, item.lastUsedAt,
                                     item.useCount,
                                     item.contentSize | (item.pinned ? kPinnedMetadataBit : 0) |
                                         (item.favorite ? kFavoriteMetadataBit : 0),
-                                    item.copyCount, 0};
-            metadata.crc = metadataCrc(&metadata, offsetof(DiskMetadataV2, crc));
+                                     item.copyCount, 0, {}};
+            const std::string note = truncateUtf8(item.note, kMaxNoteBytes);
+            metadata.noteSize = static_cast<std::uint32_t>(note.size());
+            if (!note.empty()) std::memcpy(metadata.note, note.data(), note.size());
+            metadata.crc = metadataCrc(&metadata, offsetof(DiskMetadataV3, crc));
             std::FILE* file = nullptr;
             _wfopen_s(&file, path_.c_str(), L"r+b");
             if (file) {
@@ -1014,7 +1064,7 @@ bool ClipStore::appendOrUpdate(ClipType type, const std::string& payload, std::u
     }
     std::string existingPayload;
     if (backup[existing].type == type &&
-        backup[existing].headerSize == sizeof(DiskHeader) + sizeof(DiskMetadataV2) &&
+        backup[existing].headerSize == sizeof(DiskHeader) + sizeof(DiskMetadataV3) &&
         (source.empty() || source.size() == backup[existing].source.size()) &&
         readPayload(existing, existingPayload) && existingPayload == payload) {
         ClipItem item = backup[existing];
@@ -1129,10 +1179,10 @@ bool ClipStore::appendRecordReplacement(std::size_t targetIndex, ClipItem replac
         return false;
     }
     replacement.fileOffset = offset;
-    replacement.headerSize = static_cast<std::uint32_t>(sizeof(DiskHeader) + sizeof(DiskMetadataV2));
+    replacement.headerSize = static_cast<std::uint32_t>(sizeof(DiskHeader) + sizeof(DiskMetadataV3));
     replacement.payloadSize = static_cast<std::uint32_t>(storedPayload.size());
     replacement.payloadCrc = crc32(storedPayload);
-    const std::uint64_t recordSize = sizeof(DiskHeader) + sizeof(DiskMetadataV2) +
+    const std::uint64_t recordSize = sizeof(DiskHeader) + sizeof(DiskMetadataV3) +
                                      replacement.source.size() + storedPayload.size();
     const bool written = writeRecord(file, replacement, storedPayload);
     const bool flushed = written && std::fflush(file) == 0;
@@ -1270,7 +1320,7 @@ bool ClipStore::rebuildFile() {
         }
         ClipItem item = old;
         item.fileOffset = offset;
-        item.headerSize = static_cast<std::uint32_t>(sizeof(DiskHeader) + sizeof(DiskMetadataV2));
+        item.headerSize = static_cast<std::uint32_t>(sizeof(DiskHeader) + sizeof(DiskMetadataV3));
         std::string storedPayload;
         if (item.encrypted && !protectPayload(payload, storedPayload)) {
             std::fclose(out);
@@ -1285,7 +1335,7 @@ bool ClipStore::rebuildFile() {
             DeleteFileW(tempPath.c_str());
             return false;
         }
-        offset += sizeof(DiskHeader) + sizeof(DiskMetadataV2) + item.source.size() + storedPayload.size();
+        offset += sizeof(DiskHeader) + sizeof(DiskMetadataV3) + item.source.size() + storedPayload.size();
         rebuilt.push_back(std::move(item));
     }
     const bool flushed = std::fflush(out) == 0;
@@ -1476,16 +1526,19 @@ bool ClipStore::toggleFavorite(std::size_t index) {
     _wfopen_s(&file, path_.c_str(), L"r+b");
     if (!file) return false;
     bool written = false;
-    if (item.headerSize >= sizeof(DiskHeader) + sizeof(DiskMetadataV2)) {
+    if (item.headerSize >= sizeof(DiskHeader) + sizeof(DiskMetadataV3)) {
         const std::uint64_t metadataOffset = item.fileOffset + sizeof(DiskHeader);
-        DiskMetadataV2 metadata{kMetadataMagic, kMetadataVersion,
-                                static_cast<std::uint16_t>(sizeof(DiskMetadataV2)),
+            DiskMetadataV3 metadata{kMetadataMagic, kMetadataVersion,
+                                    static_cast<std::uint16_t>(sizeof(DiskMetadataV3)),
                                 item.recordId, item.createdAt, item.lastCopiedAt, item.lastUsedAt,
                                 item.useCount,
                                 item.contentSize | (item.pinned ? kPinnedMetadataBit : 0) |
                                     (favorite ? kFavoriteMetadataBit : 0),
-                                item.copyCount, 0};
-        metadata.crc = metadataCrc(&metadata, offsetof(DiskMetadataV2, crc));
+                                     item.copyCount, 0, {}};
+            const std::string note = truncateUtf8(item.note, kMaxNoteBytes);
+            metadata.noteSize = static_cast<std::uint32_t>(note.size());
+            if (!note.empty()) std::memcpy(metadata.note, note.data(), note.size());
+            metadata.crc = metadataCrc(&metadata, offsetof(DiskMetadataV3, crc));
         written = metadataOffset >= item.fileOffset &&
             metadataOffset <= static_cast<std::uint64_t>(std::numeric_limits<__int64>::max()) &&
             _fseeki64(file, static_cast<__int64>(metadataOffset), SEEK_SET) == 0 &&
@@ -1512,20 +1565,23 @@ bool ClipStore::togglePinned(std::size_t index) {
     if (index >= items_.size()) return false;
     const ClipItem backup = items_[index];
     items_[index].pinned = !backup.pinned;
-    if (backup.headerSize < sizeof(DiskHeader) + sizeof(DiskMetadataV2)) {
+    if (backup.headerSize < sizeof(DiskHeader) + sizeof(DiskMetadataV3)) {
         if (!rebuildFile()) {
             items_[index] = backup;
             return false;
         }
     } else {
-        DiskMetadataV2 metadata{kMetadataMagic, kMetadataVersion,
-                                static_cast<std::uint16_t>(sizeof(DiskMetadataV2)),
+        DiskMetadataV3 metadata{kMetadataMagic, kMetadataVersion,
+                                static_cast<std::uint16_t>(sizeof(DiskMetadataV3)),
                                 backup.recordId, backup.createdAt, backup.lastCopiedAt, backup.lastUsedAt,
                                 backup.useCount,
                                 backup.contentSize | (items_[index].pinned ? kPinnedMetadataBit : 0) |
                                     (items_[index].favorite ? kFavoriteMetadataBit : 0),
-                                backup.copyCount, 0};
-        metadata.crc = metadataCrc(&metadata, offsetof(DiskMetadataV2, crc));
+                                 backup.copyCount, 0, {}};
+        const std::string note = truncateUtf8(backup.note, kMaxNoteBytes);
+        metadata.noteSize = static_cast<std::uint32_t>(note.size());
+        if (!note.empty()) std::memcpy(metadata.note, note.data(), note.size());
+        metadata.crc = metadataCrc(&metadata, offsetof(DiskMetadataV3, crc));
         const std::uint64_t metadataOffset = backup.fileOffset + sizeof(DiskHeader);
         const std::uint64_t flagsOffset = backup.fileOffset + offsetof(DiskHeader, flags);
         if (metadataOffset < backup.fileOffset ||
@@ -1586,6 +1642,17 @@ bool ClipStore::setCategory(std::size_t index, std::uint32_t category) {
     return true;
 }
 
+bool ClipStore::setNote(std::size_t index, const std::string& note) {
+    if (index >= items_.size() || note.find_first_of("\r\n") != std::string::npos ||
+        note.size() > kMaxNoteBytes) return false;
+    if (items_[index].note == note) return true;
+    std::string payload;
+    if (!readPayload(index, payload)) return false;
+    ClipItem replacement = items_[index];
+    replacement.note = note;
+    return appendRecordReplacement(index, std::move(replacement), payload, items_.size());
+}
+
 bool ClipStore::rekey(bool enabled) {
     if (encryptionEnabled_ == enabled) return true;
     const std::wstring tempPath = path_ + L".tmp";
@@ -1614,7 +1681,7 @@ bool ClipStore::rekey(bool enabled) {
         }
         if (!enabled) stored = std::move(plain);
         item.fileOffset = offset;
-        item.headerSize = static_cast<std::uint32_t>(sizeof(DiskHeader) + sizeof(DiskMetadataV2));
+        item.headerSize = static_cast<std::uint32_t>(sizeof(DiskHeader) + sizeof(DiskMetadataV3));
         item.payloadSize = static_cast<std::uint32_t>(stored.size());
         item.payloadCrc = crc32(stored);
         if (!writeRecord(out, item, stored)) {
@@ -1622,7 +1689,7 @@ bool ClipStore::rekey(bool enabled) {
             DeleteFileW(tempPath.c_str());
             return false;
         }
-        offset += sizeof(DiskHeader) + sizeof(DiskMetadataV2) + item.source.size() + stored.size();
+        offset += sizeof(DiskHeader) + sizeof(DiskMetadataV3) + item.source.size() + stored.size();
         rebuilt.push_back(std::move(item));
     }
     const bool flushed = std::fflush(out) == 0;
@@ -1777,7 +1844,8 @@ std::vector<std::size_t> ClipStore::search(const ClipSearchSnapshot& snapshot,
     for (std::size_t i = 0; i < snapshot.items.size(); ++i) {
         if (cancellation && cancellation->load(std::memory_order_relaxed)) break;
         const ClipItem& item = snapshot.items[i];
-        if (needle.empty() || containsIgnoreCase(item.preview, needle) ||
+        if (needle.empty() || containsIgnoreCase(item.note, needle) ||
+            containsIgnoreCase(item.preview, needle) ||
             containsIgnoreCase(item.source, needle)) {
             result.push_back(i);
             if (result.size() >= 5000) break;

@@ -38,6 +38,7 @@ struct ClipItem {
     std::uint64_t copyCount = 0;
     std::uint64_t contentSize = 0;
     std::string preview;
+    std::string note;
 };
 
 struct ClipSearchSnapshot {
@@ -74,6 +75,7 @@ public:
     bool toggleFavorite(std::size_t index);
     bool togglePinned(std::size_t index);
     bool setCategory(std::size_t index, std::uint32_t category);
+    bool setNote(std::size_t index, const std::string& note);
     bool prune(std::size_t maxItems, std::uint64_t maxBytes, std::uint64_t minTimestamp);
     bool pruneCategory(ClipType type, std::size_t maxItems, std::uint64_t maxBytes);
     bool clear();

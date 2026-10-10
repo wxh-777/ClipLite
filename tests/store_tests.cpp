@@ -38,6 +38,22 @@ struct TestDiskMetadata {
     std::uint64_t useCount;
     std::uint64_t contentSize;
     std::uint64_t copyCount;
+    std::uint32_t noteSize;
+    char note[200];
+    std::uint32_t crc;
+};
+
+struct TestLegacyDiskMetadata {
+    std::uint32_t magic;
+    std::uint16_t version;
+    std::uint16_t size;
+    std::uint64_t recordId;
+    std::uint64_t createdAt;
+    std::uint64_t lastCopiedAt;
+    std::uint64_t lastUsedAt;
+    std::uint64_t useCount;
+    std::uint64_t contentSize;
+    std::uint64_t copyCount;
     std::uint32_t crc;
 };
 
@@ -371,6 +387,18 @@ int main() {
         textEditingReopened.items()[0].recordId != originalRecordId ||
         !textEditingReopened.readPayload(0, editedPayload) ||
         editedPayload != u8"修改后的文本") return 260;
+    const std::string note = u8"发布前检查剪贴板内容";
+    if (!textEditingReopened.setNote(0, note) || textEditingReopened.items()[0].note != note ||
+        textEditingReopened.search(u8"剪贴板").size() != 1 ||
+        textEditingReopened.search("not-found").size() != 0) return 266;
+    if (textEditingReopened.setNote(0, std::string(201, 'x')) ||
+        textEditingReopened.setNote(0, "line\nbreak")) return 267;
+    ClipStore noteReopened(10);
+    if (!noteReopened.open() || noteReopened.activeCount() != 1 ||
+        noteReopened.items()[0].recordId != originalRecordId ||
+        noteReopened.items()[0].note != note) return 268;
+    if (!noteReopened.setNote(0, "") || !noteReopened.items()[0].note.empty()) return 269;
+    noteReopened.clear();
     textEditingReopened.clear();
     textEditing.clear();
 
@@ -815,21 +843,23 @@ int main() {
     legacyFavorite.clear();
     if (!legacyFavorite.append(ClipType::Text, "legacy-pin", clipLiteHash("legacy-pin"))) return 105;
     std::FILE* legacyFlagFile = nullptr;
-    _wfopen_s(&legacyFlagFile, legacyFavorite.path().c_str(), L"r+b");
+    _wfopen_s(&legacyFlagFile, legacyFavorite.path().c_str(), L"rb");
     TestDiskHeader legacyFavoriteHeader{};
     if (!legacyFlagFile || std::fread(&legacyFavoriteHeader, sizeof(legacyFavoriteHeader), 1,
                                       legacyFlagFile) != 1) return 106;
-    TestDiskMetadata legacyFavoriteMetadata{};
-    if (std::fread(&legacyFavoriteMetadata, sizeof(legacyFavoriteMetadata), 1,
-                   legacyFlagFile) != 1) return 106;
+    std::fclose(legacyFlagFile);
+    TestLegacyDiskMetadata legacyFavoriteMetadata{
+        0x31444D43, 1, sizeof(TestLegacyDiskMetadata), 1,
+        legacyFavoriteHeader.timestamp, legacyFavoriteHeader.timestamp * 1000ULL,
+        0, 0, legacyFavoriteHeader.payloadSize, 1, 0};
     legacyFavoriteHeader.flags |= 1;
-    legacyFavoriteMetadata.version = 1;
-    legacyFavoriteMetadata.size = sizeof(TestDiskMetadata);
     legacyFavoriteMetadata.crc = testMetadataCrc(
-        &legacyFavoriteMetadata, offsetof(TestDiskMetadata, crc));
-    if (_fseeki64(legacyFlagFile, 0, SEEK_SET) != 0 ||
+        &legacyFavoriteMetadata, offsetof(TestLegacyDiskMetadata, crc));
+    _wfopen_s(&legacyFlagFile, legacyFavorite.path().c_str(), L"wb");
+    if (!legacyFlagFile ||
         std::fwrite(&legacyFavoriteHeader, sizeof(legacyFavoriteHeader), 1, legacyFlagFile) != 1 ||
         std::fwrite(&legacyFavoriteMetadata, sizeof(legacyFavoriteMetadata), 1, legacyFlagFile) != 1 ||
+        std::fwrite("legacy-pin", 1, sizeof("legacy-pin") - 1, legacyFlagFile) != sizeof("legacy-pin") - 1 ||
         std::fclose(legacyFlagFile) != 0) return 107;
     ClipStore migratedLegacyFavorite(10);
     if (!migratedLegacyFavorite.open() || migratedLegacyFavorite.activeCount() != 1 ||
