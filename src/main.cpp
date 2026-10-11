@@ -66,7 +66,6 @@ struct CategoryLimit {
 enum class PasteMode {
     Automatic,
     PlainText,
-    RichText,
 };
 
 bool operator==(const CategoryLimit& first, const CategoryLimit& second) {
@@ -116,7 +115,6 @@ constexpr int kSettingShortcutSettings = 51;
 constexpr int kSettingShortcutPause = 52;
 constexpr int kSettingShortcutPaste = 53;
 constexpr int kSettingShortcutPastePlain = 54;
-constexpr int kSettingShortcutPasteRich = 55;
 constexpr int kSettingShortcutClosePopup = 56;
 constexpr int kSettingShortcutPopupSettings = 57;
 constexpr int kSettingShortcutClearFilter = 58;
@@ -147,7 +145,6 @@ constexpr std::array<std::size_t, 14> kEditableThemeColorIndices = {
 constexpr int kMenuPaste = 100;
 constexpr int kMenuDelete = 102;
 constexpr int kMenuPastePlain = 103;
-constexpr int kMenuPasteRich = 104;
 constexpr int kMenuPopupPinned = 105;
 constexpr int kMenuFilter = 106;
 constexpr int kMenuPromotePastedItem = 107;
@@ -368,7 +365,6 @@ struct Settings {
     ShortcutBinding pauseHotkey{MOD_CONTROL | MOD_SHIFT, 'P'};
     ShortcutBinding popupPasteHotkey{0, VK_RETURN};
     ShortcutBinding popupPlainPasteHotkey{MOD_CONTROL | MOD_SHIFT, 'V'};
-    ShortcutBinding popupRichPasteHotkey{MOD_CONTROL | MOD_SHIFT, 'R'};
     ShortcutBinding popupCloseHotkey{0, VK_ESCAPE};
     ShortcutBinding popupSettingsHotkey{0, VK_F10};
     ShortcutBinding popupClearFilterHotkey{MOD_CONTROL, '0'};
@@ -1166,7 +1162,6 @@ struct SettingsLocale {
     const wchar_t* pasteSelectedItem;
     const wchar_t* promotePastedItem;
     const wchar_t* pastePlainText;
-    const wchar_t* pasteRichText;
     const wchar_t* closeHistoryWindow;
     const wchar_t* openSettingsInHistory;
     const wchar_t* clearHistoryFilter;
@@ -1265,7 +1260,6 @@ struct SettingsLocale {
     const wchar_t* popupEmpty;
     const wchar_t* popupPaste;
     const wchar_t* popupPastePlain;
-    const wchar_t* popupPasteRich;
     const wchar_t* popupPin;
     const wchar_t* popupUnpin;
     const wchar_t* popupDelete;
@@ -1325,13 +1319,13 @@ struct SettingsLocale {
 };
 
 const SettingsLocale kEnglishSettingsLocale{
-    L"Appearance and interaction", L"Theme mode", L"Fixed theme", L"System light theme", L"System dark theme", L"Create from current", L"Delete custom theme", L"Language", L"System and integration",
+    L"Appearance and interaction", L"Theme mode", L"Fixed theme", L"System light theme", L"System dark theme", L"Create from current", L"Delete custom theme", L"Language", L"System and startup",
     L"Search input compatibility\nKeep the original app in the foreground; use Ctrl + Space for Chinese IME.",
     L"Pause clipboard monitoring", L"Start with Windows", L"Open settings after startup",
     L"Show startup notification", L"Run ClipLite as administrator (restart required to disable)",
     L"Important system shortcut", L"Force replace Win + V", L"Global shortcuts", L"Open clipboard history", L"Open settings",
      L"Pause/resume clipboard monitoring", L"History window shortcuts", L"Paste selected item",
-     L"Move pasted item to top", L"Paste as plain text", L"Paste as rich text", L"Close history window",
+     L"Move pasted item to top", L"Paste as plain text", L"Close history window",
      L"Open settings in history window", L"Clear history filter", L"Delete selected record",
      L"Edit selected text", L"Pin history window", L"Show favorites in other categories", L"Open history filter",
      L"Registration status", L"Data retention", L"Maximum records", L"Retention days (0 = forever)",
@@ -1364,7 +1358,7 @@ const SettingsLocale kEnglishSettingsLocale{
       L"No non-favorite %ls records to clear", L"Cleared %zu non-favorite %ls records; favorites were kept", L"Clear failed; history was not changed",
     L"Confirm retention change", L"Reducing retention limits may permanently remove existing clipboard records. Continue?",
      L"Clipboard history", L"Clear", L"All", L"Favorites", L"Text", L"Images", L"Files", L"Other",
-    L"Clipboard", L"No clipboard history", L"Paste", L"Paste as plain text", L"Paste as rich text",
+     L"Clipboard", L"No clipboard history", L"Paste", L"Paste as plain text",
     L"Pin history window", L"Unpin history window", L"Delete", L"Filter", L"Search clipboard history",
     L"Text", L"Image", L"Files", L"Other", L"Just now", L" min ago", L" hr ago", L" d ago",
     L"Open history", L"Settings", L"Exit", L"[Empty]", L"[Image]", L"[Files]", L"[HTML]",
@@ -1383,11 +1377,11 @@ const SettingsLocale kEnglishSettingsLocale{
 };
 
 const SettingsLocale kChineseSettingsLocale{
-    L"界面与交互", L"主题模式", L"固定主题", L"系统亮色主题", L"系统暗色主题", L"从当前主题新建", L"删除自定义主题", L"语言", L"系统与集成",
+     L"界面与交互", L"主题模式", L"固定主题", L"系统亮色主题", L"系统暗色主题", L"从当前主题新建", L"删除自定义主题", L"语言", L"系统与启动",
     L"搜索输入兼容模式\n保持原应用前台；按 Ctrl + Space 使用中文输入法。", L"暂停剪贴板监听", L"随 Windows 启动",
     L"启动后打开设置", L"启动后显示系统提示", L"以管理员权限运行（关闭后下次启动生效）",
     L"重要系统快捷键", L"强制替换 Win + V", L"全局快捷键", L"打开剪贴板历史", L"打开设置",
-     L"暂停/恢复剪贴板监听", L"历史窗口快捷键", L"粘贴选中项目", L"粘贴后移到首位", L"粘贴为纯文本", L"粘贴为富文本",
+      L"暂停/恢复剪贴板监听", L"历史窗口快捷键", L"粘贴选中项目", L"粘贴后移到首位", L"粘贴为纯文本",
      L"关闭历史窗口", L"在历史窗口打开设置", L"清除历史筛选", L"删除选中记录",
      L"编辑选中文本", L"置顶历史窗口", L"在其他分类中显示收藏", L"打开历史筛选", L"注册状态",
     L"数据保留策略", L"最大记录数", L"保留天数（0 = 永久）", L"最大磁盘空间（MB）",
@@ -1414,7 +1408,7 @@ const SettingsLocale kChineseSettingsLocale{
       L"没有可清理的未收藏%ls记录", L"已清理 %zu 条未收藏%ls记录，收藏记录已保留", L"清理失败，历史记录未改变",
     L"确认保留策略变更", L"降低保留限制可能永久删除现有剪贴板记录，是否继续？",
      L"剪贴板历史", L"清空", L"全部", L"收藏", L"文本", L"图片", L"文件", L"其他",
-    L"剪贴板", L"暂无剪贴板记录", L"粘贴", L"粘贴为纯文本", L"粘贴为富文本",
+     L"剪贴板", L"暂无剪贴板记录", L"粘贴", L"粘贴为纯文本",
     L"置顶历史窗口", L"取消历史窗口置顶", L"删除", L"筛选", L"搜索剪贴板历史",
     L"文本", L"图片", L"文件", L"其他", L"刚刚", L"分钟前", L"小时前", L"天前",
     L"打开历史", L"设置", L"退出", L"[空]", L"[图片]", L"[文件]", L"[HTML]", L"[无效文本]",
@@ -1734,8 +1728,6 @@ void loadSettings(Settings& settings) {
         readShortcutValue("shortcutPopupPasteKey=", settings.popupPasteHotkey.virtualKey);
         readShortcutValue("shortcutPopupPlainPasteModifiers=", settings.popupPlainPasteHotkey.modifiers);
         readShortcutValue("shortcutPopupPlainPasteKey=", settings.popupPlainPasteHotkey.virtualKey);
-        readShortcutValue("shortcutPopupRichPasteModifiers=", settings.popupRichPasteHotkey.modifiers);
-        readShortcutValue("shortcutPopupRichPasteKey=", settings.popupRichPasteHotkey.virtualKey);
         readShortcutValue("shortcutPopupCloseModifiers=", settings.popupCloseHotkey.modifiers);
         readShortcutValue("shortcutPopupCloseKey=", settings.popupCloseHotkey.virtualKey);
         readShortcutValue("shortcutPopupSettingsModifiers=", settings.popupSettingsHotkey.modifiers);
@@ -1782,7 +1774,6 @@ void loadSettings(Settings& settings) {
     };
     normalizePopupShortcut(settings.popupPasteHotkey, ShortcutBinding{0, VK_RETURN});
     normalizePopupShortcut(settings.popupPlainPasteHotkey, ShortcutBinding{MOD_CONTROL | MOD_SHIFT, 'V'});
-    normalizePopupShortcut(settings.popupRichPasteHotkey, ShortcutBinding{MOD_CONTROL | MOD_SHIFT, 'R'});
     normalizePopupShortcut(settings.popupCloseHotkey, ShortcutBinding{0, VK_ESCAPE});
     normalizePopupShortcut(settings.popupSettingsHotkey, ShortcutBinding{0, VK_F10});
     normalizePopupShortcut(settings.popupClearFilterHotkey, ShortcutBinding{MOD_CONTROL, '0'});
@@ -1839,12 +1830,10 @@ void saveSettings(const Settings& settings) {
            << "shortcutSettingsKey=" << settings.settingsHotkey.virtualKey << "\n"
            << "shortcutPauseModifiers=" << settings.pauseHotkey.modifiers << "\n"
            << "shortcutPauseKey=" << settings.pauseHotkey.virtualKey << "\n"
-           << "shortcutPopupPasteModifiers=" << settings.popupPasteHotkey.modifiers << "\n"
-           << "shortcutPopupPasteKey=" << settings.popupPasteHotkey.virtualKey << "\n"
-           << "shortcutPopupPlainPasteModifiers=" << settings.popupPlainPasteHotkey.modifiers << "\n"
-           << "shortcutPopupPlainPasteKey=" << settings.popupPlainPasteHotkey.virtualKey << "\n"
-           << "shortcutPopupRichPasteModifiers=" << settings.popupRichPasteHotkey.modifiers << "\n"
-           << "shortcutPopupRichPasteKey=" << settings.popupRichPasteHotkey.virtualKey << "\n"
+            << "shortcutPopupPasteModifiers=" << settings.popupPasteHotkey.modifiers << "\n"
+            << "shortcutPopupPasteKey=" << settings.popupPasteHotkey.virtualKey << "\n"
+            << "shortcutPopupPlainPasteModifiers=" << settings.popupPlainPasteHotkey.modifiers << "\n"
+            << "shortcutPopupPlainPasteKey=" << settings.popupPlainPasteHotkey.virtualKey << "\n"
            << "shortcutPopupCloseModifiers=" << settings.popupCloseHotkey.modifiers << "\n"
            << "shortcutPopupCloseKey=" << settings.popupCloseHotkey.virtualKey << "\n"
            << "shortcutPopupSettingsModifiers=" << settings.popupSettingsHotkey.modifiers << "\n"
@@ -2716,6 +2705,8 @@ bool setClipboardDataForItem(const ClipItem& item, const std::string& payload,
                 if (!plainText.empty() || !ok) ok = setUnicodeText(plainText) || ok;
             }
         }
+    } else if (item.type == ClipType::Files && mode == PasteMode::PlainText) {
+        ok = setUnicodeText(payload);
     } else {
         std::wstring paths = utf8ToWide(payload);
         std::replace(paths.begin(), paths.end(), L'\n', L'\0');
@@ -5733,6 +5724,8 @@ void sendPaste(PasteMode mode = PasteMode::Automatic) {
     const std::size_t index = g_app->visible[static_cast<std::size_t>(selected)];
     if (index >= g_app->store.items().size()) return;
     const ClipItem item = g_app->store.items()[index];
+    if (mode == PasteMode::PlainText && item.type != ClipType::Html &&
+        item.type != ClipType::Files) return;
     const std::wstring historyPath = g_app->store.path();
     const HWND popup = g_app->popup;
     const HWND target = g_app->targetWindow;
@@ -5764,7 +5757,8 @@ void completePaste(PastePayloadResult& result) {
         notifyPasteFailure();
         return;
     }
-    if (result.item.type == ClipType::Files && fileListHasMissingPath(result.payload)) {
+    if (result.item.type == ClipType::Files && result.mode != PasteMode::PlainText &&
+        fileListHasMissingPath(result.payload)) {
         appendDiagnosticLog("WARN", "paste: selected file item contains missing paths");
         g_app->fileAvailability.clear();
         g_app->fileAvailabilityRevision = g_app->store.revision();
@@ -7370,10 +7364,6 @@ LRESULT CALLBACK editProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
             sendPaste(PasteMode::PlainText);
             return 0;
         }
-        if (shortcutMatches(g_app->settingsData.popupRichPasteHotkey, static_cast<UINT>(wParam))) {
-            sendPaste(PasteMode::RichText);
-            return 0;
-        }
         if (shortcutMatches(g_app->settingsData.popupPasteHotkey, static_cast<UINT>(wParam))) {
             sendPaste();
             return 0;
@@ -7654,25 +7644,27 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
                             {kSettingStartupSettings}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().showStartupNotification,
                             {kSettingStartupNotification}, {36}, {20}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().runAsAdministrator,
+                            {kSettingRunAsAdministrator}, {36}, {20}, contentWidth)
+        });
+        makeCard(tr(L"History window", L"历史窗口"), {
             makeSettingsRow(hwnd, tr(L"Show favorites in other category lists",
                                      L"在其他分类列表中显示收藏"),
                             {kSettingSpecialAcrossCategories}, {36}, {20}, contentWidth),
-            makeSettingsRow(hwnd, settingsLocale().runAsAdministrator,
-                            {kSettingRunAsAdministrator}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().searchInputCompatibility,
-                             {kSettingSearchImeCompatibility}, {36}, {20}, contentWidth),
+                            {kSettingSearchImeCompatibility}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().searchOnOpen,
-                             {kSettingSearchOnOpen}, {36}, {20}, contentWidth),
+                            {kSettingSearchOnOpen}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().rememberPopupFilter,
-                             {kSettingRememberPopupFilter}, {36}, {20}, contentWidth),
+                            {kSettingRememberPopupFilter}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, tr(L"History item density", L"历史项高度模式"),
                              {kSettingPopupDensity}, {150}, {30}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().promotePastedItem,
                              {kSettingPromotePastedItem}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().automaticPreview,
-                             {kSettingPreviewAutomatic}, {36}, {20}, contentWidth),
+                            {kSettingPreviewAutomatic}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().keyPreview,
-                             {kSettingPreviewByKey}, {36}, {20}, contentWidth)
+                            {kSettingPreviewByKey}, {36}, {20}, contentWidth)
         });
     } else if (g_app->settingsTab == kSettingsAppearancePage) {
         std::vector<SettingsRowLayout> appearanceRows;
@@ -7735,8 +7727,6 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
                             {kSettingShortcutPaste}, {150}, {30}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().pastePlainText,
                             {kSettingShortcutPastePlain}, {150}, {30}, contentWidth),
-            makeSettingsRow(hwnd, settingsLocale().pasteRichText,
-                            {kSettingShortcutPasteRich}, {150}, {30}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().closeHistoryWindow,
                             {kSettingShortcutClosePopup}, {150}, {30}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().openSettingsInHistory,
@@ -9240,7 +9230,6 @@ bool isSettingsShortcut(int id) {
     case kSettingShortcutPause:
     case kSettingShortcutPaste:
     case kSettingShortcutPastePlain:
-    case kSettingShortcutPasteRich:
     case kSettingShortcutClosePopup:
     case kSettingShortcutPopupSettings:
     case kSettingShortcutClearFilter:
@@ -9262,7 +9251,6 @@ const ShortcutBinding* settingsShortcutBinding(const Settings& settings, int id)
     if (id == kSettingShortcutPause) return &settings.pauseHotkey;
     if (id == kSettingShortcutPaste) return &settings.popupPasteHotkey;
     if (id == kSettingShortcutPastePlain) return &settings.popupPlainPasteHotkey;
-    if (id == kSettingShortcutPasteRich) return &settings.popupRichPasteHotkey;
     if (id == kSettingShortcutClosePopup) return &settings.popupCloseHotkey;
     if (id == kSettingShortcutPopupSettings) return &settings.popupSettingsHotkey;
     if (id == kSettingShortcutClearFilter) return &settings.popupClearFilterHotkey;
@@ -9292,7 +9280,6 @@ const wchar_t* shortcutActionLabel(int id) {
     case kSettingShortcutPause: return settingsLocale().pauseResumeMonitoring;
     case kSettingShortcutPaste: return settingsLocale().pasteSelectedItem;
     case kSettingShortcutPastePlain: return settingsLocale().pastePlainText;
-    case kSettingShortcutPasteRich: return settingsLocale().pasteRichText;
     case kSettingShortcutClosePopup: return settingsLocale().closeHistoryWindow;
     case kSettingShortcutPopupSettings: return settingsLocale().openSettingsInHistory;
     case kSettingShortcutClearFilter: return settingsLocale().clearHistoryFilter;
@@ -9317,11 +9304,11 @@ const ShortcutBinding* shortcutBindingForConflict(const Settings& settings, int 
     return settingsShortcutBinding(settings, id);
 }
 
-const std::array<int, 15>& shortcutSettingIds() {
-    static const std::array<int, 15> ids = {
+const std::array<int, 14>& shortcutSettingIds() {
+    static const std::array<int, 14> ids = {
         kSettingShortcutPreview, kSettingShortcutHistory, kSettingShortcutSettings,
         kSettingShortcutPause, kSettingShortcutPaste, kSettingShortcutPastePlain,
-        kSettingShortcutPasteRich, kSettingShortcutClosePopup,
+        kSettingShortcutClosePopup,
         kSettingShortcutPopupSettings, kSettingShortcutClearFilter, kSettingShortcutDelete,
         kSettingShortcutEditText, kSettingShortcutPinPopup,
         kSettingShortcutSpecialCategories, kSettingShortcutFilter
@@ -9432,7 +9419,7 @@ std::wstring shortcutStatusText() {
 void refreshSettingsShortcutControls(HWND hwnd) {
     if (!hwnd) return;
     const int ids[] = {kSettingShortcutPreview, kSettingShortcutHistory, kSettingShortcutSettings, kSettingShortcutPause,
-                       kSettingShortcutPaste, kSettingShortcutPastePlain, kSettingShortcutPasteRich,
+                       kSettingShortcutPaste, kSettingShortcutPastePlain,
                        kSettingShortcutClosePopup, kSettingShortcutPopupSettings,
                        kSettingShortcutClearFilter, kSettingShortcutDelete,
                        kSettingShortcutEditText, kSettingShortcutPinPopup,
@@ -9744,7 +9731,6 @@ void createSettingsControlsModern(HWND hwnd) {
     createShortcut(kSettingShortcutPause, 198, g_app->settingsData.pauseHotkey);
     createShortcut(kSettingShortcutPaste, 242, g_app->settingsData.popupPasteHotkey);
     createShortcut(kSettingShortcutPastePlain, 286, g_app->settingsData.popupPlainPasteHotkey);
-    createShortcut(kSettingShortcutPasteRich, 330, g_app->settingsData.popupRichPasteHotkey);
     createShortcut(kSettingShortcutClosePopup, 374, g_app->settingsData.popupCloseHotkey);
     createShortcut(kSettingShortcutPopupSettings, 418, g_app->settingsData.popupSettingsHotkey);
     createShortcut(kSettingShortcutClearFilter, 462, g_app->settingsData.popupClearFilterHotkey);
@@ -10020,9 +10006,9 @@ void updateSettingsTabControls(HWND hwnd, bool redraw) {
                           kSettingOpenLog, kSettingSupportAuthor, kSettingJoinQqGroup,
                               kSettingOpenSource, kSettingCheckUpdate, kSettingUpdateProxy,
                              kSettingShortcutPreview, kSettingShortcutHistory,
-                         kSettingShortcutSettings, kSettingShortcutPause,
-                         kSettingShortcutPaste, kSettingShortcutPastePlain,
-                          kSettingShortcutPasteRich, kSettingShortcutClosePopup,
+                          kSettingShortcutSettings, kSettingShortcutPause,
+                          kSettingShortcutPaste, kSettingShortcutPastePlain,
+                           kSettingShortcutClosePopup,
                           kSettingShortcutPopupSettings, kSettingShortcutClearFilter,
                           kSettingShortcutDelete, kSettingShortcutEditText,
                           kSettingShortcutPinPopup, kSettingShortcutSpecialCategories,
@@ -10170,9 +10156,9 @@ void setSettingsScrollPosition(HWND hwnd, int position, int maximum = -1) {
 
 void appendPasteMenu(HMENU menu, const ClipItem& item) {
     AppendMenuW(menu, MF_STRING, kMenuPaste, settingsLocale().popupPaste);
-    AppendMenuW(menu, MF_STRING, kMenuPastePlain, settingsLocale().popupPastePlain);
-    AppendMenuW(menu, MF_STRING | (item.type == ClipType::Html ? 0 : MF_GRAYED),
-                kMenuPasteRich, settingsLocale().popupPasteRich);
+    if (item.type == ClipType::Html || item.type == ClipType::Files) {
+        AppendMenuW(menu, MF_STRING, kMenuPastePlain, settingsLocale().popupPastePlain);
+    }
 }
 
 void appendFilterMenu(HMENU menu) {
@@ -10817,7 +10803,6 @@ std::wstring popupContextMenuShortcut(int command) {
     const ShortcutBinding* binding = nullptr;
     if (command == kMenuPaste) binding = &g_app->settingsData.popupPasteHotkey;
     else if (command == kMenuPastePlain) binding = &g_app->settingsData.popupPlainPasteHotkey;
-    else if (command == kMenuPasteRich) binding = &g_app->settingsData.popupRichPasteHotkey;
     else if (command == kMenuDelete) binding = &g_app->settingsData.popupDeleteHotkey;
     else if (command == kMenuEditText) binding = &g_app->settingsData.popupEditTextHotkey;
     else if (command == kMenuPopupPinned) binding = &g_app->settingsData.popupPinHotkey;
@@ -11000,7 +10985,6 @@ void executePopupContextCommand(int command) {
     else if (command == kMenuEditNote) beginPopupNoteEdit(g_app->selected);
     else if (command == kMenuPaste) sendPaste();
     else if (command == kMenuPastePlain) sendPaste(PasteMode::PlainText);
-    else if (command == kMenuPasteRich) sendPaste(PasteMode::RichText);
     else if (command == kMenuDelete && !g_app->visible.empty()) {
         g_app->store.remove(g_app->visible[static_cast<std::size_t>(g_app->selected)]);
         refreshVisible(true);
@@ -11026,9 +11010,8 @@ void showPopupContextMenu(HWND hwnd, int row) {
         g_app->selected = row;
         const ClipItem& item = g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]];
         g_app->popupContextMenuItems.push_back({kMenuPaste, settingsLocale().popupPaste});
-        g_app->popupContextMenuItems.push_back({kMenuPastePlain, settingsLocale().popupPastePlain});
-        if (item.type == ClipType::Html) {
-            g_app->popupContextMenuItems.push_back({kMenuPasteRich, settingsLocale().popupPasteRich});
+        if (item.type == ClipType::Html || item.type == ClipType::Files) {
+            g_app->popupContextMenuItems.push_back({kMenuPastePlain, settingsLocale().popupPastePlain});
         }
         if (item.type == ClipType::Text || item.type == ClipType::Html) {
             g_app->popupContextMenuItems.push_back({
@@ -14837,6 +14820,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (settingsTabIsScrollable() &&
                 point.x >= ui(kSettingsSidebarWidth) &&
                 point.y >= ui(kSettingsHeaderHeight)) {
+                if (g_app->languageDropdown) {
+                    animateLanguageDropdown(hwnd, 0.0f);
+                    return 0;
+                }
                 const int direction = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -ui(48) : ui(48);
                 setSettingsScrollPosition(hwnd, g_app->settingsScrollOffset + direction);
                 return 0;
@@ -14896,6 +14883,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (settingsTabIsScrollable() &&
                 x >= client.right - ui(18) && x < client.right - ui(3) &&
                 y >= ui(kSettingsHeaderHeight)) {
+                if (g_app->languageDropdown) {
+                    animateLanguageDropdown(hwnd, 0.0f);
+                    return 0;
+                }
                 int trackTop = 0;
                 int trackBottom = 0;
                 int thumbTop = 0;
@@ -15441,10 +15432,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             else if (shortcutMatches(g_app->settingsData.popupPlainPasteHotkey,
                                      static_cast<UINT>(wParam))) {
                 sendPaste(PasteMode::PlainText);
-            }
-            else if (shortcutMatches(g_app->settingsData.popupRichPasteHotkey,
-                                     static_cast<UINT>(wParam))) {
-                sendPaste(PasteMode::RichText);
             }
             else if (shortcutMatches(g_app->settingsData.popupClearFilterHotkey,
                                      static_cast<UINT>(wParam))) {
