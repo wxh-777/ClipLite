@@ -1,6 +1,7 @@
 # Changelog
 
 - Added an optional last-history-category memory setting, disabled by default and available from the history context menu or Settings.
+- Added Compact, Standard, and Adaptive history-list density modes; Adaptive sizes text and ordinary file previews by displayed lines while keeping image records stable.
 
 ## [1.5.1] - 2026-10-10
 

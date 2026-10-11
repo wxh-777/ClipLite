@@ -140,6 +140,7 @@ constexpr int kSettingThemeSwatchBase = 120;
 constexpr int kSettingProtectPinnedCleanup = 140;
 constexpr int kSettingSpecialAcrossCategories = 141;
 constexpr int kSettingRememberPopupFilter = 147;
+constexpr int kSettingPopupDensity = 148;
 constexpr std::array<std::size_t, 14> kEditableThemeColorIndices = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14, 17,
 };
@@ -163,6 +164,10 @@ constexpr int kMenuClearAll = 117;
 constexpr int kMenuEditText = 118;
 constexpr int kMenuEditNote = 119;
 constexpr int kMenuRememberPopupFilter = 120;
+constexpr int kMenuPopupDensityCompact = 121;
+constexpr int kMenuPopupDensityStandard = 122;
+constexpr int kMenuPopupDensityAdaptive = 123;
+constexpr int kMenuPopupDensity = 124;
 constexpr int kFilterAll = 130;
 constexpr int kFilterText = 131;
 constexpr int kFilterFiles = 132;
@@ -276,6 +281,8 @@ constexpr int kPopupBorderInset = 1;
 constexpr int kPopupListTop = 96;
 constexpr int kPopupBottomPadding = 14;
 constexpr int kPopupCardHeight = 88;
+constexpr int kPopupCompactCardHeight = 72;
+constexpr int kPopupAdaptiveMinTextHeight = 56;
 constexpr int kPopupCardGap = 6;
 constexpr int kPopupCardInset = 14;
 constexpr int kPopupPreviewSize = 60;
@@ -337,6 +344,7 @@ struct Settings {
     bool rememberPopupFilter = false;
     int lastPopupFilterType = 0;
     bool lastPopupFavoritesOnly = false;
+    int popupDensity = 1; // 0 compact, 1 standard, 2 adaptive
     bool promotePastedItem = false;
     bool previewAutomatic = true;
     bool previewByKey = true;
@@ -442,6 +450,18 @@ struct FileAvailability {
     std::size_t itemIndex = 0;
     std::uint64_t hash = 0;
     bool missing = false;
+};
+
+struct PopupFileKind {
+    std::size_t itemIndex = 0;
+    std::uint64_t hash = 0;
+    bool image = false;
+};
+
+struct PopupRowLayout {
+    int top = 0;
+    int height = 0;
+    bool imagePreview = false;
 };
 
 struct PopupSurfaceCache {
@@ -659,6 +679,11 @@ struct AppState {
     std::vector<std::size_t> visible;
     std::uint64_t fileAvailabilityRevision = 0;
     std::vector<FileAvailability> fileAvailability;
+    std::uint64_t popupLayoutRevision = 0;
+    int popupLayoutWidth = 0;
+    int popupLayoutDensity = 1;
+    std::vector<PopupFileKind> popupFileKinds;
+    std::vector<PopupRowLayout> popupRowLayouts;
     std::vector<PopupImagePreview> imagePreviews;
     std::vector<PopupSurfaceCache> popupSurfaceCache;
     std::vector<PopupSourceIcon> sourceIcons;
@@ -936,6 +961,8 @@ void refreshDetailPreviewTextEditAppearance();
 void updateDetailPreviewTextEdit();
 void refreshVisible(bool preserveScrollPosition = false);
 RECT popupNoteRect(int row);
+bool findImageFilePath(const std::string& payload, std::wstring& path);
+void rebuildPopupRowLayouts();
 void beginPopupNoteEdit(int row);
 void closePopupNoteEdit(bool save);
 void updateDetailPreviewKeyState(bool down);
@@ -1620,6 +1647,9 @@ void loadSettings(Settings& settings) {
         if (std::strncmp(line, "lastPopupFavoritesOnly=1", 25) == 0) {
             settings.lastPopupFavoritesOnly = true;
         }
+        if (std::strncmp(line, "popupDensity=", 13) == 0) {
+            settings.popupDensity = std::clamp(std::atoi(line + 13), 0, 2);
+        }
         if (std::strncmp(line, "promotePastedItem=1", 19) == 0) settings.promotePastedItem = true;
         if (std::strncmp(line, "previewAutomatic=0", 18) == 0) settings.previewAutomatic = false;
         if (std::strncmp(line, "previewAutomatic=1", 18) == 0) settings.previewAutomatic = true;
@@ -1743,6 +1773,7 @@ void loadSettings(Settings& settings) {
         ? systemThemeIsDark() : settings.themeMode == 2;
     normalizeShortcutBinding(settings.historyHotkey, ShortcutBinding{MOD_ALT, 'V'});
     if (settings.lastPopupFilterType != 0) settings.lastPopupFavoritesOnly = false;
+    settings.popupDensity = std::clamp(settings.popupDensity, 0, 2);
     normalizeShortcutBinding(settings.settingsHotkey, ShortcutBinding{MOD_CONTROL | MOD_ALT, 'S'});
     normalizeShortcutBinding(settings.pauseHotkey, ShortcutBinding{MOD_CONTROL | MOD_SHIFT, 'P'});
     const auto normalizePopupShortcut = [](ShortcutBinding& binding, const ShortcutBinding& fallback) {
@@ -1785,6 +1816,7 @@ void saveSettings(const Settings& settings) {
            << "rememberPopupFilter=" << (settings.rememberPopupFilter ? 1 : 0) << "\n"
            << "lastPopupFilterType=" << settings.lastPopupFilterType << "\n"
            << "lastPopupFavoritesOnly=" << (settings.lastPopupFavoritesOnly ? 1 : 0) << "\n"
+           << "popupDensity=" << settings.popupDensity << "\n"
            << "promotePastedItem=" << (settings.promotePastedItem ? 1 : 0) << "\n"
            << "previewAutomatic=" << (settings.previewAutomatic ? 1 : 0) << "\n"
            << "previewByKey=" << (settings.previewByKey ? 1 : 0) << "\n"
@@ -2793,18 +2825,122 @@ std::wstring localizedPopupPreview(const ClipItem& item) {
     return preview;
 }
 
+bool popupFileIsImage(std::size_t itemIndex, const ClipItem& item) {
+    if (!g_app) return false;
+    const auto cached = std::find_if(g_app->popupFileKinds.begin(), g_app->popupFileKinds.end(),
+                                     [itemIndex, &item](const PopupFileKind& value) {
+        return value.itemIndex == itemIndex && value.hash == item.hash;
+    });
+    if (cached != g_app->popupFileKinds.end()) return cached->image;
+    std::string payload;
+    std::wstring path;
+    const bool image = g_app->store.readPayload(itemIndex, payload) && findImageFilePath(payload, path);
+    g_app->popupFileKinds.push_back(PopupFileKind{itemIndex, item.hash, image});
+    return image;
+}
+
+bool popupRowUsesImage(std::size_t itemIndex, const ClipItem& item) {
+    return isImageType(item.type) ||
+        (item.type == ClipType::Files && popupFileIsImage(itemIndex, item));
+}
+
+int popupStandardHeight() {
+    return ui(kPopupCardHeight);
+}
+
+int popupMinimumTextHeight() {
+    return ui(kPopupAdaptiveMinTextHeight);
+}
+
+void rebuildPopupRowLayouts() {
+    if (!g_app || !g_app->popup) return;
+    RECT client{};
+    GetClientRect(g_app->popup, &client);
+    const int width = client.right;
+    if (g_app->popupLayoutRevision == g_app->store.revision() &&
+        g_app->popupLayoutWidth == width &&
+        g_app->popupLayoutDensity == g_app->settingsData.popupDensity &&
+        g_app->popupRowLayouts.size() == g_app->visible.size()) return;
+
+    std::vector<PopupRowLayout> layouts;
+    layouts.reserve(g_app->visible.size());
+    HDC dc = GetDC(g_app->popup);
+    HFONT oldFont = nullptr;
+    if (dc && g_app->popupPreviewFont) oldFont = reinterpret_cast<HFONT>(SelectObject(
+        dc, g_app->popupPreviewFont));
+    const int textWidth = std::max(ui(40), width - ui(kPopupCardInset * 2 + 12));
+    for (const std::size_t itemIndex : g_app->visible) {
+        if (itemIndex >= g_app->store.items().size()) continue;
+        const ClipItem& item = g_app->store.items()[itemIndex];
+        const bool imagePreview = g_app->settingsData.popupDensity != 1 &&
+            popupRowUsesImage(itemIndex, item);
+        int height = popupStandardHeight();
+        if (g_app->settingsData.popupDensity == 0) {
+            height = ui(kPopupCompactCardHeight);
+        } else if (g_app->settingsData.popupDensity == 2 && !imagePreview) {
+            const std::wstring preview = localizedPopupPreview(item);
+            RECT measured{0, 0, textWidth, 0};
+            if (dc) DrawTextW(dc, preview.c_str(), -1, &measured,
+                              DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+            const int measuredHeight = std::max(ui(16), static_cast<int>(measured.bottom));
+            height = std::clamp(measuredHeight + ui(32), popupMinimumTextHeight(),
+                                popupStandardHeight());
+        }
+        layouts.push_back(PopupRowLayout{0, height, imagePreview});
+    }
+    if (oldFont) SelectObject(dc, oldFont);
+    if (dc) ReleaseDC(g_app->popup, dc);
+
+    int top = 0;
+    for (PopupRowLayout& layout : layouts) {
+        layout.top = top;
+        top += layout.height + ui(kPopupCardGap);
+    }
+    g_app->popupRowLayouts = std::move(layouts);
+    g_app->popupLayoutRevision = g_app->store.revision();
+    g_app->popupLayoutWidth = width;
+    g_app->popupLayoutDensity = g_app->settingsData.popupDensity;
+}
+
+int popupRowHeightForRow(int row) {
+    if (!g_app || row < 0) return ui(kPopupCardHeight);
+    if (g_app->settingsData.popupDensity == 2) {
+        rebuildPopupRowLayouts();
+        if (row < static_cast<int>(g_app->popupRowLayouts.size())) {
+            return g_app->popupRowLayouts[static_cast<std::size_t>(row)].height;
+        }
+    }
+    return g_app->settingsData.popupDensity == 0 ? ui(kPopupCompactCardHeight)
+                                                  : ui(kPopupCardHeight);
+}
+
+int popupRowAt(int clickY);
+int popupRowTop(int row);
+int popupScrollStride();
+
 int popupVisibleRows() {
     if (!g_app || !g_app->popup) return 1;
     RECT client{};
     GetClientRect(g_app->popup, &client);
     const int available = client.bottom - ui(kPopupListTop) - ui(kPopupBottomPadding);
-    const int stride = ui(kPopupCardHeight + kPopupCardGap);
+    if (g_app->settingsData.popupDensity == 2) {
+        rebuildPopupRowLayouts();
+        const int first = popupRowAt(ui(kPopupListTop));
+        int rows = 0;
+        for (int row = std::max(0, first); row < static_cast<int>(g_app->popupRowLayouts.size()); ++row) {
+            if (popupRowTop(row) >= client.bottom - ui(kPopupBottomPadding)) break;
+            ++rows;
+        }
+        return std::max(1, rows);
+    }
+    const int stride = popupScrollStride();
     return std::max(1, (available + stride - 1) / stride);
 }
 
 int popupCardHeight(const ClipItem& item) {
     (void)item;
-    return ui(kPopupCardHeight);
+    return g_app && g_app->settingsData.popupDensity == 0
+        ? ui(kPopupCompactCardHeight) : ui(kPopupCardHeight);
 }
 
 int popupRowTop(int row);
@@ -2815,8 +2951,7 @@ RECT popupNoteRect(int row) {
     if (top < 0) return {};
     RECT client{};
     GetClientRect(g_app->popup, &client);
-    const ClipItem& item = g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]];
-    const int metadataTop = top + popupCardHeight(item) - ui(20);
+    const int metadataTop = top + popupRowHeightForRow(row) - ui(20);
     return RECT{ui(kPopupCardInset + 148), metadataTop,
                 client.right - ui(kPopupCardInset + 112), metadataTop + ui(16)};
 }
@@ -2942,6 +3077,23 @@ int popupRowAt(int clickY) {
     RECT client{};
     GetClientRect(g_app->popup, &client);
     if (clickY < ui(kPopupListTop) || clickY >= client.bottom - ui(kPopupBottomPadding)) return -1;
+    if (g_app->settingsData.popupDensity == 2) {
+        rebuildPopupRowLayouts();
+        const int contentY = g_app->scrollPosition + clickY - ui(kPopupListTop);
+        int low = 0;
+        int high = static_cast<int>(g_app->popupRowLayouts.size());
+        while (low < high) {
+            const int middle = low + (high - low) / 2;
+            if (g_app->popupRowLayouts[static_cast<std::size_t>(middle)].top <= contentY) low = middle + 1;
+            else high = middle;
+        }
+        const int row = low - 1;
+        if (row >= 0 && row < static_cast<int>(g_app->popupRowLayouts.size())) {
+            const PopupRowLayout& layout = g_app->popupRowLayouts[static_cast<std::size_t>(row)];
+            if (contentY < layout.top + layout.height) return row;
+        }
+        return -1;
+    }
     const int stride = popupScrollStride();
     const int firstRow = g_app->scrollPosition / std::max(1, stride);
     const int offset = g_app->scrollPosition % std::max(1, stride);
@@ -2959,6 +3111,12 @@ int popupRowAt(int clickY) {
 
 int popupRowTop(int row) {
     if (!g_app) return -1;
+    if (g_app->settingsData.popupDensity == 2) {
+        rebuildPopupRowLayouts();
+        if (row < 0 || row >= static_cast<int>(g_app->popupRowLayouts.size())) return -1;
+        return ui(kPopupListTop) + g_app->popupRowLayouts[static_cast<std::size_t>(row)].top -
+            g_app->scrollPosition;
+    }
     const int stride = popupScrollStride();
     const int firstRow = g_app->scrollPosition / std::max(1, stride);
     if (row < firstRow) return -1;
@@ -2987,9 +3145,8 @@ void invalidatePopupHover(HWND hwnd, int row, int filter, bool header) {
     GetClientRect(hwnd, &client);
     if (row >= 0 && row < static_cast<int>(g_app->visible.size())) {
         const int top = popupRowTop(row);
-        const ClipItem& item = g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]];
         RECT rowRect{ui(kPopupCardInset), top,
-                     client.right - ui(kPopupCardInset), top + popupCardHeight(item)};
+                  client.right - ui(kPopupCardInset), top + popupRowHeightForRow(row)};
         InvalidateRect(hwnd, &rowRect, FALSE);
     }
     if (filter >= 0 && filter < 6) {
@@ -3047,7 +3204,7 @@ void invalidatePopupImageRow(HWND hwnd, std::size_t itemIndex) {
     RECT client{};
     GetClientRect(hwnd, &client);
     RECT rowRect{ui(kPopupCardInset), top,
-                 client.right - ui(kPopupCardInset), top + ui(kPopupCardHeight)};
+                  client.right - ui(kPopupCardInset), top + popupRowHeightForRow(row)};
     InvalidateRect(hwnd, &rowRect, FALSE);
 }
 
@@ -3069,6 +3226,9 @@ void invalidatePopupFilterButton(HWND hwnd) {
 }
 
 int popupScrollStride() {
+    if (g_app && g_app->settingsData.popupDensity == 0) {
+        return ui(kPopupCompactCardHeight + kPopupCardGap);
+    }
     return ui(kPopupCardHeight + kPopupCardGap);
 }
 
@@ -3078,10 +3238,19 @@ int popupMaxScrollPixels() {
     GetClientRect(g_app->popup, &client);
     const int viewport = std::max(0, static_cast<int>(client.bottom) -
         ui(kPopupListTop) - ui(kPopupBottomPadding));
-    const int itemCount = static_cast<int>(g_app->visible.size());
-    const int content = itemCount > 0
-        ? itemCount * ui(kPopupCardHeight) + (itemCount - 1) * ui(kPopupCardGap)
-        : 0;
+    int content = 0;
+    if (g_app->settingsData.popupDensity == 2) {
+        rebuildPopupRowLayouts();
+        if (!g_app->popupRowLayouts.empty()) {
+            const PopupRowLayout& last = g_app->popupRowLayouts.back();
+            content = last.top + last.height;
+        }
+    } else {
+        const int itemCount = static_cast<int>(g_app->visible.size());
+        const int height = g_app->settingsData.popupDensity == 0
+            ? ui(kPopupCompactCardHeight) : ui(kPopupCardHeight);
+        content = itemCount > 0 ? itemCount * height + (itemCount - 1) * ui(kPopupCardGap) : 0;
+    }
     return std::max(0, content - viewport);
 }
 
@@ -3103,12 +3272,9 @@ bool popupScrollMetrics(int& trackTop, int& trackBottom, int& thumbTop,
     if (!g_app || !g_app->popup) return false;
     RECT client{};
     GetClientRect(g_app->popup, &client);
-    const int itemCount = static_cast<int>(g_app->visible.size());
     const int viewport = std::max(0, static_cast<int>(client.bottom) -
         ui(kPopupListTop) - ui(kPopupBottomPadding));
-    const int content = itemCount > 0
-        ? itemCount * ui(kPopupCardHeight) + (itemCount - 1) * ui(kPopupCardGap)
-        : 0;
+    const int content = popupMaxScrollPixels() + viewport;
     maxOffset = std::max(0, content - viewport);
     if (maxOffset == 0) return false;
     trackTop = ui(kPopupListTop);
@@ -3644,8 +3810,20 @@ void applyVisibleCandidates(const std::vector<std::size_t>& candidates,
     }
     if (g_app->visible.empty()) g_app->selected = 0;
     else g_app->selected = std::clamp(g_app->selected, 0, static_cast<int>(g_app->visible.size()) - 1);
+    g_app->popupLayoutRevision = 0;
+    rebuildPopupRowLayouts();
     if (preserveScrollPosition) {
         setPopupScrollPosition(previousScrollPosition);
+    } else if (g_app->settingsData.popupDensity == 2 && !g_app->visible.empty()) {
+        RECT client{};
+        GetClientRect(g_app->popup, &client);
+        const int viewportBottom = client.bottom - ui(kPopupBottomPadding);
+        const int selectedTop = popupRowTop(g_app->selected);
+        const int selectedBottom = selectedTop + popupRowHeightForRow(g_app->selected);
+        int position = g_app->scrollPosition;
+        if (selectedTop < ui(kPopupListTop)) position -= ui(kPopupListTop) - selectedTop;
+        else if (selectedBottom > viewportBottom) position += selectedBottom - viewportBottom;
+        setPopupScrollPosition(position);
     } else {
         const int visibleRows = popupVisibleRows();
         int rowOffset = std::clamp(g_app->scrollOffset, 0,
@@ -4873,7 +5051,7 @@ void positionDetailPreview(int row) {
     RECT rowRect{};
     const int rowTop = popupRowTop(row);
     rowRect.top = popupRect.top + (rowTop >= 0 ? rowTop : ui(kPopupListTop));
-    rowRect.bottom = rowRect.top + ui(kPopupCardHeight);
+    rowRect.bottom = rowRect.top + popupRowHeightForRow(row);
     HMONITOR monitor = MonitorFromWindow(g_app->popup, MONITOR_DEFAULTTONEAREST);
     MONITORINFO info{sizeof(info)};
     GetMonitorInfoW(monitor, &info);
@@ -5434,10 +5612,12 @@ void preloadPopupImageScreens(HWND hwnd) {
     if (!g_app || g_app->popup != hwnd || g_app->fastImagePreview || g_app->scrollDragging) return;
     const int rows = popupVisibleRows();
     const int stride = std::max(1, popupScrollStride());
-    const int firstRow = g_app->scrollPosition / stride;
+    const int firstRow = g_app->settingsData.popupDensity == 2
+        ? std::max(0, popupRowAt(ui(kPopupListTop)))
+        : g_app->scrollPosition / stride;
     const int startRow = std::max(0, firstRow - rows);
     const int endRow = std::min(static_cast<int>(g_app->visible.size()), firstRow + rows * 2);
-    const int previewSize = ui(kPopupPreviewSize);
+    const int previewSize = g_app->settingsData.popupDensity == 0 ? ui(48) : ui(kPopupPreviewSize);
     const RECT previewRect{0, 0, previewSize, previewSize};
     const auto scheduleRange = [&](int rangeStart, int rangeEnd) {
         for (int row = rangeStart; row < rangeEnd; ++row) {
@@ -5764,6 +5944,9 @@ void showPopup(bool openedByWinV = false) {
     g_app->wheelScrollRemainder = 0.0f;
     g_app->fastImagePreview = false;
     g_app->filterScrollOffset = 0;
+    g_app->popupFileKinds.clear();
+    g_app->popupRowLayouts.clear();
+    g_app->popupLayoutRevision = 0;
     resetPopupFilters();
     if (g_app->settingsData.rememberPopupFilter) {
         g_app->filterType = g_app->settingsData.lastPopupFilterType;
@@ -5837,6 +6020,9 @@ void closePopup() {
     std::vector<FileAvailability>().swap(g_app->fileAvailability);
     std::vector<std::size_t>().swap(g_app->searchCandidates);
     std::vector<std::size_t>().swap(g_app->visible);
+    std::vector<PopupFileKind>().swap(g_app->popupFileKinds);
+    std::vector<PopupRowLayout>().swap(g_app->popupRowLayouts);
+    g_app->popupLayoutRevision = 0;
     const HWND target = g_app->targetWindow;
     if (g_app->popupMouseHook) {
         UnhookWindowsHookEx(g_app->popupMouseHook);
@@ -7479,6 +7665,8 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
                              {kSettingSearchOnOpen}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().rememberPopupFilter,
                              {kSettingRememberPopupFilter}, {36}, {20}, contentWidth),
+            makeSettingsRow(hwnd, tr(L"History item density", L"历史项高度模式"),
+                             {kSettingPopupDensity}, {150}, {30}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().promotePastedItem,
                              {kSettingPromotePastedItem}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().automaticPreview,
@@ -8859,15 +9047,22 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     const int listBottom = client.bottom - ui(kPopupBottomPadding);
     const int listClip = SaveDC(dc);
     IntersectClipRect(dc, ui(12), ui(kPopupListTop), client.right - ui(1), listBottom);
+    rebuildPopupRowLayouts();
+    const bool adaptiveRows = g_app->settingsData.popupDensity == 2;
     const int scrollStride = popupScrollStride();
-    const int firstVisibleRow = g_app->scrollPosition / std::max(1, scrollStride);
+    const int firstVisibleRow = adaptiveRows
+        ? std::max(0, popupRowAt(ui(kPopupListTop)))
+        : g_app->scrollPosition / std::max(1, scrollStride);
     const int scrollRemainder = g_app->scrollPosition % std::max(1, scrollStride);
-    int y = ui(kPopupListTop) - scrollRemainder;
+    int y = adaptiveRows ? popupRowTop(firstVisibleRow) : ui(kPopupListTop) - scrollRemainder;
     for (int row = firstVisibleRow;
          row < static_cast<int>(g_app->visible.size()); ++row) {
         const std::size_t itemIndex = g_app->visible[static_cast<std::size_t>(row)];
         const ClipItem& item = g_app->store.items()[itemIndex];
-        const int height = popupCardHeight(item);
+        const PopupRowLayout& rowLayout = g_app->popupRowLayouts[static_cast<std::size_t>(row)];
+        const int height = adaptiveRows ? rowLayout.height
+            : (g_app->settingsData.popupDensity == 0 ? ui(kPopupCompactCardHeight)
+                                                     : popupStandardHeight());
         if (y >= listBottom) break;
         RECT rowRect{ui(kPopupCardInset), y, client.right - ui(kPopupCardInset), y + height};
         if (paintClipType != NULLREGION &&
@@ -8889,9 +9084,11 @@ void paintPopupContent(HWND hwnd, HDC dc) {
             ? cachedFileItemHasMissingPath(itemIndex, item)
             : fileItemHasMissingPath(itemIndex, item));
         const int metadataTop = y + height - ui(20);
+        const int previewSize = g_app->settingsData.popupDensity == 0 && rowLayout.imagePreview
+            ? ui(48) : ui(kPopupPreviewSize);
         const RECT previewRect{rowRect.left + ui(12), y + ui(6),
-                               rowRect.left + ui(12 + kPopupPreviewSize),
-                               y + ui(6 + kPopupPreviewSize)};
+                               rowRect.left + ui(12) + previewSize,
+                               y + ui(6) + previewSize};
         if ((image && drawImagePreview(dc, item, previewRect,
                                        !g_app->fastImagePreview && !g_app->scrollDragging)) ||
             (file && drawFileImagePreview(dc, item, previewRect))) {
@@ -9338,9 +9535,9 @@ void captureSettingsShortcut(HWND hwnd, HWND control, UINT virtualKey) {
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
-void createThemeSelector(HWND parent, int id) {
+void createThemeSelector(HWND parent, int id, int y = 182) {
     CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | SS_NOTIFY,
-                  ui(520 - kSettingsSidebarWidth), ui(182 - kSettingsHeaderHeight),
+                  ui(520 - kSettingsSidebarWidth), ui(y - kSettingsHeaderHeight),
                   ui(190), ui(30), parent,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
                   GetModuleHandleW(nullptr), nullptr);
@@ -9531,10 +9728,11 @@ void createSettingsControlsModern(HWND hwnd) {
     createToggle(kSettingSearchOnOpen, 640, 474, g_app->settingsData.searchOnOpen);
     createToggle(kSettingRememberPopupFilter, 640, 509,
                  g_app->settingsData.rememberPopupFilter);
-    createToggle(kSettingPromotePastedItem, 640, 544,
+    createThemeSelector(parent, kSettingPopupDensity, 544);
+    createToggle(kSettingPromotePastedItem, 640, 579,
                  g_app->settingsData.promotePastedItem);
-    createToggle(kSettingPreviewAutomatic, 640, 579, g_app->settingsData.previewAutomatic);
-    createToggle(kSettingPreviewByKey, 640, 614, g_app->settingsData.previewByKey);
+    createToggle(kSettingPreviewAutomatic, 640, 614, g_app->settingsData.previewAutomatic);
+    createToggle(kSettingPreviewByKey, 640, 649, g_app->settingsData.previewByKey);
     createToggle(kSettingEncrypt, 640, 116, g_app->settingsData.encryptData);
     createToggle(kSettingProtectPinnedCleanup, 640, 650,
                  g_app->settingsData.protectPinnedFromAutoCleanup);
@@ -9811,6 +10009,7 @@ void updateSettingsTabControls(HWND hwnd, bool redraw) {
                             kSettingStartup, kSettingStartupSettings, kSettingStartupNotification,
                             kSettingRunAsAdministrator, kSettingSearchImeCompatibility, kSettingSearchOnOpen,
                             kSettingRememberPopupFilter,
+                            kSettingPopupDensity,
                            kSettingPreviewAutomatic, kSettingPreviewByKey,
                           kSettingProtectPinnedCleanup, kSettingSpecialAcrossCategories,
                           kSettingPromotePastedItem, kSettingEncrypt, kSettingMaxItems,
@@ -10531,6 +10730,22 @@ void toggleRememberPopupFilter() {
     saveSettings(g_app->settingsData);
 }
 
+// 应用历史项高度模式并立即刷新当前历史窗口。
+void setPopupDensity(int density) {
+    if (!g_app) return;
+    g_app->settingsData.popupDensity = std::clamp(density, 0, 2);
+    g_app->popupLayoutRevision = 0;
+    if (g_app->popup) {
+        rebuildPopupRowLayouts();
+        setPopupScrollPosition(g_app->scrollPosition);
+        invalidatePopupList(g_app->popup);
+        invalidatePopupStatus(g_app->popup);
+        if (g_app->detailPreviewVisible) positionDetailPreview(g_app->detailPreviewHoverRow);
+    }
+    if (g_app->settings) InvalidateRect(g_app->settings, nullptr, FALSE);
+    saveSettings(g_app->settingsData);
+}
+
 // 统一应用历史窗口右键菜单和设置页的预览开关。
 void setPopupPreviewOptions(bool automatic, bool byKey) {
     if (!g_app) return;
@@ -10654,14 +10869,19 @@ void paintPopupContextSubmenu(HWND hwnd, HDC dc) {
     SetBkMode(dc, TRANSPARENT);
     SelectObject(dc, g_app->popupFilterFont);
     const bool clearing = g_app->popupContextSubmenuCommand == kMenuClearHistory;
+    const bool density = g_app->popupContextSubmenuCommand == kMenuPopupDensity;
     const wchar_t* labels[] = {
-        clearing ? tr(L"Delete unpinned, non-favorite records", L"仅删除非置顶、非收藏记录") : settingsLocale().automaticPreview,
-        clearing ? tr(L"Delete all except favorites", L"删除收藏以外的所有记录") : settingsLocale().keyPreview,
-        clearing ? tr(L"Delete all, including pins and favorites", L"删除所有记录（包含置顶、收藏）") : settingsLocale().previewDisabled,
+        clearing ? tr(L"Delete unpinned, non-favorite records", L"仅删除非置顶、非收藏记录") :
+            (density ? tr(L"Compact", L"紧凑") : settingsLocale().automaticPreview),
+        clearing ? tr(L"Delete all except favorites", L"删除收藏以外的所有记录") :
+            (density ? tr(L"Standard", L"标准") : settingsLocale().keyPreview),
+        clearing ? tr(L"Delete all, including pins and favorites", L"删除所有记录（包含置顶、收藏）") :
+            (density ? tr(L"Adaptive", L"自适应") : settingsLocale().previewDisabled),
     };
-    const int active = clearing ? -1 : (g_app->settingsData.previewAutomatic ? 0
+    const int active = clearing ? -1 : density ? std::clamp(g_app->settingsData.popupDensity, 0, 2) :
+        (g_app->settingsData.previewAutomatic ? 0
         : (g_app->settingsData.previewByKey ? 1 : 2));
-    const std::wstring previewShortcut = clearing ? std::wstring{} :
+    const std::wstring previewShortcut = clearing || density ? std::wstring{} :
         popupContextMenuShortcut(kMenuPreviewByKey);
     for (int row = 0; row < 3; ++row) {
         const int top = ui(5 + row * kPopupContextMenuRowHeight);
@@ -10674,7 +10894,7 @@ void paintPopupContextSubmenu(HWND hwnd, HDC dc) {
         RECT check{ui(12), top, ui(27), itemRect.bottom};
         if (row == active) DrawTextW(dc, L"\x2713", -1, &check,
                                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        RECT label{ui(clearing ? 16 : 32), top, client.right - ui(12), itemRect.bottom};
+        RECT label{ui(clearing || density ? 16 : 32), top, client.right - ui(12), itemRect.bottom};
         if (!clearing && row == 1 && !previewShortcut.empty()) {
             SIZE shortcutSize{};
             GetTextExtentPoint32W(dc, previewShortcut.c_str(),
@@ -10772,6 +10992,9 @@ void executePopupContextCommand(int command) {
     else if (command == kMenuPreviewAutomatic) setPopupPreviewOptions(true, false);
     else if (command == kMenuPreviewByKey) setPopupPreviewOptions(false, true);
     else if (command == kMenuPreviewDisabled) setPopupPreviewOptions(false, false);
+    else if (command >= kMenuPopupDensityCompact && command <= kMenuPopupDensityAdaptive) {
+        setPopupDensity(command - kMenuPopupDensityCompact);
+    }
     else if (command >= kMenuClearOrdinary && command <= kMenuClearAll) clearPopupHistory(command);
     else if (command == kMenuEditText) openTextEditorForSelected();
     else if (command == kMenuEditNote) beginPopupNoteEdit(g_app->selected);
@@ -10830,7 +11053,9 @@ void showPopupContextMenu(HWND hwnd, int row) {
                                              settingsLocale().promotePastedItem, false, true,
                                              g_app->settingsData.promotePastedItem});
     g_app->popupContextMenuItems.push_back({kMenuPreviewMode,
-                                             settingsLocale().previewMode});
+                                              settingsLocale().previewMode});
+    g_app->popupContextMenuItems.push_back({kMenuPopupDensity,
+                                             tr(L"History item density", L"历史项高度")});
     if (row >= 0 && row < static_cast<int>(g_app->visible.size())) {
         g_app->popupContextMenuItems.push_back({kMenuDelete, settingsLocale().popupDelete});
     }
@@ -10880,7 +11105,8 @@ void paintPopupContextMenuWindow(HWND hwnd, HDC dc) {
         }
         SetTextColor(dc, text);
         const bool hasArrow = g_app->popupContextMenuItems[i].command == kMenuPreviewMode ||
-            g_app->popupContextMenuItems[i].command == kMenuClearHistory;
+            g_app->popupContextMenuItems[i].command == kMenuClearHistory ||
+            g_app->popupContextMenuItems[i].command == kMenuPopupDensity;
         const bool hasCheck = g_app->popupContextMenuItems[i].checked;
         const std::wstring shortcut = popupContextMenuShortcut(
             g_app->popupContextMenuItems[i].command);
@@ -10902,7 +11128,8 @@ void paintPopupContextMenuWindow(HWND hwnd, HDC dc) {
         DrawTextW(dc, g_app->popupContextMenuItems[i].label.c_str(), -1, &label,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         if (g_app->popupContextMenuItems[i].command == kMenuPreviewMode ||
-            g_app->popupContextMenuItems[i].command == kMenuClearHistory) {
+            g_app->popupContextMenuItems[i].command == kMenuClearHistory ||
+            g_app->popupContextMenuItems[i].command == kMenuPopupDensity) {
             RECT arrow{client.right - ui(26), top, client.right - ui(10), row.bottom};
             SetTextColor(dc, themeColor(ThemeColorRole::SecondaryText));
             DrawTextW(dc, L">", -1, &arrow, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -11503,6 +11730,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     if (languageChanged) {
         g_app->settingsActionFeedback.clear();
         g_app->shortcutConflictFeedback.clear();
+        g_app->popupLayoutRevision = 0;
         refreshSettingsLocalizedControls(hwnd);
         updateSettingsTabControls(hwnd);
     }
@@ -11690,6 +11918,7 @@ void animateSettingsToggle(HWND hwnd) {
 
 int settingsDropdownItemCount() {
     if (g_app->themeDropdownControlId == 0) return 3;
+    if (g_app->themeDropdownControlId == kSettingPopupDensity) return 3;
     int count = 0;
     for (const ThemeDefinition& theme : g_app->themeRegistry.themes()) {
         if (g_app->themeDropdownControlId == kSettingFixedTheme ||
@@ -11726,6 +11955,9 @@ const std::string& selectedThemeId(int controlId);
 int settingsDropdownSelectedRow() {
     if (g_app->themeDropdownControlId == 0) {
         return settingsLanguageSelection(settingsControl(g_app->settings, kSettingLanguage));
+    }
+    if (g_app->themeDropdownControlId == kSettingPopupDensity) {
+        return std::clamp(g_app->settingsData.popupDensity, 0, 2);
     }
     int row = 0;
     for (const ThemeDefinition& theme : g_app->themeRegistry.themes()) {
@@ -12271,6 +12503,8 @@ void paintLanguageDropdown(HWND hwnd, HDC dc) {
             if (g_app->themeDropdownControlId == 0) {
                 active = itemRow == settingsLanguageSelection(
                     settingsControl(g_app->settings, kSettingLanguage));
+            } else if (g_app->themeDropdownControlId == kSettingPopupDensity) {
+                active = itemRow == std::clamp(g_app->settingsData.popupDensity, 0, 2);
             } else if (const ThemeDefinition* theme = themeDropdownThemeAt(itemRow)) {
                 active = theme->id == selectedThemeId(g_app->themeDropdownControlId);
             }
@@ -12326,7 +12560,12 @@ void paintLanguageDropdown(HWND hwnd, HDC dc) {
         RECT rowRect{ui(10), ui(row * 30 + 3), contentWidth - ui(30), ui(row * 30 + 27)};
         const wchar_t* rowLabel = labels[std::min(itemRow, 2)];
         bool selectedRow = itemRow == selected;
-        if (g_app->themeDropdownControlId != 0) {
+        if (g_app->themeDropdownControlId == kSettingPopupDensity) {
+            const wchar_t* densityLabels[] = {tr(L"Compact", L"紧凑"), tr(L"Standard", L"标准"),
+                                              tr(L"Adaptive", L"自适应")};
+            rowLabel = densityLabels[std::clamp(itemRow, 0, 2)];
+            selectedRow = itemRow == std::clamp(g_app->settingsData.popupDensity, 0, 2);
+        } else if (g_app->themeDropdownControlId != 0) {
             const ThemeDefinition* theme = themeDropdownThemeAt(itemRow);
             rowLabel = theme ? theme->name.c_str() : L"";
             selectedRow = theme && theme->id == selectedThemeId(g_app->themeDropdownControlId);
@@ -12355,13 +12594,16 @@ void paintSettingsSelector(HWND hwnd, HDC dc) {
     const int id = GetDlgCtrlID(hwnd);
     const bool themeSelector = id == kSettingFixedTheme ||
         id == kSettingSystemLightTheme || id == kSettingSystemDarkTheme;
+    const bool popupDensitySelector = id == kSettingPopupDensity;
     RECT client{};
     GetClientRect(hwnd, &client);
     const int width = client.right - client.left;
     const int height = client.bottom - client.top;
     const bool highContrast = highContrastEnabled();
     const bool active = g_app->languageDropdown != nullptr &&
-        (themeSelector ? g_app->themeDropdownControlId == id : g_app->themeDropdownControlId == 0);
+        (themeSelector ? g_app->themeDropdownControlId == id :
+            (popupDensitySelector ? g_app->themeDropdownControlId == id
+                                  : g_app->themeDropdownControlId == 0));
     const bool hovered = g_app->hoveredSettingsControl == id;
     const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW) :
         themeColor(ThemeColorRole::SurfaceBackground);
@@ -12422,6 +12664,10 @@ void paintSettingsSelector(HWND hwnd, HDC dc) {
     if (themeSelector) {
         const auto* theme = g_app->themeRegistry.find(selectedThemeId(id));
         if (theme) wcscpy_s(value, theme->name.c_str());
+    } else if (popupDensitySelector) {
+        const wchar_t* labels[] = {tr(L"Compact", L"紧凑"), tr(L"Standard", L"标准"),
+                                   tr(L"Adaptive", L"自适应")};
+        wcscpy_s(value, labels[std::clamp(g_app->settingsData.popupDensity, 0, 2)]);
     } else {
         const int index = settingsLanguageSelection(hwnd);
         const wchar_t* labels[] = {settingsLocale().autoLanguage, L"English", L"简体中文"};
@@ -12716,7 +12962,8 @@ void configureSettingsEdit(HWND hwnd) {
 
 bool isSettingsSelector(int id) {
     return id == kSettingLanguage || id == kSettingFixedTheme ||
-           id == kSettingSystemLightTheme || id == kSettingSystemDarkTheme;
+           id == kSettingSystemLightTheme || id == kSettingSystemDarkTheme ||
+           id == kSettingPopupDensity;
 }
 
 bool handleSettingsSelectorMessage(HWND hwnd, HWND settings, int id, UINT message,
@@ -12882,10 +13129,11 @@ void subclassSettingsControls(HWND hwnd) {
             std::wcscmp(className, L"ComboBox") != 0 &&
             std::wcscmp(className, L"Edit") != 0 &&
             !(std::wcscmp(className, L"Static") == 0 &&
-              (GetDlgCtrlID(child) == kSettingLanguage ||
-               GetDlgCtrlID(child) == kSettingFixedTheme ||
-               GetDlgCtrlID(child) == kSettingSystemLightTheme ||
-               GetDlgCtrlID(child) == kSettingSystemDarkTheme)) &&
+               (GetDlgCtrlID(child) == kSettingLanguage ||
+                GetDlgCtrlID(child) == kSettingFixedTheme ||
+                GetDlgCtrlID(child) == kSettingSystemLightTheme ||
+                GetDlgCtrlID(child) == kSettingSystemDarkTheme ||
+                GetDlgCtrlID(child) == kSettingPopupDensity)) &&
             !isSettingsThemeSwatch(GetDlgCtrlID(child))) {
             continue;
         }
@@ -13191,7 +13439,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const int row = (GET_Y_LPARAM(lParam) - ui(5)) / ui(kPopupContextMenuRowHeight);
             if (row >= 0 && row < 3) {
                 const int command = (g_app->popupContextSubmenuCommand == kMenuClearHistory
-                    ? kMenuClearOrdinary : kMenuPreviewAutomatic) + row;
+                    ? kMenuClearOrdinary
+                    : (g_app->popupContextSubmenuCommand == kMenuPopupDensity
+                        ? kMenuPopupDensityCompact : kMenuPreviewAutomatic)) + row;
                 closePopupContextMenu();
                 executePopupContextCommand(command);
             }
@@ -13248,7 +13498,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             const int command = next >= 0
                 ? g_app->popupContextMenuItems[static_cast<std::size_t>(next)].command : 0;
-            if (command == kMenuPreviewMode || command == kMenuClearHistory) {
+            if (command == kMenuPreviewMode || command == kMenuClearHistory ||
+                command == kMenuPopupDensity) {
                 KillTimer(hwnd, kPopupContextSubmenuHideTimer);
                 if ((!g_app->popupContextSubmenu || g_app->popupContextSubmenuCommand != command) &&
                     next != g_app->popupContextMenuPendingSubmenu) {
@@ -13320,7 +13571,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const int row = (GET_Y_LPARAM(lParam) - ui(5)) / ui(kPopupContextMenuRowHeight);
             if (row >= 0 && row < static_cast<int>(g_app->popupContextMenuItems.size())) {
                 const int command = g_app->popupContextMenuItems[static_cast<std::size_t>(row)].command;
-                if (command == kMenuPreviewMode || command == kMenuClearHistory) {
+                if (command == kMenuPreviewMode || command == kMenuClearHistory ||
+                    command == kMenuPopupDensity) {
                     showPopupContextSubmenu(row);
                     return 0;
                 }
@@ -13879,6 +14131,18 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                     setSettingsLanguageSelection(combo, row);
                     InvalidateRect(combo, nullptr, FALSE);
                     scheduleSettingsSync(g_app->settings);
+                } else if (g_app->themeDropdownControlId == kSettingPopupDensity) {
+                    g_app->settingsData.popupDensity = std::clamp(row, 0, 2);
+                    if (g_app->popup) {
+                        g_app->popupLayoutRevision = 0;
+                        rebuildPopupRowLayouts();
+                        setPopupScrollPosition(g_app->scrollPosition);
+                        invalidatePopupList(g_app->popup);
+                        invalidatePopupStatus(g_app->popup);
+                        positionDetailPreview(g_app->detailPreviewHoverRow);
+                    }
+                    saveSettings(g_app->settingsData);
+                    InvalidateRect(settingsControl(g_app->settings, kSettingPopupDensity), nullptr, FALSE);
                 } else if (const ThemeDefinition* theme = themeDropdownThemeAt(row)) {
                     const int selectorId = g_app->themeDropdownControlId;
                     if (!confirmThemeEditorExit(g_app->settings)) {
@@ -14906,7 +15170,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const int rowTop = row >= 0 ? popupRowTop(row) : -1;
             const bool deleteHover = row >= 0 && popupDeleteHitAt(client, rowTop, point.x, point.y);
             const int rowHeight = row >= 0
-                ? popupCardHeight(g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]]) : 0;
+                ? popupRowHeightForRow(row) : 0;
             const bool pinHover = row >= 0 && point.x >= client.right - ui(45) &&
                 point.x < client.right - ui(10) && point.y >= rowTop + rowHeight - ui(30) &&
                 point.y < rowTop + rowHeight;
@@ -15278,7 +15542,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const int deleteRow = row >= 0 && popupDeleteHitAt(client, rowTop, x, y)
                 ? row : -1;
             const int rowHeight = row >= 0
-                ? popupCardHeight(g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]]) : 0;
+                ? popupRowHeightForRow(row) : 0;
             const bool itemActionRow = row >= 0 && y >= rowTop + rowHeight - ui(30) &&
                 y < rowTop + rowHeight;
             const int favoriteRow = itemActionRow &&
@@ -15458,8 +15722,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 const bool deleteClick = popupDeleteHitAt(client, rowTop,
                                                            GET_X_LPARAM(lParam),
                                                            GET_Y_LPARAM(lParam));
-                const int rowHeight = popupCardHeight(
-                    g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]]);
+                const int rowHeight = popupRowHeightForRow(row);
                 const bool itemActionClick = GET_Y_LPARAM(lParam) >= rowTop + rowHeight - ui(30) &&
                     GET_Y_LPARAM(lParam) < rowTop + rowHeight;
                 const bool favoriteClick = itemActionClick &&
