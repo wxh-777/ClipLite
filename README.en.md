@@ -2,7 +2,7 @@
 
 ClipLite is a lightweight native clipboard history manager for Windows. It is built with C++17, the Win32 API, and GDI/GDI+, without WebView, Electron, WinUI, Qt, or another large runtime. The project prioritizes low idle memory usage, reliable clipboard format handling, and portable distribution.
 
-Current release: **1.5.1** (Windows x64)
+Current release: **1.5.2** (Windows x64)
 
 中文文档：[README.md](README.md)
 
@@ -22,6 +22,7 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 - Supports a separate image and content preview window. With automatic preview enabled, hover over an item to preview it, then use the wheel to zoom around the pointer or drag the image. The window shows the zoom percentage and on-demand original-image loading status. Hold-key preview (default `F2`) and disabled preview remain available; long text scrolls with the wheel.
 - Automatic preview is enabled by default; an existing configuration that explicitly disabled it remains disabled.
 - Search focuses the input by default; an optional compatibility mode keeps the original app in the foreground and uses `Ctrl+Space` to enter Chinese IME input.
+- When selecting history items with `Up` / `Down`, holding a key moves one item at a fixed interval instead of flooding the window with repeat messages.
 - Long settings pages show a scrollbar on the right, with wheel scrolling, page jumps on the track, and a draggable thumb.
 - Paste as plain text or rich text; images are loaded on demand with bounded memory and disk thumbnail caches.
 - Text and HTML history items can be edited as plain text from the context menu, then saved in place, saved as a new record, or saved and pasted; saving as new reuses matching text instead of creating duplicates.
@@ -105,8 +106,8 @@ Features and versions vary across tools. This table describes product positionin
 
 The Windows x64 release provides:
 
-- Installer: `ClipLite-Setup-1.5.1-x64.exe`, with English and Simplified Chinese wizard languages, automatic selection based on the Windows UI language, a selectable installation directory, shortcuts, and standard uninstall support.
-- Portable package: `ClipLite-1.5.1-portable-win-x64.zip`, which can be extracted and moved as a directory. Data is stored in its `data\\` directory.
+- Installer: `ClipLite-Setup-1.5.2-x64.exe`, with English and Simplified Chinese wizard languages, automatic selection based on the Windows UI language, a selectable installation directory, shortcuts, and standard uninstall support.
+- Portable package: `ClipLite-1.5.2-portable-win-x64.zip`, which can be extracted and moved as a directory. Data is stored in its `data\\` directory.
 
 Use `SHA256SUM.txt` in the portable package to verify `ClipLite.exe`. Verify the download source before running the application.
 
@@ -115,7 +116,6 @@ Use `SHA256SUM.txt` in the portable package to verify `ClipLite.exe`. Verify the
 - `Alt+V`: Open clipboard history.
 - Left click: Paste the selected item without taking input focus from the original application.
 - `Ctrl+Shift+V`: Paste as plain text.
-- `Ctrl+Shift+R`: Paste as rich text when available.
 - `Delete`: Delete the selected item.
 - `Esc`: Close the history window.
 - `F10`: Open settings.

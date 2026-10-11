@@ -223,6 +223,7 @@ constexpr UINT_PTR kFilterSubmenuHoverTimer = 21;
 constexpr UINT_PTR kPopupContextSubmenuHideTimer = 22;
 constexpr UINT_PTR kStorageMaintenanceTimer = 23;
 constexpr UINT_PTR kSystemThemeRefreshTimer = 24;
+constexpr UINT_PTR kPopupSelectionRepeatTimer = 25;
 constexpr DWORD kSettingsToggleAnimationMs = 160;
 constexpr DWORD kSettingsDropdownAnimationMs = 150;
 constexpr DWORD kSettingsThemeAnimationMs = 180;
@@ -233,6 +234,8 @@ constexpr UINT kSettingsEncryptionDebounceMs = 800;
 constexpr UINT kSettingsActionFeedbackMs = 2400;
 constexpr UINT kPopupSearchDelayMs = 90;
 constexpr UINT kPopupPreviewResumeMs = 50;
+constexpr UINT kPopupSelectionRepeatDelayMs = 250;
+constexpr UINT kPopupSelectionRepeatIntervalMs = 280;
 constexpr UINT kStorageMaintenanceDelayMs = 2500;
 constexpr UINT kSystemThemeRefreshDelayMs = 100;
 constexpr UINT kFilterSubmenuHoverDelayMs = 120;
@@ -321,7 +324,7 @@ constexpr int kSupportQqWidth = 560;
 constexpr int kSupportQqHeight = 700;
 constexpr std::size_t kPopupImagePreviewCacheLimit = 24;
 constexpr std::size_t kPopupSourceIconCacheLimit = 32;
-constexpr char kCurrentVersion[] = "1.5.1";
+constexpr char kCurrentVersion[] = "1.5.2";
 constexpr wchar_t kSourceUrl[] = L"https://github.com/wxh-777/ClipLite";
 constexpr wchar_t kLatestReleaseApiUrl[] =
     L"https://api.github.com/repos/wxh-777/ClipLite/releases/latest";
@@ -548,6 +551,8 @@ struct AppState {
     bool popupPinned = false;
     bool popupOpening = false;
     bool popupActivated = false;
+    UINT popupSelectionRepeatKey = 0;
+    UINT popupSelectionHookKey = 0;
     bool popupOpenedByWinV = false;
     bool filterMenuOpen = false;
     bool popupContextMenuOpen = false;
@@ -1346,7 +1351,7 @@ const SettingsLocale kEnglishSettingsLocale{
      L"Some shortcuts could not be registered. Choose different combinations.",
     L"Custom shortcuts require at least one modifier key.",
     L"Sensitive markers: password, token, api_key, secret, and private keys; detected by content pattern.",
-        L"Application    ClipLite", L"Version        1.5.1 x64", L"Storage format  v4",
+         L"Application    ClipLite", L"Version        1.5.2 x64", L"Storage format  v4",
       L"Data directory  %LOCALAPPDATA%\\ClipLite", L"Browse", L"Clear non-favorite history", L"Clear non-favorite text",
       L"Clear non-favorite images", L"Clear non-favorite files", L"Press shortcut", L"Need modifier", L"One application per line", L"Auto",
     L"ClipLite Settings", L"Choose a valid cache directory.", L"Unable to create the cache directory.",
@@ -1398,7 +1403,7 @@ const SettingsLocale kChineseSettingsLocale{
      L"无法注册“%ls”（%ls），可能已被其他程序或 Windows 占用，已恢复为 %ls。",
      L"部分快捷键注册失败，请更换组合键。", L"自定义快捷键至少需要一个修饰键。",
     L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。",
-          L"应用名称    ClipLite", L"版本        1.5.1 x64", L"存储格式    v4",
+          L"应用名称    ClipLite", L"版本        1.5.2 x64", L"存储格式    v4",
       L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清理未收藏历史", L"清理未收藏文本", L"清理未收藏图片",
        L"清理未收藏文件", L"按下组合键", L"需要修饰键", L"每行一个应用名称", L"自动", L"ClipLite 设置",
     L"请选择有效的缓存目录。", L"无法创建缓存目录。", L"目标目录已有历史数据，请选择空目录。",
@@ -3872,6 +3877,56 @@ void refreshVisibleForFilter() {
     applyVisibleCandidates(g_app->searchCandidates);
 }
 
+bool isPopupSelectionKey(UINT virtualKey) {
+    return virtualKey == VK_UP || virtualKey == VK_DOWN;
+}
+
+void movePopupSelection(UINT virtualKey) {
+    if (!g_app || !g_app->popup || g_app->visible.empty()) return;
+    if (virtualKey == VK_UP) {
+        if (g_app->selected <= 0) return;
+        --g_app->selected;
+    } else if (virtualKey == VK_DOWN) {
+        if (g_app->selected >= static_cast<int>(g_app->visible.size()) - 1) return;
+        ++g_app->selected;
+    } else {
+        return;
+    }
+    refreshVisible();
+}
+
+void stopPopupSelectionRepeat() {
+    if (!g_app) return;
+    g_app->popupSelectionRepeatKey = 0;
+    g_app->popupSelectionHookKey = 0;
+    if (g_app->popup) KillTimer(g_app->popup, kPopupSelectionRepeatTimer);
+}
+
+void startPopupSelectionRepeat(UINT virtualKey) {
+    if (!g_app || !g_app->popup || !isPopupSelectionKey(virtualKey)) return;
+    if (g_app->popupSelectionRepeatKey == virtualKey) return;
+    stopPopupSelectionRepeat();
+    g_app->popupSelectionRepeatKey = virtualKey;
+    movePopupSelection(virtualKey);
+    SetTimer(g_app->popup, kPopupSelectionRepeatTimer,
+             kPopupSelectionRepeatDelayMs, nullptr);
+}
+
+void repeatPopupSelection() {
+    if (!g_app || !g_app->popup || !isPopupSelectionKey(g_app->popupSelectionRepeatKey)) {
+        stopPopupSelectionRepeat();
+        return;
+    }
+    const UINT virtualKey = g_app->popupSelectionRepeatKey;
+    if ((GetAsyncKeyState(static_cast<int>(virtualKey)) & 0x8000) == 0) {
+        stopPopupSelectionRepeat();
+        return;
+    }
+    movePopupSelection(virtualKey);
+    SetTimer(g_app->popup, kPopupSelectionRepeatTimer,
+             kPopupSelectionRepeatIntervalMs, nullptr);
+}
+
 void cancelStalePopupPreviewWork();
 
 void scrollPopup(int delta) {
@@ -6002,6 +6057,7 @@ void closePopup() {
         g_app->settingsData.lastPopupFavoritesOnly = g_app->favoritesOnly && g_app->filterType == 0;
         saveSettings(g_app->settingsData);
     }
+    stopPopupSelectionRepeat();
     closePopupNoteEdit(false);
     cancelPopupSearch();
     closeFilterMenu();
@@ -6437,6 +6493,14 @@ LRESULT CALLBACK popupKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
         }
         if (!injected && (keyDown || keyUp) && isPopupKeyboardCommand(key->vkCode) &&
             popupHasNoSystemFocus && !searchHasFocus && !noteHasFocus) {
+            if (isPopupSelectionKey(key->vkCode)) {
+                if (keyDown) {
+                    if (g_app->popupSelectionHookKey == key->vkCode) return 1;
+                    g_app->popupSelectionHookKey = key->vkCode;
+                } else if (g_app->popupSelectionHookKey == key->vkCode) {
+                    g_app->popupSelectionHookKey = 0;
+                }
+            }
             if (keyDown) PostMessageW(g_app->hidden, kPopupKeyboardMessage, key->vkCode, 0);
             return 1;
         }
@@ -8155,6 +8219,22 @@ void closeTextEditor(bool restorePopup) {
     shutdownGdiplusIfIdle();
 }
 
+void activateTextEditor() {
+    if (!g_app || !g_app->textEditor || !g_app->textEditorEdit ||
+        !IsWindow(g_app->textEditor) || !IsWindow(g_app->textEditorEdit)) return;
+    const DWORD currentThread = GetCurrentThreadId();
+    const HWND foreground = GetForegroundWindow();
+    const DWORD foregroundThread = foreground
+        ? GetWindowThreadProcessId(foreground, nullptr) : 0;
+    const bool attached = foregroundThread != 0 && foregroundThread != currentThread &&
+        AttachThreadInput(currentThread, foregroundThread, TRUE) != FALSE;
+    ShowWindow(g_app->textEditor, SW_SHOWNORMAL);
+    SetForegroundWindow(g_app->textEditor);
+    SetActiveWindow(g_app->textEditor);
+    SetFocus(g_app->textEditorEdit);
+    if (attached) AttachThreadInput(currentThread, foregroundThread, FALSE);
+}
+
 bool createTextEditorWindow(const ClipItem& item, const std::wstring& text) {
     if (!g_app || g_app->textEditor || !ensureGdiplus()) return false;
 
@@ -8259,11 +8339,8 @@ bool createTextEditorWindow(const ClipItem& item, const std::wstring& text) {
     SetWindowTextW(g_app->textEditorEdit, text.c_str());
     SendMessageW(g_app->textEditorEdit, EM_SETSEL,
                  static_cast<WPARAM>(-1), static_cast<LPARAM>(-1));
-    ShowWindow(g_app->textEditor, SW_SHOW);
     UpdateWindow(g_app->textEditor);
-    SetForegroundWindow(g_app->textEditor);
-    SetActiveWindow(g_app->textEditor);
-    SetFocus(g_app->textEditorEdit);
+    activateTextEditor();
     return true;
 }
 
@@ -8363,9 +8440,7 @@ void openTextEditorForSelected() {
 
     if (g_app->textEditor && IsWindow(g_app->textEditor) &&
         item.recordId == g_app->textEditorRecordId) {
-        ShowWindow(g_app->textEditor, SW_SHOWNORMAL);
-        SetForegroundWindow(g_app->textEditor);
-        SetFocus(g_app->textEditorEdit);
+        activateTextEditor();
         return;
     }
     if (g_app->textEditor && !IsWindow(g_app->textEditor)) closeTextEditor(false);
@@ -13201,9 +13276,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                          static_cast<WPARAM>(-1), static_cast<LPARAM>(-1));
             refreshTextEditorNotice();
             setTextEditorEnabled(true);
-            ShowWindow(g_app->textEditor, SW_SHOWNORMAL);
-            SetForegroundWindow(g_app->textEditor);
-            SetFocus(g_app->textEditorEdit);
+            activateTextEditor();
             if (g_app->popup) ShowWindow(g_app->popup, SW_HIDE);
             return 0;
         }
@@ -14411,7 +14484,11 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
         if (message == kPopupKeyboardMessage && g_app->popup) {
-            PostMessageW(g_app->popup, WM_KEYDOWN, wParam, 0);
+            if (isPopupSelectionKey(static_cast<UINT>(wParam))) {
+                startPopupSelectionRepeat(static_cast<UINT>(wParam));
+            } else {
+                PostMessageW(g_app->popup, WM_KEYDOWN, wParam, 0);
+            }
             return 0;
         }
         if (message == kPopupEnterImeMessage) {
@@ -15292,6 +15369,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             invalidatePopupList(hwnd);
             return 0;
         }
+        if (message == WM_TIMER && wParam == kPopupSelectionRepeatTimer) {
+            repeatPopupSelection();
+            return 0;
+        }
         if (message == WM_TIMER && wParam == kPopupPreviewResumeTimer) {
             KillTimer(hwnd, kPopupPreviewResumeTimer);
             if (g_app->scrollAnimating || g_app->scrollDragging) {
@@ -15438,8 +15519,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 resetPopupFilters();
                 refreshVisibleForFilter();
             }
-            else if (wParam == VK_UP) { --g_app->selected; refreshVisible(); }
-            else if (wParam == VK_DOWN) { ++g_app->selected; refreshVisible(); }
+            else if (wParam == VK_UP || wParam == VK_DOWN) {
+                startPopupSelectionRepeat(static_cast<UINT>(wParam));
+            }
             else if (wParam == VK_PRIOR) scrollPopup(-ui(96));
             else if (wParam == VK_NEXT) scrollPopup(ui(96));
             else if (wParam == VK_HOME) {

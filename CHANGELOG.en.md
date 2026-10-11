@@ -1,274 +1,102 @@
 # Changelog
 
-- Added an optional last-history-category memory setting, disabled by default and available from the history context menu or Settings.
-- Added Compact, Standard, and Adaptive history-list density modes; Adaptive sizes text and ordinary file previews by displayed lines while keeping image records stable.
+## [1.5.2] - 2026-10-11
+
+- Improved history-window interaction: held Up/Down keys now move one item at a fixed interval, search-result text editing reliably receives focus, and optional category memory and list-density modes are available.
+- Updated history paste menus and settings categories; plain-text paste is shown by item type and the ineffective rich-text paste shortcut was removed.
+- Improved cleanup, thumbnail reclamation, history compaction, and storage statistics; fixed cleanup confirmation and compressed encrypted-thumbnail recovery issues.
 
 ## [1.5.1] - 2026-10-10
 
-- Fixed blank images pasted from some QQ clipboard history items by providing a compatible opaque `CF_DIB` image.
-- Fixed system-theme notifications being handled by a message-only window. The existing invisible top-level window now receives notifications and schedules a one-shot refresh without persistent polling.
-- Refreshed theme caches, editors, and menus; added Windows version checks and window dark-mode support for the native tray menu.
-- Added an appearance-page screenshot to both READMEs.
+- Fixed blank images pasted from some QQ clipboard history items.
+- Fixed system-theme notifications and native tray-menu light/dark mode handling.
 
 ## [1.5.0] - 2026-10-10
 
-- Added six built-in themes and a custom theme editor, with fixed-theme selection and separate Windows light/dark theme assignments applied across Settings, history, and detail previews.
-- Added history notes and plain-text editing for Text/HTML items, including save in place, save as new, and save-and-paste; edited content, notes, and themes survive restart.
-- Added configurable shortcuts for editing, pinning, cross-category favorites, and filters. The history context menu now shows active shortcuts and provides cleanup scopes for non-favorite, non-pinned, or all records.
-- Improved append replacement, recovery transactions, deferred compaction, and category cleanup to avoid unnecessary full history rewrites; also fixed long-HTML recovery, ordering, and submenu interaction issues.
-- Improved settings scrolling and high-DPI layout, fixing delayed scrollbar repaint, duplicated scaling offsets, and theme refresh issues.
-- Added a source-code shortcut and GitHub Releases update checks that distinguish installed and portable packages; installer upgrades now close the running tray process first.
-- Delayed Direct2D loading and trimmed idle resources and Working Set after preview, window, clipboard, and storage operations to reduce background memory pressure.
+- Added built-in themes, a custom theme editor, history notes, and plain-text editing for Text/HTML items.
+- Added editing, pinning, cross-category favorites, and filter shortcuts, with expanded history context-menu actions and cleanup scopes.
+- Improved history recovery, replacement, compaction, settings scrolling, high-DPI layout, and idle resource cleanup.
+- Added GitHub Releases update checks, a source-code entry, and installed/portable package detection.
 
 ## [1.4.0] - 2026-09-28
 
-- Improved image detail previews with cursor-centered zoom, drag panning, and on-demand original-image loading.
-- Reduced large-image decoding overhead and released preview resources when the history window closes.
-- Fixed single-instance command forwarding across administrator and standard-user launches, and improved background task and thumbnail-cache reliability.
-- Disabled list previews while the filter menu is open; a submenu now opens only while its top-level option remains hovered, preventing accidental activation when passing over it.
-- Synchronized the application, installer, portable package, and bilingual documentation at version `1.4.0`.
+- Improved image detail previews with zooming, panning, and on-demand original-image loading.
+- Optimized image decoding and preview cleanup; fixed single-instance forwarding and filter-menu interactions.
 
 ## [1.3.0] - 2026-09-23
 
-- Register a per-user highest-privilege scheduled task after the first administrator authorization, so later normal launches do not repeat the UAC prompt; disabling the setting removes the task.
-- Preserve command arguments for `--history` and `--settings` in administrator mode to avoid opening the wrong window.
-- Refined the settings scroll container, theme switching, antialiased text, and control layout; updated the history and settings screenshots.
-
-### Build and Verification
-
-- The `1.3.0` x64 Release build and `ClipLiteStore` CTest passed.
+- Added per-user scheduled-task handling for administrator launches to reduce repeated UAC prompts.
+- Fixed administrator-mode command arguments and refined settings scrolling, theme switching, and control layout.
 
 ## [1.2.6] - 2026-09-20
 
-- Fixed count-limit cleanup potentially deleting pinned records. Pinned records are now protected from automatic count, capacity, category, expiry, and startup recovery cleanup.
-- Fixed the duplicate-hash update path potentially overwriting pinned content. New clipboard content no longer automatically replaces an existing pinned record.
-- Enabled automatic preview by default while preserving an existing explicit `previewAutomatic=0` setting.
-- Synchronized the application, resource, packaging script, About page, and bilingual documentation version numbers.
-
-### Build and Verification
-
-- The `1.2.6` x64 Release build, `ClipLiteStore` CTest, pinned-record protection regression tests, and release package generation passed.
+- Fixed automatic cleanup and duplicate-content updates affecting pinned records.
+- Enabled automatic preview by default while preserving an existing explicit opt-out.
 
 ## [1.2.5] - 2026-09-16
 
-- Added a separate post-uninstall confirmation to delete all ClipLite user data, including history, cache, settings, and logs from the default or configured data directory. Cancelling the uninstall or keeping the data does not affect program removal.
-- Fixed the uninstaller failing to start because it attempted to create an unsupported custom uninstall page.
-- Completed the Simplified Chinese installer and uninstaller messages for confirmations, progress, errors, and completion states to avoid English fallback on exceptional paths.
-
-### Build and Verification
-
-- The `1.2.5` x64 Release build, `ClipLiteStore` CTest, and installer package generation passed.
+- Added an option to remove history, cache, settings, and logs after uninstall.
+- Fixed uninstaller startup and completed English and Simplified Chinese installer messages.
 
 ## [1.2.4] - 2026-09-15
 
-- Added English and Simplified Chinese installer languages, selected automatically from the Windows UI language.
-- The installer now displays the matching English or Simplified Chinese license text for the selected language.
-- Fixed uninstall shutdown races where the exit helper returned before `ClipLite.exe` finished closing; it now waits for the main process and support-window helper process to exit.
-
-### Build and Verification
-
-- The `1.2.4` x64 Release build, `ClipLiteStore` CTest, window lifecycle stress test, and portable/installer package generation passed.
+- Added English and Simplified Chinese installer languages with automatic Windows-language selection.
+- Fixed uninstall shutdown races that could leave the main executable locked.
 
 ## [1.2.3] - 2026-09-15
 
-- Fixed the tray icon disappearing after `explorer.exe` restarts or refreshes the taskbar; ClipLite now restores it automatically.
-- Added internal shortcut conflict detection and detailed registration status. Duplicate combinations are rejected before saving and marked in Settings; system-wide shortcuts occupied by Windows or another application identify the affected action and restore its default combination when available, otherwise prompting for a different shortcut.
-### Build and Verification
-
-- The `1.2.3` x64 Release build, `ClipLiteStore` CTest, window lifecycle stress test, and portable/installer package generation passed.
+- Fixed the tray icon disappearing after Explorer or taskbar refreshes.
+- Added shortcut conflict detection and registration status details.
 
 ## [1.2.2] - 2026-09-14
 
-- Moved clipboard history archiving, capacity cleanup, and pre-paste payload reads to a serialized storage worker so large images, encrypted content, and disk rebuilds do not block the UI message flow.
-- Fixed clipboard capture shutdown handling and added orderly worker cleanup, joining, and synchronized ClipStore access.
-
-### Build and Verification
-
-- The `1.2.2` x64 Release build, `ClipLiteStore` CTest, window lifecycle stress test, and release package generation passed.
+- Moved history archiving, capacity cleanup, and pre-paste reads to background storage tasks to reduce UI stalls.
+- Improved clipboard-capture shutdown, worker cleanup, and synchronized storage access.
 
 ## [1.2.1] - 2026-09-11
 
-- Improved long-text detail previews by limiting oversized payload conversion in the background, reducing stalls while opening, scrolling, and repainting.
-- Added a native scrollbar to text previews while preserving line breaks, spaces, tabs, and blank lines; the text area no longer provides selection, copying, or a caret.
-- Fixed the preview popup being mistaken for an outside hover and closing when the pointer entered the detail text area.
-
-### Build and Verification
-
-- The `1.2.1` x64 Release build, `ClipLiteStore` CTest, portable package, and Inno Setup installer generation passed.
+- Improved long-text detail previews and scrolling; fixed accidental preview dismissal.
+- Refined portable and installer distribution support.
 
 ## [1.2.0] - 2026-09-10
 
-- Added drag-to-pan support for enlarged original image previews.
-- Added mouse-wheel scrolling for long text previews, and mouse-position-centered zooming for original images; zooming re-renders the original image instead of enlarging a list thumbnail.
-- Added a draggable scrollbar to long settings pages, with wheel scrolling and page jumps on the track.
-- Reduced settings-page scroll redraws and repeated layout measurements to minimize flicker and scrolling overhead.
-- Fixed settings controls repeatedly hiding and showing at the viewport edges; controls are now retained and clipped outside the content area.
-- Enabled composited drawing for the settings window so inputs, toggles, and buttons are presented in one frame while scrolling repositions them.
-- Added a fixed header overlay to prevent scrolled content from drawing into the title-bar area.
-- Fixed category storage limits being remapped after restart and saved pending changes from an open settings window during application exit.
-- Fixed category-space and global storage limits not being enforced immediately after new clipboard records were added.
-- Storage-management clearing now removes only unpinned records, keeps pinned records, and states this behavior in confirmation and result text.
-- Improved single-record deletion in the history window by avoiding synchronous reprocessing of all history content, reducing UI stalls with large image histories.
-- Fixed a second click at the same delete-button position after a list refresh from incorrectly closing the history window.
-- Fixed the history list jumping back to the top after deleting a record; the current scroll position is now preserved.
-- Enlarged the history-list delete icon hover and click target to make it easier to activate.
-- Fixed holding the preview key while previewing the same record again from showing an empty preview window; releasing the key now clears the record state and reloads the content correctly.
-- Added a separate original-content preview popup. Settings and history context menus support automatic preview, hold-key preview, and disabled preview; hold-key preview uses `F2` by default and does not change history layout or single-click paste behavior.
-- Original image previews read DIB/DIBV5 payloads or file images on demand instead of reusing thumbnail-cache entries; expired background results are discarded and released.
-- Improved image-list scrolling by keeping a fixed anti-aliased preview placeholder while thumbnails load instead of switching from `[Image]` text to the rendered thumbnail.
-- Fixed stale image-preview generations filling the queue and preventing current-viewport thumbnails from being scheduled after scrolling.
-- Fixed loading thumbnail entries being evicted at the memory-cache limit before their background result arrived.
-- Fixed a race between scrolling preloads and background thumbnail writes that could make image thumbnails disappear after scrolling.
-- Fixed empty bitmaps from failed background DIB scaling being treated as successful previews, which could leave image entries showing text instead of thumbnails.
-- Fixed image preview jobs being blocked by stale generations or failed states during scrolling; current-viewport jobs are prioritized and failed entries retry on later scrolling.
-- Added a bounded disk thumbnail cache separate from history data, with a 24-item in-memory LRU, a 32 MB/5,000-item disk limit, and DPAPI protection when history encryption is enabled.
-- Increased the in-memory history image thumbnail cache from 12 to 24 items to reduce reloads when navigating long lists.
-- Fixed cached image thumbnails briefly disappearing during fast scrolling; only uncached images are deferred now.
-- Improved image previews during fast history scrolling: new image decoding is paused while scrolling and resumes for the current viewport plus one screen on either side, reducing large-image reads, scaling, and queued background work.
-- Fixed a brief transparent empty window appearing when history was first opened before its first frame had been painted.
-- Image files in file-list records now show on-demand thumbnails; records are still stored and pasted as file lists, with the original path shown when the file is missing or cannot be decoded.
-- Fixed multiline settings labels being clipped on some DPI and font configurations.
-- Fixed paste shortcuts blocking the UI message thread while waiting for modifier keys, which could delay pasting and stall typing immediately afterward; modifier release is now polled asynchronously and the paste keystrokes are sent as one sequence.
+- Added original-content previews, image zooming and panning, long-text scrolling, file-image thumbnails, and a disk thumbnail cache.
+- Added a settings scrollbar and improved high-DPI layout, history deletion, image loading, and paste responsiveness.
+- Fixed storage limits, list scroll position, thumbnail jobs, and clipboard paste issues.
 
 ## [1.1.0] - 2026-09-03
 
-- Added a "Move pasted item to top" toggle to the history item and empty-area context menus; changes are saved immediately and update list ordering.
-- Fixed the filter entry in the history list context menu still using the old menu; it now opens the same custom filter menu.
-- Moved "Move pasted item to top" from the history-window shortcuts card to the General settings card.
-- Improved the history header layout by widening the filter entry and moving the condition count into a separate badge, avoiding crowding and text truncation at high DPI.
-- Added system thumbnail icons for running applications in the source filter list, with the icon cache released when the history window closes.
-- Fixed rectangular background corners showing outside the rounded filter menu surfaces by applying rounded window-region clipping to both menu levels.
-- Fixed the filter menu closing after the first selection; multiple conditions can now be selected before clicking outside the menu or pressing Esc.
-- Replaced the filter button menu with a double-buffered custom floating menu to reduce flicker; first-level rows remain visible while opening their submenus, and the source application list supports the wheel, scrollbar, and thumb dragging.
-- Fixed the global mouse hook closing the history window when the filter menu or source submenu opens outside the popup.
-- Fixed slow startup caused by rebuilding the history file on every launch; valid histories are now only scanned, and damaged tails are truncated to the last valid record.
-- Expanded the history filter menu with time range, content length, multi-select source application, and sort filters. The keyword, type, and menu conditions are combined, with active-condition and match counts shown in the popup.
-- Added a "Move pasted item to top" setting. When enabled, history is ordered by recent use activity; when disabled, it remains ordered by recent copies.
-- Extended v4 history records with a stable record ID, first-captured time, millisecond copy time, last-used time, copy count, use count, and logical content length for future sorting, length, and usage-frequency filters.
-- Added metadata version, size, and CRC validation while retaining reads and automatic upgrades for the earlier v4 metadata layout.
-- Fixed fast-paste delays caused by forced usage-stat disk commits and rebuilding the whole history for duplicate copies; unchanged content now updates metadata in place when possible.
-
-### Build and Verification
-
-- Unified the application, resources, CMake, installer, package script, and both READMEs on version `1.2.0`.
-- x64 Release build, `ClipLiteStore` CTest, history-window stress test `100/100`, and package generation passed; the current Release baseline is a `658 KB` executable, `287.56 ms` startup, `13.69 MB` Working Set, `2.60 MB` Private Bytes, GDI `13`, and USER `10`.
+- Expanded history filters with time, content length, source application, and sort conditions.
+- Added move-pasted-item-to-top, stable record metadata, and shortcut conflict detection.
+- Improved clipboard capture, startup recovery, duplicate updates, and filter-menu interaction.
 
 ## [1.0.5] - 2026-08-26
 
-Fixes history search focus handling and adds an optional Chinese IME compatibility mode.
-
-### Fixes and Experience
-
-- Search focuses its input by default, preventing search text from being sent to the original application.
-- Fixed history closing when search input was incorrectly treated as an external action.
-- Compatibility mode keeps the original app in the foreground, uses `Ctrl+Space` to enter real IME focus, and suppresses the trigger space from the search text.
-- Added an auto-saved Search input compatibility setting, disabled by default.
-- Widened the history window to `400px`, reduced the gap between filters and the history list, and retained more clipboard preview space.
-- Increased the text and HTML history preview limit from `160` to `256` bytes.
-- Preserved line breaks and tabs in text previews, and fixed inconsistent formatting between runtime capture and restart recovery.
-
-### Build and Verification
-
-- Unified the application, resources, CMake, installer, package script, and both READMEs on version `1.0.5`.
-- x64 Release build, `ClipLiteStore` CTest, and the history-window stress test `100/100` passed.
-- Latest Release measurements: main executable `549.5 KB`, startup `56.12 ms`, Working Set `13.51 MB`, Private Bytes `2.73 MB`, GDI `13`, and USER `10`.
+- Fixed history search focus and added Chinese IME compatibility mode.
+- Refined history layout, text-preview formatting, and search interaction.
 
 ## [1.0.4] - 2026-08-25
 
-Reduces documentation assets in installer and portable packages by serving UI screenshots from versioned GitHub URLs.
-
-### Release Adjustments
-
-- Both READMEs now use fixed `v1.0.4` GitHub Raw URLs for UI screenshots.
-- Installer and portable packages no longer copy `docs/screenshots`; the repository images remain the online source.
-- Package tooling now detects per-user Inno Setup installations automatically.
-- Unified the application, Windows resources, build configuration, installer, package script, and both READMEs on version `1.0.4`.
+- Reduced documentation assets in installer and portable packages; UI screenshots are served from versioned GitHub URLs.
 
 ## [1.0.3] - 2026-08-25
 
-Improves the settings window, history-encryption guidance, and support workflow while reducing bundled release assets.
-
-### Features and Experience
-
-- The settings window can now be minimized from its title bar or by clicking its taskbar button, while remaining fixed-size and non-maximizable.
-- Windows user encryption now uses an 800 ms debounce, so repeated toggles migrate history only once to the final state; closing settings applies it immediately.
-- Privacy settings now explain migration, cross-user/device recovery limits, and the possible clipboard and scrolling performance impact of large encrypted images.
-- Support and QQ group windows now run in an isolated helper process that is closed with the settings window or main application.
-- Support images are downloaded asynchronously, removing bundled payment and QQ group images from installer and portable packages.
-- History wheel input now updates the scroll position directly, removing the unused interpolation timer.
-
-### Build and Verification
-
-- Unified CMake, Windows resources, installer, package script, About page, and both READMEs on version `1.0.3`.
-- Updated bilingual UI screenshots and enabled additional MSVC Release function-level and non-incremental linker optimizations.
-- x64 Debug and Release builds and the isolated `ClipLiteStore` CTest pass.
+- Improved the settings window, history-encryption guidance, and support workflow with an isolated helper process.
+- Loaded support images asynchronously to reduce bundled release assets.
 
 ## [1.0.2] - 2026-08-24
 
-Fixed the history popup taking input focus, bringing paste interaction closer to the Windows clipboard experience.
-
-Fixed text previews being shown as invalid when a UTF-8 character was split at the preview boundary; the full text and paste content were unaffected.
-
-### Fixes and Verification
-
-- The history popup is now non-activating, so the original application's input focus and caret remain intact.
-- A temporary keyboard hook routes list controls such as navigation, paging, Enter, and Esc to the history popup.
-- Typing ordinary content closes the history popup while allowing the characters to continue into the original application.
-- Removed UI Automation text rewriting and the unused `uiautomationcore` link; paste continues through standard Ctrl+V input.
-- UTF-8 preview-boundary coverage was added to the storage tests, including restart recovery.
-- x64 Release and isolated `ClipLiteStore` CTest pass.
+- Fixed the history popup taking input focus from the original application.
+- Fixed UTF-8 preview-boundary display issues and refined keyboard navigation and paste interaction.
 
 ## [1.0.1] - 2026-08-24
 
-Fixes duplicate text records caused by staged clipboard notifications and hardens malformed clipboard input, storage failure paths, and search task lifetime handling.
-
-### Fixes and Verification
-
-- The history popup caches recently displayed image thumbnails to avoid rereading and decoding source images while scrolling; large-image CRC checks now use a lookup table.
-- Added a self-contained image-scroll benchmark that creates 100 images in a process-specific temporary directory and records frame times and GDI object counts.
-- History-item clicks now trigger paste after mouse release and include target-input focus diagnostics.
-- Plain text and HTML now share a stable semantic hash, preserving richer HTML and promoting the record to the front; self-written paste data remains filtered.
-- DIB/DIBV5 validation now checks headers, compression, palettes, stride, pixel length, and integer bounds, with the same validation used by previews.
-- Clipboard restoration checks `GlobalLock`, `SetClipboardData`, and ownership transfer; append, rebuild, rekey, and settings writes preserve the previous data on failure.
-- Search is limited to one cancellable task per popup and is joined during close; settings now use temporary-file writes followed by atomic replacement.
-- Fixed history order reversal after rebuilds, rekeying, and duplicate-record updates followed by restart.
-- Fixed HTML searches matching internal format headers, HTML attributes, or offset numbers instead of visible text.
-- x64 Release and isolated `ClipLiteStore` CTest pass; storage tests cover duplicate text, HTML enrichment, and restart ordering.
+- Fixed duplicate records caused by staged clipboard notifications.
+- Hardened image, storage, search-task, and settings-write failure paths; fixed history ordering and HTML search issues.
 
 ## [1.0.0] - 2026-08-23
 
-The first stable Windows x64 release of ClipLite, including installer and portable packages.
-
-### User Features
-
-- Clipboard history capture, search, filtering, pinning, deletion, clearing, and automatic paste.
-- Plain text, HTML, file list, DIB, and DIBV5 capture and restoration.
-- `Alt+V`, optional `Win+V` replacement, and configurable shortcuts.
-- English and Simplified Chinese interfaces with automatic, light, and dark themes.
-- Record count, disk usage, retention, item size, and monitoring pause controls.
-- Source application filtering, sensitive text expiry, and optional Windows DPAPI user encryption.
-- Installer and portable distributions with SHA-256 verification.
-
-### Reliability and Privacy
-
-- Append-only v4 history storage with length checks, CRC validation, truncation recovery, and atomic replacement during rebuilds.
-- Metadata and short previews are loaded at startup; full payloads and images are read on demand.
-- Unicode search and temporary background search tasks for larger histories.
-- Diagnostic logs exclude clipboard payloads and are size limited.
-- Windows UIPI, elevated-window, UAC secure-desktop, and alternate-desktop limitations are documented.
-
-### Documentation
-
-- Added PolyForm Noncommercial License 1.0.0, contribution guidance, and security reporting guidance.
-- Added Chinese and English user, contributor, and security documentation.
-- Added UI screenshots and bilingual documentation.
-- Added a measured Windows x64 Release baseline for memory, startup time, GDI/USER resources, and executable size to both READMEs.
-- Added a user-facing positioning comparison covering lightweight usage, native runtime, local-first data, portability, and clipboard format support.
-- Added the project motivation to both READMEs: conserve storage and memory as AI applications increase resource demand.
-- Unified the CMake, Windows resource, installer, package script, about page, and HTML prototype version to `1.0.0`.
-
-### Verification
-
-- x64 Release build passed.
-- `ctest --test-dir build-x64 -C Release --output-on-failure` passed.
-- Storage tests cover normal I/O, restart recovery, Unicode search, CRC corruption, tail truncation, DPAPI, and 10,000-record pressure scenarios.
+- First stable Windows x64 release with installer and portable packages.
+- Added clipboard history capture, search, filtering, pinning, deletion, automatic paste, and text, HTML, file-list, and image support.
+- Added English and Simplified Chinese interfaces, themes, retention controls, source filtering, sensitive-text expiry, and optional DPAPI encryption.
+- Added append-only v4 history storage with validation, corruption recovery, and on-demand payload loading.
