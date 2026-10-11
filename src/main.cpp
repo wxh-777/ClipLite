@@ -139,6 +139,7 @@ constexpr int kSettingThemeColorBase = 100;
 constexpr int kSettingThemeSwatchBase = 120;
 constexpr int kSettingProtectPinnedCleanup = 140;
 constexpr int kSettingSpecialAcrossCategories = 141;
+constexpr int kSettingRememberPopupFilter = 147;
 constexpr std::array<std::size_t, 14> kEditableThemeColorIndices = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14, 17,
 };
@@ -161,6 +162,7 @@ constexpr int kMenuClearUnfavorited = 116;
 constexpr int kMenuClearAll = 117;
 constexpr int kMenuEditText = 118;
 constexpr int kMenuEditNote = 119;
+constexpr int kMenuRememberPopupFilter = 120;
 constexpr int kFilterAll = 130;
 constexpr int kFilterText = 131;
 constexpr int kFilterFiles = 132;
@@ -332,6 +334,9 @@ struct Settings {
     bool showStartupNotification = true;
     bool searchImeCompatibility = false;
     bool searchOnOpen = false;
+    bool rememberPopupFilter = false;
+    int lastPopupFilterType = 0;
+    bool lastPopupFavoritesOnly = false;
     bool promotePastedItem = false;
     bool previewAutomatic = true;
     bool previewByKey = true;
@@ -1289,6 +1294,7 @@ struct SettingsLocale {
     const wchar_t* previewOriginalImage;
     const wchar_t* previewContent;
     const wchar_t* searchOnOpen;
+    const wchar_t* rememberPopupFilter;
 };
 
 const SettingsLocale kEnglishSettingsLocale{
@@ -1345,8 +1351,8 @@ const SettingsLocale kEnglishSettingsLocale{
      L"Copied", L"Loading image...", L"Unable to load the support image. Check your network connection.",
      L"Automatic preview", L"Preview while holding a key", L"Preview mode", L"Disable preview",
      L"Preview key", L"Loading preview...",
-     L"Unable to load the preview.", L"No item selected", L"This item is protected.", L"Original image",
-      L"Content preview", L"Focus search when opening history"
+      L"Unable to load the preview.", L"No item selected", L"This item is protected.", L"Original image",
+       L"Content preview", L"Focus search when opening history", L"Remember last history category"
 };
 
 const SettingsLocale kChineseSettingsLocale{
@@ -1392,8 +1398,8 @@ const SettingsLocale kChineseSettingsLocale{
      L"支付宝", L"ClipLite QQ 群", L"群号：1081580020", L"复制群号", L"已复制", L"正在加载图片...",
       L"无法加载支持图片，请检查网络连接。", L"自动预览", L"按住按键预览", L"预览模式", L"关闭预览",
       L"预览按键",
-       L"正在加载预览...", L"无法加载预览。", L"未选择记录", L"此记录受保护。", L"原图", L"内容预览",
-       L"打开历史窗口后直接搜索"
+        L"正在加载预览...", L"无法加载预览。", L"未选择记录", L"此记录受保护。", L"原图", L"内容预览",
+        L"打开历史窗口后直接搜索", L"记住上次打开的历史分类"
 };
 
 const SettingsLocale& settingsLocale() {
@@ -1607,6 +1613,13 @@ void loadSettings(Settings& settings) {
         if (std::strncmp(line, "showStartupNotification=1", 25) == 0) settings.showStartupNotification = true;
         if (std::strncmp(line, "searchImeCompatibility=1", 24) == 0) settings.searchImeCompatibility = true;
         if (std::strncmp(line, "searchOnOpen=1", 14) == 0) settings.searchOnOpen = true;
+        if (std::strncmp(line, "rememberPopupFilter=1", 22) == 0) settings.rememberPopupFilter = true;
+        if (std::strncmp(line, "lastPopupFilterType=", 20) == 0) {
+            settings.lastPopupFilterType = std::clamp(std::atoi(line + 20), 0, 4);
+        }
+        if (std::strncmp(line, "lastPopupFavoritesOnly=1", 25) == 0) {
+            settings.lastPopupFavoritesOnly = true;
+        }
         if (std::strncmp(line, "promotePastedItem=1", 19) == 0) settings.promotePastedItem = true;
         if (std::strncmp(line, "previewAutomatic=0", 18) == 0) settings.previewAutomatic = false;
         if (std::strncmp(line, "previewAutomatic=1", 18) == 0) settings.previewAutomatic = true;
@@ -1729,6 +1742,7 @@ void loadSettings(Settings& settings) {
     settings.dark = settings.themeSelection.followSystem
         ? systemThemeIsDark() : settings.themeMode == 2;
     normalizeShortcutBinding(settings.historyHotkey, ShortcutBinding{MOD_ALT, 'V'});
+    if (settings.lastPopupFilterType != 0) settings.lastPopupFavoritesOnly = false;
     normalizeShortcutBinding(settings.settingsHotkey, ShortcutBinding{MOD_CONTROL | MOD_ALT, 'S'});
     normalizeShortcutBinding(settings.pauseHotkey, ShortcutBinding{MOD_CONTROL | MOD_SHIFT, 'P'});
     const auto normalizePopupShortcut = [](ShortcutBinding& binding, const ShortcutBinding& fallback) {
@@ -1768,6 +1782,9 @@ void saveSettings(const Settings& settings) {
            << "showStartupNotification=" << (settings.showStartupNotification ? 1 : 0) << "\n"
            << "searchImeCompatibility=" << (settings.searchImeCompatibility ? 1 : 0) << "\n"
            << "searchOnOpen=" << (settings.searchOnOpen ? 1 : 0) << "\n"
+           << "rememberPopupFilter=" << (settings.rememberPopupFilter ? 1 : 0) << "\n"
+           << "lastPopupFilterType=" << settings.lastPopupFilterType << "\n"
+           << "lastPopupFavoritesOnly=" << (settings.lastPopupFavoritesOnly ? 1 : 0) << "\n"
            << "promotePastedItem=" << (settings.promotePastedItem ? 1 : 0) << "\n"
            << "previewAutomatic=" << (settings.previewAutomatic ? 1 : 0) << "\n"
            << "previewByKey=" << (settings.previewByKey ? 1 : 0) << "\n"
@@ -5748,6 +5765,10 @@ void showPopup(bool openedByWinV = false) {
     g_app->fastImagePreview = false;
     g_app->filterScrollOffset = 0;
     resetPopupFilters();
+    if (g_app->settingsData.rememberPopupFilter) {
+        g_app->filterType = g_app->settingsData.lastPopupFilterType;
+        g_app->favoritesOnly = g_app->settingsData.lastPopupFavoritesOnly;
+    }
     g_app->hoveredRow = -1;
     g_app->hoveredFilter = -1;
     g_app->hoveredDeleteRow = -1;
@@ -5783,6 +5804,7 @@ void showPopup(bool openedByWinV = false) {
         g_app->popupOpening = false;
         return;
     }
+    applyVisibleCandidates(g_app->searchCandidates);
     updatePopupMouseHook();
     SendMessageW(g_app->popup, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(clipLiteIcon()));
     SendMessageW(g_app->popup, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(clipLiteIcon()));
@@ -5798,6 +5820,11 @@ void showPopup(bool openedByWinV = false) {
 }
 
 void closePopup() {
+    if (g_app && g_app->settingsData.rememberPopupFilter) {
+        g_app->settingsData.lastPopupFilterType = std::clamp(g_app->filterType, 0, 4);
+        g_app->settingsData.lastPopupFavoritesOnly = g_app->favoritesOnly && g_app->filterType == 0;
+        saveSettings(g_app->settingsData);
+    }
     closePopupNoteEdit(false);
     cancelPopupSearch();
     closeFilterMenu();
@@ -7450,6 +7477,8 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
                              {kSettingSearchImeCompatibility}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().searchOnOpen,
                              {kSettingSearchOnOpen}, {36}, {20}, contentWidth),
+            makeSettingsRow(hwnd, settingsLocale().rememberPopupFilter,
+                             {kSettingRememberPopupFilter}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().promotePastedItem,
                              {kSettingPromotePastedItem}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().automaticPreview,
@@ -9500,10 +9529,12 @@ void createSettingsControlsModern(HWND hwnd) {
     createToggle(kSettingSearchImeCompatibility, 640, 439,
                  g_app->settingsData.searchImeCompatibility);
     createToggle(kSettingSearchOnOpen, 640, 474, g_app->settingsData.searchOnOpen);
-    createToggle(kSettingPromotePastedItem, 640, 509,
+    createToggle(kSettingRememberPopupFilter, 640, 509,
+                 g_app->settingsData.rememberPopupFilter);
+    createToggle(kSettingPromotePastedItem, 640, 544,
                  g_app->settingsData.promotePastedItem);
-    createToggle(kSettingPreviewAutomatic, 640, 544, g_app->settingsData.previewAutomatic);
-    createToggle(kSettingPreviewByKey, 640, 579, g_app->settingsData.previewByKey);
+    createToggle(kSettingPreviewAutomatic, 640, 579, g_app->settingsData.previewAutomatic);
+    createToggle(kSettingPreviewByKey, 640, 614, g_app->settingsData.previewByKey);
     createToggle(kSettingEncrypt, 640, 116, g_app->settingsData.encryptData);
     createToggle(kSettingProtectPinnedCleanup, 640, 650,
                  g_app->settingsData.protectPinnedFromAutoCleanup);
@@ -9777,8 +9808,9 @@ void updateSettingsTabControls(HWND hwnd, bool redraw) {
                             kSettingSystemDarkTheme, kSettingThemeDuplicate, kSettingThemeSave,
                             kSettingThemeDelete,
                            kSettingWinV, kSettingLanguage, kSettingPause,
-                           kSettingStartup, kSettingStartupSettings, kSettingStartupNotification,
-                           kSettingRunAsAdministrator, kSettingSearchImeCompatibility, kSettingSearchOnOpen,
+                            kSettingStartup, kSettingStartupSettings, kSettingStartupNotification,
+                            kSettingRunAsAdministrator, kSettingSearchImeCompatibility, kSettingSearchOnOpen,
+                            kSettingRememberPopupFilter,
                            kSettingPreviewAutomatic, kSettingPreviewByKey,
                           kSettingProtectPinnedCleanup, kSettingSpecialAcrossCategories,
                           kSettingPromotePastedItem, kSettingEncrypt, kSettingMaxItems,
@@ -10487,6 +10519,18 @@ void togglePopupSearchOnOpen() {
     saveSettings(g_app->settingsData);
 }
 
+// 切换是否记住历史窗口上次使用的分类。
+void toggleRememberPopupFilter() {
+    if (!g_app) return;
+    g_app->settingsData.rememberPopupFilter = !g_app->settingsData.rememberPopupFilter;
+    if (g_app->settings) {
+        setSettingsToggleValue(settingsControl(g_app->settings, kSettingRememberPopupFilter),
+                               g_app->settingsData.rememberPopupFilter);
+        InvalidateRect(g_app->settings, nullptr, FALSE);
+    }
+    saveSettings(g_app->settingsData);
+}
+
 // 统一应用历史窗口右键菜单和设置页的预览开关。
 void setPopupPreviewOptions(bool automatic, bool byKey) {
     if (!g_app) return;
@@ -10722,6 +10766,7 @@ void executePopupContextCommand(int command) {
     if (!g_app || !g_app->popup) return;
     if (command == kMenuPopupPinned) setPopupPinned(!g_app->popupPinned);
     else if (command == kMenuSearchOnOpen) togglePopupSearchOnOpen();
+    else if (command == kMenuRememberPopupFilter) toggleRememberPopupFilter();
     else if (command == kMenuSpecialAcrossCategories) togglePopupSpecialAcrossCategories();
     else if (command == kMenuPromotePastedItem) togglePopupPromotePastedItem();
     else if (command == kMenuPreviewAutomatic) setPopupPreviewOptions(true, false);
@@ -10773,7 +10818,10 @@ void showPopupContextMenu(HWND hwnd, int row) {
     g_app->popupContextMenuItems.push_back({kMenuPopupPinned, g_app->popupPinned
         ? settingsLocale().popupUnpin : settingsLocale().popupPin, false, true, g_app->popupPinned});
     g_app->popupContextMenuItems.push_back({kMenuSearchOnOpen, settingsLocale().searchOnOpen,
-                                             false, true, g_app->settingsData.searchOnOpen});
+                                              false, true, g_app->settingsData.searchOnOpen});
+    g_app->popupContextMenuItems.push_back({kMenuRememberPopupFilter,
+                                             settingsLocale().rememberPopupFilter, false, true,
+                                             g_app->settingsData.rememberPopupFilter});
     g_app->popupContextMenuItems.push_back({kMenuSpecialAcrossCategories,
                                              tr(L"Show favorites in other category lists",
                                                 L"在其他分类列表中显示收藏"), false, true,
@@ -10941,8 +10989,9 @@ bool isSettingsToggle(int id) {
     return id == kSettingWinV || id == kSettingPause ||
            id == kSettingStartup || id == kSettingStartupSettings ||
            id == kSettingStartupNotification || id == kSettingRunAsAdministrator ||
-           id == kSettingSearchImeCompatibility || id == kSettingSearchOnOpen ||
-           id == kSettingPromotePastedItem ||
+            id == kSettingSearchImeCompatibility || id == kSettingSearchOnOpen ||
+            id == kSettingRememberPopupFilter ||
+            id == kSettingPromotePastedItem ||
            id == kSettingPreviewAutomatic || id == kSettingPreviewByKey || id == kSettingEncrypt ||
            id == kSettingProtectPinnedCleanup || id == kSettingSpecialAcrossCategories;
 }
@@ -11234,6 +11283,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     HWND runAsAdministrator = settingsControl(hwnd, kSettingRunAsAdministrator);
     HWND searchImeCompatibility = settingsControl(hwnd, kSettingSearchImeCompatibility);
     HWND searchOnOpen = settingsControl(hwnd, kSettingSearchOnOpen);
+    HWND rememberPopupFilter = settingsControl(hwnd, kSettingRememberPopupFilter);
     HWND promotePastedItem = settingsControl(hwnd, kSettingPromotePastedItem);
     HWND previewAutomatic = settingsControl(hwnd, kSettingPreviewAutomatic);
     HWND previewByKey = settingsControl(hwnd, kSettingPreviewByKey);
@@ -11249,7 +11299,8 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     if (!win || !language || !pause || !maxItems || !retentionDays || !maxDiskMb ||
         !maxContentMb || !dataDirectory || !updateProxy || !ignoredApps || !sensitiveExpiry || !startup ||
         !startupSettings || !startupNotification || !runAsAdministrator ||
-         !searchImeCompatibility || !searchOnOpen || !promotePastedItem || !previewAutomatic ||
+          !searchImeCompatibility || !searchOnOpen || !rememberPopupFilter || !promotePastedItem ||
+          !previewAutomatic ||
           !previewByKey || !protectPinnedCleanup || !specialAcrossCategories || !encrypt) {
         return false;
     }
@@ -11266,6 +11317,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     next.runAsAdministrator = settingsToggleValue(runAsAdministrator);
     next.searchImeCompatibility = settingsToggleValue(searchImeCompatibility);
     next.searchOnOpen = settingsToggleValue(searchOnOpen);
+    next.rememberPopupFilter = settingsToggleValue(rememberPopupFilter);
     next.promotePastedItem = settingsToggleValue(promotePastedItem);
     next.previewAutomatic = settingsToggleValue(previewAutomatic);
     next.previewByKey = settingsToggleValue(previewByKey);
@@ -11393,6 +11445,8 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     const bool searchImeCompatibilityChanged =
         next.searchImeCompatibility != previous.searchImeCompatibility;
     const bool searchOnOpenChanged = next.searchOnOpen != previous.searchOnOpen;
+    const bool rememberPopupFilterChanged =
+        next.rememberPopupFilter != previous.rememberPopupFilter;
     const bool promotePastedItemChanged = next.promotePastedItem != previous.promotePastedItem;
     const bool protectPinnedChanged = next.protectPinnedFromAutoCleanup != previous.protectPinnedFromAutoCleanup;
     const bool specialAcrossCategoriesChanged =
@@ -11414,7 +11468,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
         next.encryptData != previous.encryptData || next.language != previous.language ||
         dataDirectoryChanged ||
          next.sensitiveExpiryHours != previous.sensitiveExpiryHours || searchImeCompatibilityChanged ||
-         searchOnOpenChanged ||
+          searchOnOpenChanged || rememberPopupFilterChanged ||
         promotePastedItemChanged || protectPinnedChanged || specialAcrossCategoriesChanged ||
         previewChanged || next.updateProxy != previous.updateProxy ||
         next.ignoredApps != previous.ignoredApps;

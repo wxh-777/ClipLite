@@ -16,7 +16,7 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 
 - Open clipboard history with `Alt+V`, with an optional `Win+V` replacement mode.
 - Capture and restore plain text, HTML, file lists, DIB, and DIBV5 images; image files in file lists show on-demand thumbnails.
-- Search and combine type, time range, content length, source application, and sort filters; favorites and pins are independent and can both be applied to an item.
+- Search and combine type, time range, content length, source application, and sort filters; favorites and pins are independent and can both be applied to an item. Optionally remember the last history category, disabled by default and available from the history context menu or Settings.
 - History items show clipboard content previews so you can confirm the target before pasting.
 - Supports a separate image and content preview window. With automatic preview enabled, hover over an item to preview it, then use the wheel to zoom around the pointer or drag the image. The window shows the zoom percentage and on-demand original-image loading status. Hold-key preview (default `F2`) and disabled preview remain available; long text scrolls with the wheel.
 - Automatic preview is enabled by default; an existing configuration that explicitly disabled it remains disabled.

@@ -1,5 +1,7 @@
 # Changelog
 
+- Added an optional last-history-category memory setting, disabled by default and available from the history context menu or Settings.
+
 ## [1.5.1] - 2026-10-10
 
 - Fixed blank images pasted from some QQ clipboard history items by providing a compatible opaque `CF_DIB` image.
