@@ -247,15 +247,15 @@ constexpr int kPopupWheelScrollStep = 96;
 constexpr UINT kPasteInputRetryMs = 4;
 constexpr UINT kPasteInputTimeoutMs = 500;
 constexpr UINT kTrayId = 1;
-constexpr int kPopupFilterTop = 58;
-constexpr int kPopupFilterBottom = 82;
+constexpr int kPopupFilterTop = 52;
+constexpr int kPopupFilterBottom = 76;
 // 历史窗口顶部搜索框、筛选、图钉和关闭按钮的统一高度区域；图标按钮统一 28 宽，间距统一 6。
 constexpr int kPopupHeaderTop = 14;
 constexpr int kPopupHeaderBottom = 42;
-constexpr int kPopupSearchLeft = 94;
-constexpr int kPopupSearchRight = 224;
-constexpr int kPopupClearLeft = 230;
-constexpr int kPopupClearRight = 258;
+constexpr int kPopupSearchLeft = 82;
+constexpr int kPopupSearchRight = 258;
+constexpr int kPopupClearLeft = kPopupSearchRight - 22;
+constexpr int kPopupClearRight = kPopupSearchRight - 4;
 constexpr int kPopupFilterButtonLeft = 264;
 constexpr int kPopupFilterButtonRight = 324;
 constexpr int kPopupPinLeft = 330;
@@ -284,13 +284,13 @@ constexpr int kPopupContextMenuRowHeight = 32;
 constexpr int kPopupContextSubmenuWidth = 190;
 constexpr int kPopupCornerRadius = 10;
 constexpr int kPopupBorderInset = 1;
-constexpr int kPopupListTop = 96;
+constexpr int kPopupListTop = 94;
 constexpr int kPopupBottomPadding = 14;
 constexpr int kPopupCardHeight = 88;
 constexpr int kPopupCompactCardHeight = 72;
 constexpr int kPopupAdaptiveMinTextHeight = 56;
 constexpr int kPopupCardGap = 6;
-constexpr int kPopupCardInset = 14;
+constexpr int kPopupCardInset = 12;
 constexpr int kPopupPreviewSize = 60;
 constexpr int kSettingsWidth = 740;
 constexpr int kSettingsHeight = 520;
@@ -563,6 +563,7 @@ struct AppState {
     HWND targetFocusWindow = nullptr;
     HFONT popupFont = nullptr;
     HFONT popupTitleFont = nullptr;
+    HFONT popupHeaderFont = nullptr;
     HFONT popupFilterFont = nullptr;
     HFONT popupPreviewFont = nullptr;
     HFONT popupMetaFont = nullptr;
@@ -647,6 +648,10 @@ struct AppState {
     std::uint64_t popupNoteEditRecordId = 0;
     int pressedRow = -1;
     bool hoveredHeader = false;
+    bool popupDwmFrame = false;
+    HRGN popupWinRegion = nullptr;
+    bool dwmCornerAvailable = false;
+    bool dwmCornerChecked = false;
     int hoveredSettingsTab = -1;
     int hoveredSettingsThemeMode = -1;
     int hoveredSettingsControl = 0;
@@ -3018,7 +3023,7 @@ RECT popupNoteRect(int row) {
     GetClientRect(g_app->popup, &client);
     const int metadataTop = top + popupRowHeightForRow(row) - ui(20);
     return RECT{ui(kPopupCardInset + 148), metadataTop,
-                client.right - ui(kPopupCardInset + 112), metadataTop + ui(16)};
+                client.right - ui(kPopupCardInset + 116), metadataTop + ui(16)};
 }
 
 void limitPopupNoteEditText(HWND hwnd) {
@@ -3201,8 +3206,8 @@ int popupFilterAt(int x, int y) {
 }
 
 bool popupPointInHeader(const RECT& client, int x, int y) {
-    return y >= ui(12) && y < ui(46) && x >= ui(16) && x < ui(84) &&
-           x < client.right - ui(54);
+    return y >= ui(kPopupHeaderTop) && y < ui(kPopupHeaderBottom) &&
+           x >= ui(16) && x < ui(74) && x < client.right - ui(54);
 }
 
 void invalidatePopupHover(HWND hwnd, int row, int filter, bool header) {
@@ -3237,7 +3242,7 @@ void invalidatePopupHover(HWND hwnd, int row, int filter, bool header) {
         InvalidateRect(hwnd, &buttonRect, FALSE);
     }
     if (header) {
-        RECT headerRect{ui(12), ui(10), ui(86), ui(50)};
+        RECT headerRect{ui(12), ui(kPopupHeaderTop), ui(76), ui(kPopupHeaderBottom)};
         InvalidateRect(hwnd, &headerRect, FALSE);
     }
 }
@@ -5095,6 +5100,8 @@ void hideDetailPreview() {
 }
 
 // 历史窗口关闭时才销毁可复用的详情预览窗口。
+bool dwmCornersSupported(HWND probe);
+
 void destroyDetailPreview() {
     if (!g_app) return;
     hideDetailPreview();
@@ -5126,9 +5133,11 @@ bool ensureDetailPreviewWindow() {
         }
         const int width = ui(kPopupDetailPreviewWidth);
         const int height = ui(kPopupDetailPreviewHeight);
-        HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, ui(16), ui(16));
-        if (region && SetWindowRgn(g_app->detailPreview, region, TRUE) == 0) {
-            DeleteObject(region);
+        if (!dwmCornersSupported(g_app->detailPreview)) {
+            HRGN region = CreateRoundRectRgn(0, 0, width, height, ui(18), ui(18));
+            if (region && SetWindowRgn(g_app->detailPreview, region, TRUE) == 0) {
+                DeleteObject(region);
+            }
         }
         if (!g_app->richEditModule) g_app->richEditModule = LoadLibraryW(L"Msftedit.dll");
         if (g_app->richEditModule) {
@@ -5152,9 +5161,15 @@ bool ensureDetailPreviewWindow() {
             }
         }
         constexpr DWORD kDwmWindowCornerPreference = 33;
+        constexpr DWORD kDwmWindowBorderColor = 34;
         constexpr DWORD kDwmCornerRound = 2;
         DwmSetWindowAttribute(g_app->detailPreview, kDwmWindowCornerPreference,
                               &kDwmCornerRound, sizeof(kDwmCornerRound));
+        const COLORREF previewFrame = highContrastEnabled()
+            ? static_cast<COLORREF>(GetSysColor(COLOR_WINDOWTEXT))
+            : themeColor(ThemeColorRole::Border);
+        DwmSetWindowAttribute(g_app->detailPreview, kDwmWindowBorderColor,
+                              &previewFrame, sizeof(previewFrame));
     }
     return g_app->detailPreview != nullptr;
 }
@@ -5188,7 +5203,7 @@ void positionDetailPreview(int row) {
             x = popupRect.left - ui(kPopupDetailPreviewGap) - width;
         }
     }
-    HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, ui(16), ui(16));
+    HRGN region = CreateRoundRectRgn(0, 0, width, height, ui(18), ui(18));
     if (region && SetWindowRgn(g_app->detailPreview, region, TRUE) == 0) DeleteObject(region);
     x = std::clamp(x, static_cast<int>(info.rcWork.left),
                    static_cast<int>(info.rcWork.right) - width);
@@ -5526,9 +5541,25 @@ void paintDetailPreview(HWND hwnd, HDC dc) {
     const COLORREF text = g_app->themePalette.text;
     const COLORREF secondary = g_app->themePalette.secondaryText;
     HBRUSH backgroundBrush = CreateSolidBrush(background);
-    FillRect(buffer, &client, backgroundBrush);
-    DeleteObject(backgroundBrush);
-    drawGdiRoundedSurface(buffer, RECT{1, 1, width - 1, height - 1}, background, border, 8);
+    if (dwmCornersSupported(g_app->detailPreview)) {
+        FillRect(buffer, &client, backgroundBrush);
+        DeleteObject(backgroundBrush);
+        drawGdiRoundedSurface(buffer, RECT{1, 1, width - 1, height - 1},
+                              background, background, 8);
+    } else {
+        // Windows 10 回退：外框与窗口区域同源，避免圆角杂色缝隙。
+        HRGN frameRegion = CreateRoundRectRgn(0, 0, width, height, ui(18), ui(18));
+        if (frameRegion) {
+            FillRgn(buffer, frameRegion, backgroundBrush);
+            HBRUSH borderBrush = CreateSolidBrush(border);
+            FrameRgn(buffer, frameRegion, borderBrush, 1, 1);
+            DeleteObject(borderBrush);
+            DeleteObject(frameRegion);
+        } else {
+            FillRect(buffer, &client, backgroundBrush);
+        }
+        DeleteObject(backgroundBrush);
+    }
     SetBkMode(buffer, TRANSPARENT);
 
     const ClipItem* item = nullptr;
@@ -6015,17 +6046,49 @@ void preparePopupFirstFrame(HWND hwnd) {
                  RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_NOERASE);
 }
 
-void applyPopupWindowFrame(HWND hwnd, int width, int height) {
-    if (!hwnd) return;
-    const int ellipse = ui(kPopupCornerRadius * 2);
-    HRGN region = CreateRoundRectRgn(0, 0, width, height, ellipse, ellipse);
-    if (region && SetWindowRgn(hwnd, region, TRUE) == 0) DeleteObject(region);
-
-    // Keep the compositor's corner treatment aligned with the custom client frame on Windows 11.
+// 探测当前系统 DWM 是否支持窗口圆角（Windows 11 起支持），结果缓存复用。
+bool dwmCornersSupported(HWND probe) {
+    if (!g_app) return false;
+    if (g_app->dwmCornerChecked) return g_app->dwmCornerAvailable;
     constexpr DWORD kDwmWindowCornerPreference = 33;
     constexpr DWORD kDwmCornerRound = 2;
-    DwmSetWindowAttribute(hwnd, kDwmWindowCornerPreference, &kDwmCornerRound,
-                          sizeof(kDwmCornerRound));
+    DWORD preference = kDwmCornerRound;
+    g_app->dwmCornerAvailable = SUCCEEDED(DwmSetWindowAttribute(
+        probe, kDwmWindowCornerPreference, &preference, sizeof(preference)));
+    g_app->dwmCornerChecked = true;
+    return g_app->dwmCornerAvailable;
+}
+
+void applyPopupWindowFrame(HWND hwnd, int width, int height) {
+    if (!hwnd) return;
+    if (dwmCornersSupported(hwnd)) {
+        // Windows 11:DWM 提供抗锯齿圆角，边缘颜色与主题边框一致。
+        constexpr DWORD kDwmWindowCornerPreference = 33;
+        constexpr DWORD kDwmWindowBorderColor = 34;
+        constexpr DWORD kDwmCornerRound = 2;
+        DWORD preference = kDwmCornerRound;
+        DwmSetWindowAttribute(hwnd, kDwmWindowCornerPreference, &preference,
+                              sizeof(preference));
+        const COLORREF frame = highContrastEnabled()
+            ? static_cast<COLORREF>(GetSysColor(COLOR_WINDOWTEXT))
+            : themeColor(ThemeColorRole::Border);
+        DwmSetWindowAttribute(hwnd, kDwmWindowBorderColor, &frame, sizeof(frame));
+        if (g_app && hwnd == g_app->popup) g_app->popupDwmFrame = true;
+        return;
+    }
+    if (g_app && hwnd == g_app->popup) g_app->popupDwmFrame = false;
+    // Windows 10：region 裁剪。半径与各窗口绘制外框同源（外框圆心 9.5/11.5 附近，取整同心）。
+    const int corner = (g_app && hwnd == g_app->popup) ? ui(kPopupCornerRadius + 1) : ui(9);
+    HRGN region = CreateRoundRectRgn(0, 0, width, height, corner * 2, corner * 2);
+    if (region && SetWindowRgn(hwnd, region, TRUE)) {
+        if (g_app && hwnd == g_app->popup) {
+            if (g_app->popupWinRegion) DeleteObject(g_app->popupWinRegion);
+            g_app->popupWinRegion = CreateRoundRectRgn(0, 0, width, height,
+                                                       corner * 2, corner * 2);
+        }
+    } else if (region) {
+        DeleteObject(region);
+    }
 }
 
 bool activatePopupSearchFocus(bool imeMode);
@@ -7561,7 +7624,7 @@ int automaticFilterChipWidth() {
 
 RECT automaticFilterRect(int slot, int scrollOffset = 0) {
     const int width = automaticFilterChipWidth();
-    int left = ui(16);
+    int left = ui(12);
     for (int i = 0; i < slot; ++i) left += ui(width + 6);
     left -= scrollOffset;
     return RECT{left, ui(kPopupFilterTop), left + ui(width), ui(kPopupFilterBottom)};
@@ -7578,7 +7641,7 @@ void clampFilterScroll() {
     if (!g_app || !g_app->popup) return;
     RECT client{};
     GetClientRect(g_app->popup, &client);
-    const int viewportWidth = client.right - ui(32);
+    const int viewportWidth = client.right - ui(24);
     const int maxOffset = std::max(0, filterContentWidth() - viewportWidth);
     g_app->filterScrollOffset = std::clamp(g_app->filterScrollOffset, 0, maxOffset);
 }
@@ -8120,15 +8183,18 @@ HFONT createCachedFont(int size, int weight, const wchar_t* face) {
                        CLEARTYPE_QUALITY, DEFAULT_PITCH, face);
 }
 
-void releasePaintFonts(HFONT& first, HFONT& second, HFONT& third, HFONT& fourth) {
+void releasePaintFonts(HFONT& first, HFONT& second, HFONT& third, HFONT& fourth,
+                       HFONT& fifth) {
     if (first) DeleteObject(first);
     if (second) DeleteObject(second);
     if (third) DeleteObject(third);
     if (fourth) DeleteObject(fourth);
+    if (fifth) DeleteObject(fifth);
     first = nullptr;
     second = nullptr;
     third = nullptr;
     fourth = nullptr;
+    fifth = nullptr;
 }
 
 void createSettingsPaintFonts() {
@@ -8142,6 +8208,7 @@ void createSettingsPaintFonts() {
 void createPopupPaintFonts() {
     if (!g_app) return;
     g_app->popupTitleFont = createCachedFont(13, FW_SEMIBOLD, L"Microsoft YaHei");
+    g_app->popupHeaderFont = createCachedFont(11, FW_SEMIBOLD, L"Microsoft YaHei");
     g_app->popupFilterFont = createCachedFont(11, FW_NORMAL, L"Microsoft YaHei");
     g_app->popupPreviewFont = createCachedFont(13, FW_NORMAL, L"Microsoft YaHei");
     g_app->popupMetaFont = createCachedFont(10, FW_NORMAL, L"Microsoft YaHei");
@@ -9153,21 +9220,33 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         chip = GetSysColor(COLOR_WINDOW);
         accent = GetSysColor(COLOR_HIGHLIGHT);
     }
-    HBRUSH brush = CreateSolidBrush(background);
-    FillRect(dc, &client, brush);
-    DeleteObject(brush);
+    if (!g_app->popupDwmFrame && g_app->popupWinRegion) {
+        // Win10 回退：背景与边框直接由窗口区域生成，外框与轮廓逐像素一致，无杂色缝隙。
+        HBRUSH regionBrush = CreateSolidBrush(background);
+        FillRgn(dc, g_app->popupWinRegion, regionBrush);
+        DeleteObject(regionBrush);
+        regionBrush = CreateSolidBrush(border);
+        FrameRgn(dc, g_app->popupWinRegion, regionBrush, 1, 1);
+        DeleteObject(regionBrush);
+    } else {
+        HBRUSH brush = CreateSolidBrush(background);
+        FillRect(dc, &client, brush);
+        DeleteObject(brush);
+        drawGdiRoundedSurface(dc,
+                              RECT{ui(kPopupBorderInset), ui(kPopupBorderInset),
+                                   client.right - ui(kPopupBorderInset),
+                                   client.bottom - ui(kPopupBorderInset)},
+                              background,
+                              g_app->popupDwmFrame ? background : border,
+                              kPopupCornerRadius);
+    }
     const int popupFrameClip = SaveDC(dc);
     IntersectClipRect(dc, ui(kPopupBorderInset), ui(kPopupBorderInset),
                       client.right - ui(kPopupBorderInset),
                       client.bottom - ui(kPopupBorderInset));
-    drawGdiRoundedSurface(dc,
-                          RECT{ui(kPopupBorderInset), ui(kPopupBorderInset),
-                               client.right - ui(kPopupBorderInset),
-                               client.bottom - ui(kPopupBorderInset)},
-                          background, border, kPopupCornerRadius);
 
     SetBkMode(dc, TRANSPARENT);
-    HFONT titleFont = g_app->popupTitleFont;
+    HFONT titleFont = g_app->popupHeaderFont;
     HFONT filterFont = g_app->popupFilterFont;
     HFONT previewFont = g_app->popupPreviewFont;
     HFONT metaFont = g_app->popupMetaFont;
@@ -9175,10 +9254,10 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     const int paintClipType = GetClipBox(dc, &paintClip);
     HGDIOBJ old = SelectObject(dc, titleFont);
     SetTextColor(dc, text);
-    RECT titleRect{ui(12), ui(10), ui(86), ui(50)};
+    RECT titleRect{ui(12), ui(kPopupHeaderTop), ui(76), ui(kPopupHeaderBottom)};
     if (g_app->hoveredHeader) {
-        drawGdiRoundedSurface(dc, RECT{ui(12), ui(10), ui(86), ui(50)},
-                              settingsAccentSoftColor(), settingsAccentSoftColor(), 4);
+        drawGdiRoundedSurface(dc, titleRect,
+                              settingsAccentSoftColor(), settingsAccentSoftColor(), 6);
     }
     DrawTextW(dc, L"ClipLite", -1, &titleRect,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -9188,31 +9267,35 @@ void paintPopupContent(HWND hwnd, HDC dc) {
                           ui(kPopupSearchRight), ui(kPopupHeaderBottom)};
     drawGdiRoundedSurface(dc, searchRect,
                           themeColor(ThemeColorRole::InputBackground),
-                          searchBorder, 5);
+                          searchBorder, 6);
     drawSearchIcon(dc, ui(kPopupSearchLeft + 14), ui(28),
                    g_app->searchEdit && g_app->popupSearchInputActive ? accent : secondary);
     SelectObject(dc, filterFont);
     RECT clearRect{ui(kPopupClearLeft), ui(kPopupHeaderTop),
                    ui(kPopupClearRight), ui(kPopupHeaderBottom)};
-    if (g_app->hoveredFilter == 7) {
-        drawGdiRoundedSurface(dc, clearRect, settingsAccentSoftColor(),
-                              settingsAccentSoftColor(), 5);
+    if (g_app->popupSearchInputActive) {
+        if (g_app->hoveredFilter == 7) {
+            RECT clearHoverRect = clearRect;
+            InflateRect(&clearHoverRect, -ui(1), -ui(2));
+            drawGdiRoundedSurface(dc, clearHoverRect, settingsAccentSoftColor(),
+                                  settingsAccentSoftColor(), 4);
+        }
+        SetTextColor(dc, g_app->hoveredFilter == 7 ? accent : secondary);
+        drawDeleteIcon(dc, (clearRect.left + clearRect.right) / 2 - ui(5),
+                       (clearRect.top + clearRect.bottom) / 2 - ui(5),
+                       g_app->hoveredFilter == 7 ? accent : secondary);
     }
-    SetTextColor(dc, g_app->hoveredFilter == 7 ? accent : secondary);
-    drawDeleteIcon(dc, (clearRect.left + clearRect.right) / 2 - ui(5),
-                   (clearRect.top + clearRect.bottom) / 2 - ui(5),
-                   g_app->hoveredFilter == 7 ? accent : secondary);
     const int filterCount = popupFilterConditionCount();
     const bool filterActive = filterCount > 0;
     const RECT filterButtonRect{ui(kPopupFilterButtonLeft), ui(kPopupHeaderTop),
                                 ui(kPopupFilterButtonRight), ui(kPopupHeaderBottom)};
     drawGdiRoundedSurface(dc, filterButtonRect,
                           filterActive ? settingsAccentSoftColor() : chip,
-                          filterActive || g_app->hoveredFilter == 10 ? accent : border, 5);
+                          filterActive || g_app->hoveredFilter == 10 ? accent : border, 6);
     const COLORREF filterColor = filterActive || g_app->hoveredFilter == 10 ? accent : secondary;
-    drawFilterIcon(dc, ui(kPopupFilterButtonLeft + 11), ui(28), filterColor);
-    RECT filterTextRect{ui(kPopupFilterButtonLeft + 22), ui(kPopupHeaderTop),
-                        ui(kPopupFilterButtonRight - 7), ui(kPopupHeaderBottom)};
+    drawFilterIcon(dc, ui(kPopupFilterButtonLeft + 13), ui(28), filterColor);
+    RECT filterTextRect{ui(kPopupFilterButtonLeft + 24), ui(kPopupHeaderTop),
+                        ui(kPopupFilterButtonRight - 5), ui(kPopupHeaderBottom)};
     SetTextColor(dc, filterColor);
     DrawTextW(dc, settingsLocale().popupFilter, -1, &filterTextRect,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -9222,11 +9305,11 @@ void paintPopupContent(HWND hwnd, HDC dc) {
                          client.right - ui(kPopupCloseRightInset), ui(kPopupHeaderBottom)};
     if (g_app->hoveredFilter == 8 && !g_app->popupPinned) {
         drawGdiRoundedSurface(dc, pinRect, settingsAccentSoftColor(),
-                              settingsAccentSoftColor(), 5);
+                              settingsAccentSoftColor(), 6);
     }
     if (g_app->hoveredFilter == 9) {
         drawGdiRoundedSurface(dc, closeRect, settingsAccentSoftColor(),
-                              settingsAccentSoftColor(), 5);
+                              settingsAccentSoftColor(), 6);
     }
     const COLORREF pinColor = g_app->popupPinned ? RGB(245, 158, 11) :
         (g_app->hoveredFilter == 8 ? accent : secondary);
@@ -9245,8 +9328,8 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     };
     SelectObject(dc, filterFont);
     const int filterClip = SaveDC(dc);
-    IntersectClipRect(dc, ui(16), ui(kPopupFilterTop),
-                      client.right - ui(16), ui(kPopupFilterBottom));
+    IntersectClipRect(dc, ui(12), ui(kPopupFilterTop),
+                      client.right - ui(12), ui(kPopupFilterBottom));
     for (int slot = 0; slot < 6; ++slot) {
         const RECT chipRect = automaticFilterRect(slot, g_app->filterScrollOffset);
         const bool active = isAutomaticFilterActive(slot);
@@ -9254,22 +9337,12 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         const COLORREF chipBackground = active ? accent :
             (hovered ? themeColor(ThemeColorRole::HoverBackground) : chip);
         const COLORREF chipBorder = active ? accent : (hovered ? accent : border);
-        drawGdiRoundedSurface(dc, chipRect, chipBackground, chipBorder, 4);
+        drawGdiRoundedSurface(dc, chipRect, chipBackground, chipBorder, 6);
         SetTextColor(dc, active || hovered ? (active ? RGB(255, 255, 255) : accent) : secondary);
         DrawTextW(dc, filterLabels[slot], -1, const_cast<RECT*>(&chipRect),
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
     RestoreDC(dc, filterClip);
-
-    if (filterCount > 0) {
-        wchar_t status[96]{};
-        swprintf_s(status, tr(L"%d filters - %zu/%zu", L"已按 %d 项筛选 - 命中 %zu/%zu 条"),
-                   filterCount, g_app->visible.size(), g_app->store.activeCount());
-        SetTextColor(dc, secondary);
-        RECT statusRect{ui(16), ui(83), client.right - ui(16), ui(96)};
-        DrawTextW(dc, status, -1, &statusRect,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    }
 
     const int listBottom = client.bottom - ui(kPopupBottomPadding);
     const int listClip = SaveDC(dc);
@@ -9302,8 +9375,8 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         const COLORREF rowFill = rowSelected ? settingsAccentSoftColor() :
             (rowHovered ? themeColor(ThemeColorRole::HoverBackground) : card);
         const COLORREF rowBorder = rowSelected || rowHovered ? accent : cardBorder;
-        if (!drawCachedPopupSurface(dc, rowRect, rowFill, rowBorder, 6)) {
-            drawGdiRoundedSurface(dc, rowRect, rowFill, rowBorder, 6);
+        if (!drawCachedPopupSurface(dc, rowRect, rowFill, rowBorder, 8)) {
+            drawGdiRoundedSurface(dc, rowRect, rowFill, rowBorder, 8);
         }
         const bool image = isImageType(item.type);
         const bool file = item.type == ClipType::Files;
@@ -9331,7 +9404,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         }
         if (!item.note.empty() && !(g_app->popupNoteEdit && g_app->popupNoteEditRow == row)) {
             RECT noteRect{rowRect.left + ui(148), metadataTop,
-                          rowRect.right - ui(112), metadataTop + ui(16)};
+                          rowRect.right - ui(116), metadataTop + ui(16)};
             const std::wstring note = utf8ToWide(item.note);
             SelectObject(dc, metaFont);
             SetTextColor(dc, secondary);
@@ -9362,16 +9435,16 @@ void paintPopupContent(HWND hwnd, HDC dc) {
             RECT typeRect{rowRect.left + ui(92), metadataTop,
                           rowRect.left + ui(140), metadataTop + ui(16)};
             drawMetadataTag(dc, typeRect, kind, RGB(239, 241, 243), RGB(239, 241, 243),
-                            RGB(85, 85, 85), 2);
+                            RGB(85, 85, 85), 3);
             const std::wstring time = formatRelativeTime(item.timestamp);
-            RECT timeRect{rowRect.right - ui(106), metadataTop,
-                          rowRect.right - ui(50), metadataTop + ui(16)};
+            RECT timeRect{rowRect.right - ui(110), metadataTop,
+                          rowRect.right - ui(54), metadataTop + ui(16)};
             SetTextColor(dc, RGB(136, 136, 136));
             DrawTextW(dc, time.c_str(), -1, &timeRect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
             const bool pinHovered = row == g_app->hoveredPinRow;
             const bool favoriteHovered = row == g_app->hoveredFavoriteRow;
             if (item.favorite || rowHovered) {
-                drawFavoriteIcon(dc, rowRect.right - ui(26), metadataTop + ui(8),
+                drawFavoriteIcon(dc, rowRect.right - ui(30), metadataTop + ui(8),
                     item.favorite ? (favoriteHovered ? RGB(217, 119, 6) : RGB(245, 158, 11))
                                   : (favoriteHovered ? accent : RGB(176, 176, 176)), item.favorite);
             }
@@ -9396,7 +9469,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         const int emptyTop = ui(kPopupListTop + 54);
         drawEmptyClipboardIcon(dc, centerX, emptyTop,
                                  themeColor(ThemeColorRole::DisabledText));
-        RECT emptyRect{ui(24), emptyTop + ui(48), client.right - ui(24), emptyTop + ui(72)};
+        RECT emptyRect{ui(12), emptyTop + ui(48), client.right - ui(12), emptyTop + ui(72)};
         DrawTextW(dc, empty, -1, &emptyRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
     int trackTop = 0;
@@ -9411,6 +9484,19 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         drawGdiRoundedSurface(dc, scrollRect, scrollColor, scrollColor, 3);
     }
     RestoreDC(dc, listClip);
+    wchar_t status[96]{};
+    if (filterCount > 0) {
+        swprintf_s(status, tr(L"%d filters - %zu/%zu", L"已按 %d 项筛选 - 命中 %zu/%zu 条"),
+                   filterCount, g_app->visible.size(), g_app->store.activeCount());
+    } else {
+        swprintf_s(status, tr(L"%zu items", L"共 %zu 条"),
+                   g_app->store.activeCount());
+    }
+    SelectObject(dc, metaFont);
+    SetTextColor(dc, secondary);
+    RECT statusRect{ui(12), ui(76), client.right - ui(12), ui(94)};
+    DrawTextW(dc, status, -1, &statusRect,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     RestoreDC(dc, popupFrameClip);
     SelectObject(dc, old);
 }
@@ -10563,12 +10649,30 @@ int filterMenuMainRowAt(int y) {
         logicalY < 5 + 5 * kFilterMenuRowHeight + 8 ? 4 : -1;
 }
 
-void paintPopupMenuSurface(HDC dc, const RECT& client, COLORREF background, COLORREF border) {
+void paintPopupMenuSurface(HWND hwnd, HDC dc, const RECT& client,
+                           COLORREF background, COLORREF border) {
+    const bool dwmFrame = hwnd && dwmCornersSupported(hwnd);
+    if (!dwmFrame) {
+        // Windows 10 回退：背景与边框由窗口区域生成，与轮廓逐像素一致。
+        const int corner = ui(9);
+        HRGN region = CreateRoundRectRgn(0, 0, client.right + 1, client.bottom + 1,
+                                         corner * 2, corner * 2);
+        if (region) {
+            HBRUSH brush = CreateSolidBrush(background);
+            FillRgn(dc, region, brush);
+            DeleteObject(brush);
+            brush = CreateSolidBrush(border);
+            FrameRgn(dc, region, brush, 1, 1);
+            DeleteObject(brush);
+            DeleteObject(region);
+            return;
+        }
+    }
     HBRUSH brush = CreateSolidBrush(background);
     FillRect(dc, &client, brush);
     DeleteObject(brush);
     drawGdiRoundedSurface(dc, RECT{1, 1, client.right - 1, client.bottom - 1},
-                          background, border, 8);
+                          background, dwmFrame ? background : border, 8);
 }
 
 int filterSubmenuRowAt(int y) {
@@ -10634,7 +10738,7 @@ void paintFilterMenuWindow(HWND hwnd, HDC dc) {
     const COLORREF secondary = themeColor(ThemeColorRole::SecondaryText);
     const COLORREF hover = settingsAccentSoftColor();
     const COLORREF accent = settingsAccentColor();
-    paintPopupMenuSurface(dc, client, background, border);
+    paintPopupMenuSurface(hwnd, dc, client, background, border);
     SetBkMode(dc, TRANSPARENT);
     SelectObject(dc, g_app->popupFilterFont);
 
@@ -11091,7 +11195,7 @@ void showPopupContextSubmenu(int row) {
 void paintPopupContextSubmenu(HWND hwnd, HDC dc) {
     RECT client{};
     GetClientRect(hwnd, &client);
-    paintPopupMenuSurface(dc, client, themeColor(ThemeColorRole::SurfaceBackground),
+    paintPopupMenuSurface(hwnd, dc, client, themeColor(ThemeColorRole::SurfaceBackground),
                           themeColor(ThemeColorRole::Border));
     SetBkMode(dc, TRANSPARENT);
     SelectObject(dc, g_app->popupFilterFont);
@@ -11468,7 +11572,7 @@ void paintPopupContextMenuWindow(HWND hwnd, HDC dc) {
     const COLORREF border = themeColor(ThemeColorRole::Border);
     const COLORREF text = themeColor(ThemeColorRole::Text);
     const COLORREF hover = settingsAccentSoftColor();
-    paintPopupMenuSurface(dc, client, background, border);
+    paintPopupMenuSurface(hwnd, dc, client, background, border);
     SetBkMode(dc, TRANSPARENT);
     SelectObject(dc, g_app->popupFilterFont);
     for (std::size_t i = 0; i < g_app->popupContextMenuItems.size(); ++i) {
@@ -14321,7 +14425,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             g_app->popupInputBrush = CreateSolidBrush(highContrastEnabled()
                 ? GetSysColor(COLOR_WINDOW)
                 : themeColor(ThemeColorRole::InputBackground));
-            const int searchEditWidth = kPopupSearchRight - kPopupSearchLeft - 30;
+            const int searchEditWidth = kPopupSearchRight - kPopupSearchLeft - 50;
             g_app->searchEdit = CreateWindowExW(0, L"EDIT", L"",
                                                  WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOHSCROLL,
                                                  ui(kPopupSearchLeft + 27), ui(16), ui(searchEditWidth), ui(24), hwnd,
@@ -14581,8 +14685,13 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         clearPopupSourceIcons();
         if (g_app->popupFont) DeleteObject(g_app->popupFont);
         if (g_app->popupInputBrush) DeleteObject(g_app->popupInputBrush);
-        releasePaintFonts(g_app->popupTitleFont, g_app->popupFilterFont,
-                          g_app->popupPreviewFont, g_app->popupMetaFont);
+        releasePaintFonts(g_app->popupTitleFont, g_app->popupHeaderFont,
+                          g_app->popupFilterFont, g_app->popupPreviewFont,
+                          g_app->popupMetaFont);
+        if (g_app->popupWinRegion) {
+            DeleteObject(g_app->popupWinRegion);
+            g_app->popupWinRegion = nullptr;
+        }
         g_app->popupFont = nullptr;
         g_app->popupInputBrush = nullptr;
         KillTimer(hwnd, kPopupOpenGuardTimer);
@@ -14624,8 +14733,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (g_app->settingsInputBrush) DeleteObject(g_app->settingsInputBrush);
         if (g_app->settingsBodyContent) DestroyWindow(g_app->settingsBodyContent);
         if (g_app->settingsBodyViewport) DestroyWindow(g_app->settingsBodyViewport);
+        HFONT spareFont = nullptr;
         releasePaintFonts(g_app->settingsNavFont, g_app->settingsTitleFont,
-                          g_app->settingsCardTitleFont, g_app->settingsBodyFont);
+                          g_app->settingsCardTitleFont, g_app->settingsBodyFont,
+                          spareFont);
         g_app->settingsFont = nullptr;
         g_app->settingsMultilineFont = nullptr;
         g_app->settingsBackgroundBrush = nullptr;
@@ -15570,14 +15681,15 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const bool pinHover = row >= 0 && point.x >= client.right - ui(45) &&
                 point.x < client.right - ui(10) && point.y >= rowTop + rowHeight - ui(30) &&
                 point.y < rowTop + rowHeight;
+            if (g_app->popupSearchInputActive &&
+                point.x >= ui(kPopupClearLeft) && point.x < ui(kPopupClearRight) &&
+                point.y >= ui(kPopupHeaderTop) && point.y < ui(kPopupHeaderBottom)) {
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                return TRUE;
+            }
             if (point.x >= ui(kPopupSearchLeft) && point.x < ui(kPopupSearchRight) &&
                 point.y >= ui(kPopupHeaderTop) && point.y < ui(kPopupHeaderBottom)) {
                 SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
-                return TRUE;
-            }
-            if (point.x >= ui(kPopupClearLeft) && point.x < ui(kPopupClearRight) &&
-                point.y >= ui(kPopupHeaderTop) && point.y < ui(kPopupHeaderBottom)) {
-                SetCursor(LoadCursorW(nullptr, IDC_HAND));
                 return TRUE;
             }
             if (point.x >= ui(kPopupFilterButtonLeft) && point.x < ui(kPopupFilterButtonRight) &&
@@ -15609,7 +15721,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 return TRUE;
             }
             if (deleteHover || pinHover || (row >= 0 &&
-                point.x >= ui(16) && point.x < client.right - ui(16))) {
+                point.x >= ui(12) && point.x < client.right - ui(12))) {
                 SetCursor(LoadCursorW(nullptr, IDC_HAND));
                 return TRUE;
             }
@@ -15933,7 +16045,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const int x = GET_X_LPARAM(lParam);
             const int y = GET_Y_LPARAM(lParam);
             const int filter = popupFilterAt(x, y);
-            const int row = (filter < 0 && x >= ui(16) && x < client.right - ui(16))
+            const int row = (filter < 0 && x >= ui(12) && x < client.right - ui(12))
                 ? popupRowAt(y) : -1;
             const int rowTop = row >= 0 ? popupRowTop(row) : -1;
             const int deleteRow = row >= 0 && popupDeleteHitAt(client, rowTop, x, y)
@@ -15943,8 +16055,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const bool itemActionRow = row >= 0 && y >= rowTop + rowHeight - ui(30) &&
                 y < rowTop + rowHeight;
             const int favoriteRow = itemActionRow &&
-                x >= client.right - ui(kPopupCardInset + 50) &&
-                x < client.right - ui(kPopupCardInset + 28) ? row : -1;
+                x >= client.right - ui(kPopupCardInset + 54) &&
+                x < client.right - ui(kPopupCardInset + 32) ? row : -1;
             const int pinRow = itemActionRow &&
                 x >= client.right - ui(kPopupCardInset + 22) &&
                 x < client.right - ui(kPopupCardInset + 2) ? row : -1;
@@ -15953,7 +16065,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (x >= ui(kPopupFilterButtonLeft) && x < ui(kPopupFilterButtonRight) &&
                 y >= ui(kPopupHeaderTop) && y < ui(kPopupHeaderBottom)) {
                 headerButton = 10;
-            } else if (x >= ui(kPopupClearLeft) && x < ui(kPopupClearRight) &&
+            } else if (g_app->popupSearchInputActive &&
+                x >= ui(kPopupClearLeft) && x < ui(kPopupClearRight) &&
                 y >= ui(kPopupHeaderTop) && y < ui(kPopupHeaderBottom)) {
                 headerButton = 7;
             } else if (x >= ui(kPopupPinLeft) && x < ui(kPopupPinRight) &&
@@ -16066,10 +16179,14 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 GET_Y_LPARAM(lParam) < ui(kPopupHeaderBottom) &&
                 GET_X_LPARAM(lParam) >= ui(kPopupClearLeft) &&
                 GET_X_LPARAM(lParam) < ui(kPopupClearRight)) {
-                SetWindowTextW(g_app->searchEdit, L"");
-                g_app->query.clear();
-                SetFocus(g_app->searchEdit);
-                refreshVisible();
+                if (g_app->popupSearchInputActive) {
+                    SetWindowTextW(g_app->searchEdit, L"");
+                    g_app->query.clear();
+                    SetFocus(g_app->searchEdit);
+                    refreshVisible();
+                } else if (g_app->searchEdit) {
+                    SetFocus(g_app->searchEdit);
+                }
                 return 0;
             }
             if (GET_Y_LPARAM(lParam) >= ui(kPopupHeaderTop) &&
@@ -16086,8 +16203,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 closePopup();
                 return 0;
             }
-            if (GET_Y_LPARAM(lParam) >= ui(12) && GET_Y_LPARAM(lParam) < ui(46) &&
-                GET_X_LPARAM(lParam) >= ui(16) && GET_X_LPARAM(lParam) < ui(84)) {
+            if (popupPointInHeader(client, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam))) {
                 ReleaseCapture();
                 SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
                 return 0;
@@ -16127,8 +16243,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 const bool itemActionClick = GET_Y_LPARAM(lParam) >= rowTop + rowHeight - ui(30) &&
                     GET_Y_LPARAM(lParam) < rowTop + rowHeight;
                 const bool favoriteClick = itemActionClick &&
-                    GET_X_LPARAM(lParam) >= client.right - ui(kPopupCardInset + 50) &&
-                    GET_X_LPARAM(lParam) < client.right - ui(kPopupCardInset + 28);
+                    GET_X_LPARAM(lParam) >= client.right - ui(kPopupCardInset + 54) &&
+                    GET_X_LPARAM(lParam) < client.right - ui(kPopupCardInset + 32);
                 const bool pinClick = itemActionClick &&
                     GET_X_LPARAM(lParam) >= client.right - ui(kPopupCardInset + 22) &&
                     GET_X_LPARAM(lParam) < client.right - ui(kPopupCardInset + 2);
