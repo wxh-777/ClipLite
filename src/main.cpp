@@ -249,6 +249,9 @@ constexpr UINT kPasteInputTimeoutMs = 500;
 constexpr UINT kTrayId = 1;
 constexpr int kPopupFilterTop = 58;
 constexpr int kPopupFilterBottom = 82;
+// 历史窗口顶部搜索框、筛选、图钉和关闭按钮的统一高度区域。
+constexpr int kPopupHeaderTop = 14;
+constexpr int kPopupHeaderBottom = 42;
 constexpr int kPopupSearchLeft = 86;
 constexpr int kPopupSearchRight = 240;
 constexpr int kPopupClearLeft = 244;
@@ -3218,15 +3221,18 @@ void invalidatePopupHover(HWND hwnd, int row, int filter, bool header) {
     } else if (filter >= 7 && filter <= 10) {
         RECT buttonRect{};
         if (filter == 7) {
-            buttonRect = RECT{ui(kPopupClearLeft), ui(12), ui(kPopupClearRight), ui(46)};
+            buttonRect = RECT{ui(kPopupClearLeft), ui(kPopupHeaderTop),
+                              ui(kPopupClearRight), ui(kPopupHeaderBottom)};
         } else if (filter == 8) {
-            buttonRect = RECT{ui(kPopupPinLeft), ui(12), ui(kPopupPinRight), ui(46)};
+            buttonRect = RECT{ui(kPopupPinLeft), ui(kPopupHeaderTop),
+                              ui(kPopupPinRight), ui(kPopupHeaderBottom)};
         } else if (filter == 9) {
-            buttonRect = RECT{ui(kPopupCloseLeft), ui(12),
-                              client.right - ui(kPopupCloseRightInset), ui(46)};
+            buttonRect = RECT{ui(kPopupCloseLeft), ui(kPopupHeaderTop),
+                              client.right - ui(kPopupCloseRightInset),
+                              ui(kPopupHeaderBottom)};
         } else {
-            buttonRect = RECT{ui(kPopupFilterButtonLeft), ui(12),
-                              ui(kPopupFilterButtonRight), ui(46)};
+            buttonRect = RECT{ui(kPopupFilterButtonLeft), ui(kPopupHeaderTop),
+                              ui(kPopupFilterButtonRight), ui(kPopupHeaderBottom)};
         }
         InvalidateRect(hwnd, &buttonRect, FALSE);
     }
@@ -3282,8 +3288,8 @@ void invalidatePopupStatus(HWND hwnd) {
 
 void invalidatePopupFilterButton(HWND hwnd) {
     if (!hwnd) return;
-    RECT buttonRect{ui(kPopupFilterButtonLeft - 2), ui(10),
-                    ui(kPopupFilterButtonRight + 2), ui(48)};
+    RECT buttonRect{ui(kPopupFilterButtonLeft - 2), ui(kPopupHeaderTop - 2),
+                    ui(kPopupFilterButtonRight + 2), ui(kPopupHeaderBottom + 2)};
     InvalidateRect(hwnd, &buttonRect, FALSE);
 }
 
@@ -9178,14 +9184,16 @@ void paintPopupContent(HWND hwnd, HDC dc) {
               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     const COLORREF searchBorder = g_app->searchEdit && g_app->popupSearchInputActive
         ? accent : border;
-    const RECT searchRect{ui(kPopupSearchLeft), ui(12), ui(kPopupSearchRight), ui(48)};
+    const RECT searchRect{ui(kPopupSearchLeft), ui(kPopupHeaderTop),
+                          ui(kPopupSearchRight), ui(kPopupHeaderBottom)};
     drawGdiRoundedSurface(dc, searchRect,
                           themeColor(ThemeColorRole::InputBackground),
                           searchBorder, 6);
-    drawSearchIcon(dc, ui(kPopupSearchLeft + 14), ui(30),
+    drawSearchIcon(dc, ui(kPopupSearchLeft + 14), ui(28),
                    g_app->searchEdit && g_app->popupSearchInputActive ? accent : secondary);
     SelectObject(dc, filterFont);
-    RECT clearRect{ui(kPopupClearLeft), ui(14), ui(kPopupClearRight), ui(46)};
+    RECT clearRect{ui(kPopupClearLeft), ui(kPopupHeaderTop),
+                   ui(kPopupClearRight), ui(kPopupHeaderBottom)};
     if (g_app->hoveredFilter == 7) {
         drawGdiRoundedSurface(dc, clearRect, settingsAccentSoftColor(),
                               settingsAccentSoftColor(), 4);
@@ -9196,21 +9204,22 @@ void paintPopupContent(HWND hwnd, HDC dc) {
                    g_app->hoveredFilter == 7 ? accent : secondary);
     const int filterCount = popupFilterConditionCount();
     const bool filterActive = filterCount > 0;
-    const RECT filterButtonRect{ui(kPopupFilterButtonLeft), ui(12),
-                                ui(kPopupFilterButtonRight), ui(46)};
+    const RECT filterButtonRect{ui(kPopupFilterButtonLeft), ui(kPopupHeaderTop),
+                                ui(kPopupFilterButtonRight), ui(kPopupHeaderBottom)};
     drawGdiRoundedSurface(dc, filterButtonRect,
                           filterActive ? settingsAccentSoftColor() : chip,
                           filterActive || g_app->hoveredFilter == 10 ? accent : border, 5);
     const COLORREF filterColor = filterActive || g_app->hoveredFilter == 10 ? accent : secondary;
-    drawFilterIcon(dc, ui(kPopupFilterButtonLeft + 11), ui(29), filterColor);
-    RECT filterTextRect{ui(kPopupFilterButtonLeft + 22), ui(14),
-                        ui(kPopupFilterButtonRight - 7), ui(46)};
+    drawFilterIcon(dc, ui(kPopupFilterButtonLeft + 11), ui(28), filterColor);
+    RECT filterTextRect{ui(kPopupFilterButtonLeft + 22), ui(kPopupHeaderTop),
+                        ui(kPopupFilterButtonRight - 7), ui(kPopupHeaderBottom)};
     SetTextColor(dc, filterColor);
     DrawTextW(dc, settingsLocale().popupFilter, -1, &filterTextRect,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    const RECT pinRect{ui(kPopupPinLeft), ui(14), ui(kPopupPinRight), ui(46)};
-    const RECT closeRect{ui(kPopupCloseLeft), ui(14),
-                         client.right - ui(kPopupCloseRightInset), ui(46)};
+    const RECT pinRect{ui(kPopupPinLeft), ui(kPopupHeaderTop),
+                       ui(kPopupPinRight), ui(kPopupHeaderBottom)};
+    const RECT closeRect{ui(kPopupCloseLeft), ui(kPopupHeaderTop),
+                         client.right - ui(kPopupCloseRightInset), ui(kPopupHeaderBottom)};
     if (g_app->hoveredFilter == 8 && !g_app->popupPinned) {
         drawGdiRoundedSurface(dc, pinRect, settingsAccentSoftColor(),
                               settingsAccentSoftColor(), 4);
@@ -9224,7 +9233,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     const int pinCenterX = (pinRect.left + pinRect.right) / 2;
     const float pinScale = static_cast<float>(g_uiDpi) / 96.0f * (10.0f / 14.0f);
     const int pinRight = pinCenterX + static_cast<int>(7.0f * pinScale + 0.5f);
-    drawPinIcon(dc, pinRight, ui(30), pinColor, g_app->popupPinned);
+    drawPinIcon(dc, pinRight, ui(28), pinColor, g_app->popupPinned);
     drawDeleteIcon(dc, (closeRect.left + closeRect.right) / 2 - ui(5),
                    (closeRect.top + closeRect.bottom) / 2 - ui(5),
                    g_app->hoveredFilter == 9 ? RGB(220, 38, 38) : secondary);
@@ -10827,8 +10836,8 @@ void showPopupFilterMenu(HWND hwnd) {
         return;
     }
     hideDetailPreview();
-    RECT buttonRect{ui(kPopupFilterButtonLeft), ui(12),
-                    ui(kPopupFilterButtonRight), ui(46)};
+    RECT buttonRect{ui(kPopupFilterButtonLeft), ui(kPopupHeaderTop),
+                    ui(kPopupFilterButtonRight), ui(kPopupHeaderBottom)};
     POINT point{buttonRect.right, buttonRect.bottom};
     ClientToScreen(hwnd, &point);
     HMONITOR monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
@@ -14315,7 +14324,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const int searchEditWidth = kPopupSearchRight - kPopupSearchLeft - 30;
             g_app->searchEdit = CreateWindowExW(0, L"EDIT", L"",
                                                  WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOHSCROLL,
-                                                 ui(kPopupSearchLeft + 27), ui(15), ui(searchEditWidth), ui(30), hwnd,
+                                                 ui(kPopupSearchLeft + 27), ui(16), ui(searchEditWidth), ui(24), hwnd,
                                                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSearchEdit)),
                                                  GetModuleHandleW(nullptr), nullptr);
             SendMessageW(g_app->searchEdit, WM_SETFONT,
@@ -14330,7 +14339,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 SelectObject(editDc, oldFont);
                 ReleaseDC(g_app->searchEdit, editDc);
             }
-            const int editHeight = ui(30);
+            const int editHeight = ui(24);
             const int textHeight = textMetrics.tmHeight > 0
                 ? static_cast<int>(textMetrics.tmHeight) : ui(14);
             const int verticalPadding = std::max(ui(4),
@@ -15562,28 +15571,28 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 point.x < client.right - ui(10) && point.y >= rowTop + rowHeight - ui(30) &&
                 point.y < rowTop + rowHeight;
             if (point.x >= ui(kPopupSearchLeft) && point.x < ui(kPopupSearchRight) &&
-                point.y >= ui(12) && point.y < ui(48)) {
+                point.y >= ui(kPopupHeaderTop) && point.y < ui(kPopupHeaderBottom)) {
                 SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
                 return TRUE;
             }
             if (point.x >= ui(kPopupClearLeft) && point.x < ui(kPopupClearRight) &&
-                point.y >= ui(12) && point.y < ui(46)) {
+                point.y >= ui(kPopupHeaderTop) && point.y < ui(kPopupHeaderBottom)) {
                 SetCursor(LoadCursorW(nullptr, IDC_HAND));
                 return TRUE;
             }
             if (point.x >= ui(kPopupFilterButtonLeft) && point.x < ui(kPopupFilterButtonRight) &&
-                point.y >= ui(12) && point.y < ui(46)) {
+                point.y >= ui(kPopupHeaderTop) && point.y < ui(kPopupHeaderBottom)) {
                 SetCursor(LoadCursorW(nullptr, IDC_HAND));
                 return TRUE;
             }
             if (point.x >= ui(kPopupPinLeft) && point.x < ui(kPopupPinRight) &&
-                point.y >= ui(12) && point.y < ui(46)) {
+                point.y >= ui(kPopupHeaderTop) && point.y < ui(kPopupHeaderBottom)) {
                 SetCursor(LoadCursorW(nullptr, IDC_HAND));
                 return TRUE;
             }
             if (point.x >= ui(kPopupCloseLeft) &&
                 point.x < client.right - ui(kPopupCloseRightInset) &&
-                point.y >= ui(12) && point.y < ui(46)) {
+                point.y >= ui(kPopupHeaderTop) && point.y < ui(kPopupHeaderBottom)) {
                 SetCursor(LoadCursorW(nullptr, IDC_HAND));
                 return TRUE;
             }
@@ -15942,17 +15951,17 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const bool headerHover = popupPointInHeader(client, x, y);
             int headerButton = -1;
             if (x >= ui(kPopupFilterButtonLeft) && x < ui(kPopupFilterButtonRight) &&
-                y >= ui(12) && y < ui(46)) {
+                y >= ui(kPopupHeaderTop) && y < ui(kPopupHeaderBottom)) {
                 headerButton = 10;
             } else if (x >= ui(kPopupClearLeft) && x < ui(kPopupClearRight) &&
-                y >= ui(12) && y < ui(46)) {
+                y >= ui(kPopupHeaderTop) && y < ui(kPopupHeaderBottom)) {
                 headerButton = 7;
             } else if (x >= ui(kPopupPinLeft) && x < ui(kPopupPinRight) &&
-                       y >= ui(12) && y < ui(46)) {
+                       y >= ui(kPopupHeaderTop) && y < ui(kPopupHeaderBottom)) {
                 headerButton = 8;
             } else if (x >= ui(kPopupCloseLeft) &&
                        x < client.right - ui(kPopupCloseRightInset) &&
-                       y >= ui(12) && y < ui(46)) {
+                       y >= ui(kPopupHeaderTop) && y < ui(kPopupHeaderBottom)) {
                 headerButton = 9;
             }
             const int nextFilter = filter >= 0 ? filter : headerButton;
@@ -16039,9 +16048,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const int clickX = GET_X_LPARAM(lParam);
             const int clickY = GET_Y_LPARAM(lParam);
             const bool inSearch = clickX >= ui(kPopupSearchLeft) && clickX < ui(kPopupSearchRight) &&
-                clickY >= ui(12) && clickY < ui(48);
+                clickY >= ui(kPopupHeaderTop) && clickY < ui(kPopupHeaderBottom);
             const bool inFilterButton = clickX >= ui(kPopupFilterButtonLeft) &&
-                clickX < ui(kPopupFilterButtonRight) && clickY >= ui(12) && clickY < ui(46);
+                clickX < ui(kPopupFilterButtonRight) && clickY >= ui(kPopupHeaderTop) &&
+                clickY < ui(kPopupHeaderBottom);
             if (!inSearch) SetFocus(hwnd);
             if (g_app->filterMenuOpen) {
                 closeFilterMenu();
@@ -16052,7 +16062,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 showPopupFilterMenu(hwnd);
                 return 0;
             }
-            if (GET_Y_LPARAM(lParam) >= ui(12) && GET_Y_LPARAM(lParam) < ui(46) &&
+            if (GET_Y_LPARAM(lParam) >= ui(kPopupHeaderTop) &&
+                GET_Y_LPARAM(lParam) < ui(kPopupHeaderBottom) &&
                 GET_X_LPARAM(lParam) >= ui(kPopupClearLeft) &&
                 GET_X_LPARAM(lParam) < ui(kPopupClearRight)) {
                 SetWindowTextW(g_app->searchEdit, L"");
@@ -16061,13 +16072,15 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 refreshVisible();
                 return 0;
             }
-            if (GET_Y_LPARAM(lParam) >= ui(12) && GET_Y_LPARAM(lParam) < ui(46) &&
+            if (GET_Y_LPARAM(lParam) >= ui(kPopupHeaderTop) &&
+                GET_Y_LPARAM(lParam) < ui(kPopupHeaderBottom) &&
                 GET_X_LPARAM(lParam) >= ui(kPopupPinLeft) &&
                 GET_X_LPARAM(lParam) < ui(kPopupPinRight)) {
                 setPopupPinned(!g_app->popupPinned);
                 return 0;
             }
-            if (GET_Y_LPARAM(lParam) >= ui(12) && GET_Y_LPARAM(lParam) < ui(46) &&
+            if (GET_Y_LPARAM(lParam) >= ui(kPopupHeaderTop) &&
+                GET_Y_LPARAM(lParam) < ui(kPopupHeaderBottom) &&
                 GET_X_LPARAM(lParam) >= ui(kPopupCloseLeft) &&
                 GET_X_LPARAM(lParam) < client.right - ui(kPopupCloseRightInset)) {
                 closePopup();
