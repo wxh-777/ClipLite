@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Fixed a Windows 10 issue where opening the text editor after focusing history search could leave the editor unclickable; closing or saving now restores the history window position, search results, and scroll position, while Save and paste goes directly to the original target window.
+- Opening the history context or filter menu now clears search focus; fixed missing-file tags overflowing, leaving stale pixels, or changing size after saving a note with Enter.
+- Unified rounded-corner rendering across the history window, related menus, and detail preview: Windows 11 uses DWM antialiased corners and Windows 10 uses a consistent region fallback.
+
 ## [1.5.2] - 2026-10-11
 
 - Improved history-window interaction: held Up/Down keys now move one item at a fixed interval, search-result text editing reliably receives focus, and optional category memory and list-density modes are available.

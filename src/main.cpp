@@ -652,6 +652,15 @@ struct AppState {
     HRGN popupWinRegion = nullptr;
     bool dwmCornerAvailable = false;
     bool dwmCornerChecked = false;
+    bool popupRestorePending = false;
+    bool popupRestoreScrollAfterSearch = false;
+    int popupRestoreScroll = 0;
+    int popupRestoreFilterScroll = 0;
+    int popupRestoreSelected = 0;
+    std::string popupRestoreQuery;
+    bool popupRestoreSearchActive = false;
+    int popupRestoreX = 0;
+    int popupRestoreY = 0;
     int hoveredSettingsTab = -1;
     int hoveredSettingsThemeMode = -1;
     int hoveredSettingsControl = 0;
@@ -3117,6 +3126,8 @@ void closePopupNoteEdit(bool save) {
     HWND edit = g_app->popupNoteEdit;
     const int row = g_app->popupNoteEditRow;
     const std::uint64_t recordId = g_app->popupNoteEditRecordId;
+    bool noteSaved = false;
+    bool refreshSearchResults = false;
     if (save) {
         limitPopupNoteEditText(edit);
         wchar_t buffer[256]{};
@@ -3125,10 +3136,25 @@ void closePopupNoteEdit(bool save) {
         if (row >= 0 && row < static_cast<int>(g_app->visible.size())) {
             const std::size_t index = g_app->visible[static_cast<std::size_t>(row)];
             if (index < g_app->store.items().size() &&
-                g_app->store.items()[index].recordId == recordId &&
-                !g_app->store.setNote(index, note)) {
-                MessageBoxW(g_app->popup, tr(L"Unable to save the note.", L"无法保存备注。"),
-                            L"ClipLite", MB_OK | MB_ICONWARNING);
+                g_app->store.items()[index].recordId == recordId) {
+                const std::uint64_t previousRevision = g_app->store.revision();
+                const bool availabilityCacheValid =
+                    g_app->fileAvailabilityRevision == previousRevision;
+                const bool saved = g_app->store.setNote(index, note);
+                if (!saved) {
+                    MessageBoxW(g_app->popup,
+                                tr(L"Unable to save the note.", L"无法保存备注。"),
+                                L"ClipLite", MB_OK | MB_ICONWARNING);
+                } else if (availabilityCacheValid) {
+                    // 备注不改变文件 payload，保留文件缺失状态，避免回车保存时提示标签闪烁或消失。
+                    g_app->fileAvailabilityRevision = g_app->store.revision();
+                    noteSaved = true;
+                    refreshSearchResults = !g_app->query.empty();
+                }
+                if (saved && !availabilityCacheValid) {
+                    noteSaved = true;
+                    refreshSearchResults = !g_app->query.empty();
+                }
             }
         }
     }
@@ -3136,8 +3162,15 @@ void closePopupNoteEdit(bool save) {
     g_app->popupNoteEdit = nullptr;
     g_app->popupNoteEditRow = -1;
     g_app->popupNoteEditRecordId = 0;
-    refreshVisible(true);
-    if (g_app->popup) InvalidateRect(g_app->popup, nullptr, FALSE);
+    if (noteSaved && !refreshSearchResults) {
+        // 备注不影响无搜索列表的行高或排序，保留原有卡片布局。
+        g_app->popupLayoutRevision = g_app->store.revision();
+    }
+    if (refreshSearchResults) refreshVisible(true);
+    if (g_app->popup) {
+        RedrawWindow(g_app->popup, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    }
 }
 
 int popupScrollStride();
@@ -3457,6 +3490,11 @@ void drawGdiRoundedSurface(HDC dc, const RECT& rect, COLORREF fill, COLORREF bor
     if (!g_app || g_app->gdiplusToken == 0) return;
     Gdiplus::Graphics graphics(dc);
     configureGdiGraphics(graphics);
+    RECT clip{};
+    if (GetClipBox(dc, &clip) <= NULLREGION) return;
+    graphics.SetClip(Gdiplus::Rect(clip.left, clip.top,
+                                   clip.right - clip.left, clip.bottom - clip.top),
+                     Gdiplus::CombineModeIntersect);
     Gdiplus::GraphicsPath path;
     addGdiRoundedRect(path, Gdiplus::RectF(
         static_cast<float>(rect.left) + 0.5f, static_cast<float>(rect.top) + 0.5f,
@@ -3638,6 +3676,11 @@ void drawMetadataTag(HDC dc, const RECT& rect, const std::wstring& value,
     if (!g_app || g_app->gdiplusToken == 0) return;
     Gdiplus::Graphics graphics(dc);
     configureGdiGraphics(graphics);
+    RECT clip{};
+    if (GetClipBox(dc, &clip) <= NULLREGION) return;
+    graphics.SetClip(Gdiplus::Rect(clip.left, clip.top,
+                                   clip.right - clip.left, clip.bottom - clip.top),
+                     Gdiplus::CombineModeIntersect);
     Gdiplus::GraphicsPath path;
     addGdiRoundedRect(path, Gdiplus::RectF(
         static_cast<float>(rect.left) + 0.5f, static_cast<float>(rect.top) + 0.5f,
@@ -5099,9 +5142,9 @@ void hideDetailPreview() {
     if (g_app->detailPreview) ShowWindow(g_app->detailPreview, SW_HIDE);
 }
 
-// 历史窗口关闭时才销毁可复用的详情预览窗口。
 bool dwmCornersSupported(HWND probe);
 
+// 历史窗口关闭时才销毁可复用的详情预览窗口。
 void destroyDetailPreview() {
     if (!g_app) return;
     hideDetailPreview();
@@ -5222,6 +5265,11 @@ void positionDetailPreview(int row) {
 // 为指定历史记录请求一次原始内容预览。
 void requestDetailPreview(int row, bool upgrade) {
     if (!g_app || !g_app->popup) return;
+    if (!IsWindowVisible(g_app->popup)) {
+        // 历史窗口隐藏后预览已无意义，且会覆盖后续打开的编辑窗口吞掉点击。
+        hideDetailPreview();
+        return;
+    }
     if (g_app->filterMenuOpen || g_app->popupContextMenuOpen) {
         hideDetailPreview();
         return;
@@ -5946,8 +5994,8 @@ void completePaste(PastePayloadResult& result) {
     g_app->popupSearchControlDown = false;
     g_app->popupSuppressImeTriggerSpace = false;
     if (keepPopup) {
-        ShowWindow(g_app->popup, SW_HIDE);
-    } else {
+        if (g_app->popup) ShowWindow(g_app->popup, SW_HIDE);
+    } else if (g_app->popup) {
         closePopupNoteEdit(false);
         DestroyWindow(g_app->popup);
         g_app->popup = nullptr;
@@ -6496,6 +6544,17 @@ bool activatePopupSearchFocus(bool imeMode) {
     g_app->popupSuppressImeTriggerSpace = false;
     KillTimer(g_app->popup, kPopupDeactivateTimer);
     SetForegroundWindow(g_app->popup);
+    if (GetForegroundWindow() != g_app->popup) {
+        // Alt+V 走低级键盘钩子路径，没有系统热键的前台许可；与前台线程关联输入队列后重试。
+        const HWND foreground = GetForegroundWindow();
+        const DWORD foregroundThread = foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
+        const DWORD currentThread = GetCurrentThreadId();
+        if (foregroundThread != 0 && foregroundThread != currentThread) {
+            AttachThreadInput(currentThread, foregroundThread, TRUE);
+            SetForegroundWindow(g_app->popup);
+            AttachThreadInput(currentThread, foregroundThread, FALSE);
+        }
+    }
     SetActiveWindow(g_app->popup);
     SetFocus(g_app->searchEdit);
     g_app->popupActivated = GetForegroundWindow() == g_app->popup;
@@ -6512,6 +6571,19 @@ bool activatePopupSearchFocus(bool imeMode) {
 
 void enterPopupImeMode() {
     activatePopupSearchFocus(true);
+}
+
+// 打开右键菜单、筛选菜单等弹层时退出搜索聚焦，键入不再转发到搜索框。
+void deactivatePopupSearchFocus() {
+    if (!g_app || !g_app->popupSearchInputActive) return;
+    g_app->popupSearchInputActive = false;
+    updatePopupKeyboardHook();
+    if (g_app->popup && GetFocus() == g_app->searchEdit) {
+        SetFocus(g_app->popup);
+    }
+    RECT searchRect{ui(kPopupSearchLeft), ui(kPopupHeaderTop),
+                    ui(kPopupSearchRight), ui(kPopupHeaderBottom)};
+    InvalidateRect(g_app->popup, &searchRect, FALSE);
 }
 
 void syncPopupSearchKeyboardLayout() {
@@ -8341,6 +8413,125 @@ void setTextEditorEnabled(bool enabled) {
     EnableWindow(g_app->textEditorCancelButton, enabled);
 }
 
+// 编辑窗口接管前台前保存历史窗口状态，关闭编辑窗口后按快照重建。
+void capturePopupRestoreState() {
+    if (!g_app || !g_app->popup) return;
+    g_app->popupRestorePending = true;
+    g_app->popupRestoreScroll = g_app->scrollPosition;
+    g_app->popupRestoreFilterScroll = g_app->filterScrollOffset;
+    g_app->popupRestoreSelected = g_app->selected;
+    g_app->popupRestoreQuery = g_app->query;
+    g_app->popupRestoreSearchActive = g_app->popupSearchInputActive;
+    RECT rect{};
+    if (GetWindowRect(g_app->popup, &rect)) {
+        g_app->popupRestoreX = rect.left;
+        g_app->popupRestoreY = rect.top;
+    } else {
+        g_app->popupRestoreX = 0;
+        g_app->popupRestoreY = 0;
+    }
+}
+
+// 编辑会话结束后按快照重建历史窗口，恢复位置、滚动、搜索词与搜索聚焦标志。
+void reopenPopupAfterEditor() {
+    if (!g_app || !g_app->popupRestorePending) return;
+    g_app->popupRestorePending = false;
+    const int scroll = g_app->popupRestoreScroll;
+    const int filterScroll = g_app->popupRestoreFilterScroll;
+    const int selected = g_app->popupRestoreSelected;
+    const std::string query = g_app->popupRestoreQuery;
+    const bool searchActive = g_app->popupRestoreSearchActive;
+    const int x = g_app->popupRestoreX;
+    const int y = g_app->popupRestoreY;
+    showPopup();
+    if (!g_app->popup) return;
+    SetWindowPos(g_app->popup, nullptr, x, y, 0, 0,
+                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    g_app->scrollPosition = scroll;
+    g_app->filterScrollOffset = filterScroll;
+    g_app->selected = std::clamp(selected, 0,
+        static_cast<int>(g_app->visible.size()) - 1);
+    if (g_app->searchEdit && !query.empty()) {
+        // 搜索词交由异步搜索重建列表，滚动在搜索完成后恢复。
+        g_app->popupRestoreScrollAfterSearch = true;
+        SetWindowTextW(g_app->searchEdit, utf8ToWide(query).c_str());
+    }
+    // 直接按快照查询词启动搜索，不依赖 SetWindowTextW 的 EN_CHANGE 定时链路。
+    if (!query.empty()) {
+        g_app->query = query;
+        startPopupSearch(g_app->popup);
+    }
+    g_app->popupSearchInputActive = searchActive;
+    updatePopupKeyboardHook();
+    updatePopupMouseHook();
+    if (!g_app->popupRestoreScrollAfterSearch) {
+        setPopupScrollPosition(scroll);
+    }
+    invalidatePopupList(g_app->popup);
+    InvalidateRect(g_app->popup, nullptr, FALSE);
+}
+
+// 保存并粘贴：历史窗口已销毁时直接读取目标记录并粘贴到原目标窗口。
+void pasteRecordById(std::uint64_t recordId) {
+    if (!g_app) return;
+    const HWND target = g_app->targetWindow;
+    if (!IsWindow(target)) {
+        appendDiagnosticLog("WARN", "editor paste: paste target is no longer valid");
+        return;
+    }
+    const std::size_t itemCount = g_app->store.items().size();
+    std::size_t itemIndex = itemCount;
+    for (std::size_t index = 0; index < itemCount; ++index) {
+        if (g_app->store.items()[index].recordId == recordId) {
+            itemIndex = index;
+            break;
+        }
+    }
+    if (itemIndex >= itemCount) {
+        appendDiagnosticLog("WARN", "editor paste: saved record not found");
+        return;
+    }
+    const ClipItem item = g_app->store.items()[itemIndex];
+    if (item.type != ClipType::Text && item.type != ClipType::Html) {
+        appendDiagnosticLog("WARN", "editor paste: unsupported record type");
+        return;
+    }
+    const std::wstring historyPath = g_app->store.path();
+    g_app->pasteLoadPending = true;
+    enqueueStorageJob([itemIndex, item, historyPath, target] {
+        auto* result = new PastePayloadResult;
+        result->popup = nullptr;
+        result->itemIndex = itemIndex;
+        result->item = item;
+        result->target = target;
+        result->keepPopup = false;
+        result->mode = PasteMode::Automatic;
+        result->success = g_app->store.readPayloadSnapshot(historyPath, item, result->payload);
+        if (!PostMessageW(g_app->hidden, kPastePayloadLoadedMessage,
+                          reinterpret_cast<WPARAM>(result), 0)) {
+            delete result;
+        }
+    }, true);
+}
+
+// 编辑窗口显示后切换前台；Windows 10 前台锁定可能拒绝常规切换，用输入队列关联兜底。
+void activateTextEditorWindow() {
+    if (!g_app || !g_app->textEditor || !IsWindow(g_app->textEditor)) return;
+    SetForegroundWindow(g_app->textEditor);
+    if (GetForegroundWindow() != g_app->textEditor) {
+        const HWND foreground = GetForegroundWindow();
+        const DWORD foregroundThread = foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
+        const DWORD currentThread = GetCurrentThreadId();
+        if (foregroundThread != 0 && foregroundThread != currentThread) {
+            AttachThreadInput(currentThread, foregroundThread, TRUE);
+            SetForegroundWindow(g_app->textEditor);
+            AttachThreadInput(currentThread, foregroundThread, FALSE);
+        }
+    }
+    SetActiveWindow(g_app->textEditor);
+    SetFocus(g_app->textEditorEdit);
+}
+
 bool textEditorContainsPoint(POINT point) {
     if (!g_app || !g_app->textEditor || !IsWindowVisible(g_app->textEditor)) return false;
     RECT rect{};
@@ -8388,6 +8579,9 @@ void closeTextEditor(bool restorePopup) {
         SetWindowPos(g_app->popup, HWND_TOPMOST, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
         refreshPopupPointerState(g_app->popup);
+    } else if (restorePopup) {
+        // 编辑会话期间历史窗口已被销毁：按快照重建并恢复位置与滚动状态。
+        reopenPopupAfterEditor();
     }
     shutdownGdiplusIfIdle();
 }
@@ -8503,9 +8697,7 @@ bool createTextEditorWindow(const ClipItem& item, const std::wstring& text) {
                  static_cast<WPARAM>(-1), static_cast<LPARAM>(-1));
     ShowWindow(g_app->textEditor, SW_SHOW);
     UpdateWindow(g_app->textEditor);
-    SetForegroundWindow(g_app->textEditor);
-    SetActiveWindow(g_app->textEditor);
-    SetFocus(g_app->textEditorEdit);
+    activateTextEditorWindow();
     return true;
 }
 
@@ -8606,8 +8798,7 @@ void openTextEditorForSelected() {
     if (g_app->textEditor && IsWindow(g_app->textEditor) &&
         item.recordId == g_app->textEditorRecordId) {
         ShowWindow(g_app->textEditor, SW_SHOWNORMAL);
-        SetForegroundWindow(g_app->textEditor);
-        SetFocus(g_app->textEditorEdit);
+        activateTextEditorWindow();
         return;
     }
     if (g_app->textEditor && !IsWindow(g_app->textEditor)) closeTextEditor(false);
@@ -9411,16 +9602,18 @@ void paintPopupContent(HWND hwnd, HDC dc) {
             DrawTextW(dc, note.c_str(), -1, &noteRect,
                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
         }
-        if (missingFiles) {
-            const RECT missingRect{rowRect.right - ui(132), y + ui(5),
-                                   rowRect.right - ui(28), y + ui(23)};
+        SelectObject(dc, metaFont);
+        const RECT missingRect{rowRect.right - ui(132), y + ui(5),
+                               rowRect.right - ui(28), y + ui(23)};
+        const bool missingTagVisible = missingRect.top >= ui(kPopupListTop) &&
+            missingRect.bottom <= listBottom;
+        if (missingFiles && missingTagVisible) {
             drawMetadataTag(dc, missingRect,
                             tr(L"File missing", L"文件已不存在"),
                             settingsModeColor(RGB(254, 226, 226), RGB(76, 52, 56)),
                             settingsModeColor(RGB(252, 165, 165), RGB(130, 77, 83)),
                             themeColor(ThemeColorRole::Error), 3);
         }
-        SelectObject(dc, metaFont);
         const wchar_t* kind = automaticTypeLabel(item.type);
         SetTextColor(dc, secondary);
         const std::wstring source = item.source.empty()
@@ -10935,6 +11128,7 @@ void openFilterSubmenu(int submenu) {
 
 void showPopupFilterMenu(HWND hwnd) {
     closePopupContextMenu();
+    deactivatePopupSearchFocus();
     if (g_app->filterMenuOpen) {
         closeFilterMenu();
         return;
@@ -11532,6 +11726,7 @@ void showPopupContextMenu(HWND hwnd, int row) {
     closePopupNoteEdit(false);
     closeFilterMenu();
     closePopupContextMenu();
+    deactivatePopupSearchFocus();
     hideDetailPreview();
     KillTimer(hwnd, kPopupPreviewHoverTimer);
     KillTimer(hwnd, kPopupPreviewHideTimer);
@@ -13656,6 +13851,12 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         g_app->searchCancellation.reset();
         g_app->searchCandidates = std::move(result->candidates);
         applyVisibleCandidates(g_app->searchCandidates);
+        if (g_app->popupRestoreScrollAfterSearch) {
+            // 搜索词恢复触发的重建搜索完成后，再还原编辑会话前的滚动位置。
+            g_app->popupRestoreScrollAfterSearch = false;
+            setPopupScrollPosition(g_app->popupRestoreScroll);
+            invalidatePopupList(g_app->popup);
+        }
         return 0;
     }
     if (message == kStoreChangedMessage) {
@@ -13703,17 +13904,20 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             refreshTextEditorNotice();
             setTextEditorEnabled(true);
             ShowWindow(g_app->textEditor, SW_SHOWNORMAL);
-            SetForegroundWindow(g_app->textEditor);
-            SetFocus(g_app->textEditorEdit);
-            if (g_app->popup) ShowWindow(g_app->popup, SW_HIDE);
+            // 直接销毁弹窗：隐藏前台窗口只会让系统前台悬空在 NOACTIVATE 弹窗上，
+            // 之后任何前台 API 都会失效；销毁才会触发完整的系统激活转移。
+            capturePopupRestoreState();
+            closePopup();
+            activateTextEditorWindow();
             return 0;
         }
+        capturePopupRestoreState();
+        closePopup();
         if (!createTextEditorWindow(result->item, text)) {
             showTextEditorFailure();
             closeTextEditor();
             return 0;
         }
-        if (g_app->popup) ShowWindow(g_app->popup, SW_HIDE);
         return 0;
     }
     if (message == kTextEditorSavedMessage) {
@@ -13745,6 +13949,11 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
             invalidatePopupList(g_app->popup);
             if (saveAndPaste) sendPaste();
+        } else if (saveAndPaste) {
+            // 历史窗口已随编辑会话销毁：直接把保存后的记录粘贴到原目标窗口。
+            pasteRecordById(savedRecordId);
+        } else {
+            reopenPopupAfterEditor();
         }
         return 0;
     }
@@ -13753,7 +13962,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             reinterpret_cast<PastePayloadResult*>(wParam));
         if (!result || !g_app->pasteLoadPending) return 0;
         g_app->pasteLoadPending = false;
-        if (g_app->popup != result->popup) return 0;
+        if (result->popup != nullptr && g_app->popup != result->popup) return 0;
         completePaste(*result);
         return 0;
     }
