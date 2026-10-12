@@ -974,9 +974,8 @@ void refreshSettingsFrame(HWND hwnd);
 void fillSettingsControlBackdrop(HDC dc, const RECT& rect);
 void openTextEditorForSelected();
 void closeTextEditor(bool restorePopup = true);
-LRESULT CALLBACK textEditorEditSubclass(HWND hwnd, UINT message, WPARAM wParam,
-                                        LPARAM lParam, UINT_PTR subclassId,
-                                        DWORD_PTR refData);
+LRESULT CALLBACK textEditorEditProc(HWND hwnd, UINT message, WPARAM wParam,
+                                    LPARAM lParam);
 LRESULT CALLBACK textEditorButtonSubclass(HWND hwnd, UINT message, WPARAM wParam,
                                           LPARAM lParam, UINT_PTR subclassId,
                                           DWORD_PTR refData);
@@ -8219,22 +8218,6 @@ void closeTextEditor(bool restorePopup) {
     shutdownGdiplusIfIdle();
 }
 
-void activateTextEditor() {
-    if (!g_app || !g_app->textEditor || !g_app->textEditorEdit ||
-        !IsWindow(g_app->textEditor) || !IsWindow(g_app->textEditorEdit)) return;
-    const DWORD currentThread = GetCurrentThreadId();
-    const HWND foreground = GetForegroundWindow();
-    const DWORD foregroundThread = foreground
-        ? GetWindowThreadProcessId(foreground, nullptr) : 0;
-    const bool attached = foregroundThread != 0 && foregroundThread != currentThread &&
-        AttachThreadInput(currentThread, foregroundThread, TRUE) != FALSE;
-    ShowWindow(g_app->textEditor, SW_SHOWNORMAL);
-    SetForegroundWindow(g_app->textEditor);
-    SetActiveWindow(g_app->textEditor);
-    SetFocus(g_app->textEditorEdit);
-    if (attached) AttachThreadInput(currentThread, foregroundThread, FALSE);
-}
-
 bool createTextEditorWindow(const ClipItem& item, const std::wstring& text) {
     if (!g_app || g_app->textEditor || !ensureGdiplus()) return false;
 
@@ -8251,7 +8234,8 @@ bool createTextEditorWindow(const ClipItem& item, const std::wstring& text) {
     const int y = monitorInfo.rcWork.top +
         (monitorInfo.rcWork.bottom - monitorInfo.rcWork.top - height) / 2;
     g_app->textEditor = CreateWindowExW(
-        WS_EX_APPWINDOW, L"ClipLiteTextEditor", tr(L"Edit clipboard text", L"编辑剪贴板文本"),
+        WS_EX_APPWINDOW | WS_EX_COMPOSITED, L"ClipLiteTextEditor",
+        tr(L"Edit clipboard text", L"编辑剪贴板文本"),
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX |
             WS_THICKFRAME | WS_CLIPCHILDREN,
         x, y, width, height, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -8271,8 +8255,8 @@ bool createTextEditorWindow(const ClipItem& item, const std::wstring& text) {
         g_app->textEditor, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextEditorNotice)),
         GetModuleHandleW(nullptr), nullptr);
     g_app->textEditorEdit = CreateWindowExW(
-        WS_EX_CLIENTEDGE, L"EDIT", L"",
-        WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE |
+        0, L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | ES_MULTILINE |
             ES_AUTOVSCROLL | ES_WANTRETURN | ES_NOHIDESEL,
         0, 0, 0, 0, g_app->textEditor,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTextEditorEdit)),
@@ -8285,7 +8269,11 @@ bool createTextEditorWindow(const ClipItem& item, const std::wstring& text) {
         UnhookWindowsHookEx(g_app->popupKeyboardHook);
         g_app->popupKeyboardHook = nullptr;
     }
-    SetWindowSubclass(g_app->textEditorEdit, textEditorEditSubclass, 1, 0);
+    const WNDPROC oldEditProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
+        g_app->textEditorEdit, GWLP_WNDPROC,
+        reinterpret_cast<LONG_PTR>(textEditorEditProc)));
+    SetPropW(g_app->textEditorEdit, L"ClipLiteTextEditorOldProc",
+             reinterpret_cast<HANDLE>(oldEditProc));
     SendMessageW(g_app->textEditorEdit, WM_SETFONT,
                  reinterpret_cast<WPARAM>(g_app->textEditorFont), TRUE);
     SendMessageW(g_app->textEditorEdit, EM_SETLIMITTEXT,
@@ -8339,8 +8327,11 @@ bool createTextEditorWindow(const ClipItem& item, const std::wstring& text) {
     SetWindowTextW(g_app->textEditorEdit, text.c_str());
     SendMessageW(g_app->textEditorEdit, EM_SETSEL,
                  static_cast<WPARAM>(-1), static_cast<LPARAM>(-1));
+    ShowWindow(g_app->textEditor, SW_SHOW);
     UpdateWindow(g_app->textEditor);
-    activateTextEditor();
+    SetForegroundWindow(g_app->textEditor);
+    SetActiveWindow(g_app->textEditor);
+    SetFocus(g_app->textEditorEdit);
     return true;
 }
 
@@ -8440,7 +8431,9 @@ void openTextEditorForSelected() {
 
     if (g_app->textEditor && IsWindow(g_app->textEditor) &&
         item.recordId == g_app->textEditorRecordId) {
-        activateTextEditor();
+        ShowWindow(g_app->textEditor, SW_SHOWNORMAL);
+        SetForegroundWindow(g_app->textEditor);
+        SetFocus(g_app->textEditorEdit);
         return;
     }
     if (g_app->textEditor && !IsWindow(g_app->textEditor)) closeTextEditor(false);
@@ -8451,12 +8444,47 @@ void openTextEditorForSelected() {
     if (g_app->textEditor) ShowWindow(g_app->textEditor, SW_HIDE);
 }
 
-LRESULT CALLBACK textEditorEditSubclass(HWND hwnd, UINT message, WPARAM wParam,
-                                        LPARAM lParam, UINT_PTR subclassId,
-                                        DWORD_PTR refData) {
-    (void)refData;
-    if (message == WM_KEYDOWN) {
+LRESULT CALLBACK textEditorEditProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    const WNDPROC oldProc = reinterpret_cast<WNDPROC>(GetPropW(
+        hwnd, L"ClipLiteTextEditorOldProc"));
+    if (!oldProc) return DefWindowProcW(hwnd, message, wParam, lParam);
+    if (message == WM_ERASEBKGND) return 1;
+    if (message == WM_PAINT) {
+        PAINTSTRUCT paint{};
+        HDC target = BeginPaint(hwnd, &paint);
+        RECT client{};
+        GetClientRect(hwnd, &client);
+        const int width = client.right - client.left;
+        const int height = client.bottom - client.top;
+        HDC buffer = width > 0 && height > 0 ? CreateCompatibleDC(target) : nullptr;
+        HBITMAP bitmap = buffer ? CreateCompatibleBitmap(target, width, height) : nullptr;
+        if (target && buffer && bitmap) {
+            HGDIOBJ oldBitmap = SelectObject(buffer, bitmap);
+            configureTextRendering(buffer);
+            const COLORREF background = highContrastEnabled()
+                ? GetSysColor(COLOR_WINDOW) : themeColor(ThemeColorRole::InputBackground);
+            HBRUSH backgroundBrush = CreateSolidBrush(background);
+            FillRect(buffer, &client, backgroundBrush);
+            DeleteObject(backgroundBrush);
+            CallWindowProcW(oldProc, hwnd, WM_PRINTCLIENT,
+                            reinterpret_cast<WPARAM>(buffer), PRF_CLIENT);
+            BitBlt(target, 0, 0, width, height, buffer, 0, 0, SRCCOPY);
+            SelectObject(buffer, oldBitmap);
+        } else if (target) {
+            CallWindowProcW(oldProc, hwnd, WM_PRINTCLIENT,
+                            reinterpret_cast<WPARAM>(target), PRF_CLIENT);
+        }
+        if (bitmap) DeleteObject(bitmap);
+        if (buffer) DeleteDC(buffer);
+        EndPaint(hwnd, &paint);
+        return 0;
+    }
+    if (message == WM_KEYDOWN || message == WM_SYSKEYDOWN) {
         const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        if (control && wParam == 'A') {
+            SendMessageW(hwnd, EM_SETSEL, 0, static_cast<LPARAM>(-1));
+            return 0;
+        }
         if (control && wParam == 'S') {
             SendMessageW(GetParent(hwnd), WM_COMMAND,
                          static_cast<WPARAM>(kTextEditorSave), 0);
@@ -8473,8 +8501,12 @@ LRESULT CALLBACK textEditorEditSubclass(HWND hwnd, UINT message, WPARAM wParam,
             return 0;
         }
     }
-    if (message == WM_NCDESTROY) RemoveWindowSubclass(hwnd, textEditorEditSubclass, subclassId);
-    return DefSubclassProc(hwnd, message, wParam, lParam);
+    if (message == WM_NCDESTROY) {
+        const LRESULT result = CallWindowProcW(oldProc, hwnd, message, wParam, lParam);
+        RemovePropW(hwnd, L"ClipLiteTextEditorOldProc");
+        return result;
+    }
+    return CallWindowProcW(oldProc, hwnd, message, wParam, lParam);
 }
 
 LRESULT CALLBACK textEditorButtonSubclass(HWND hwnd, UINT message, WPARAM wParam,
@@ -13276,7 +13308,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                          static_cast<WPARAM>(-1), static_cast<LPARAM>(-1));
             refreshTextEditorNotice();
             setTextEditorEnabled(true);
-            activateTextEditor();
+            ShowWindow(g_app->textEditor, SW_SHOWNORMAL);
+            SetForegroundWindow(g_app->textEditor);
+            SetFocus(g_app->textEditorEdit);
             if (g_app->popup) ShowWindow(g_app->popup, SW_HIDE);
             return 0;
         }
@@ -13417,8 +13451,12 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         if (message == WM_CTLCOLOREDIT) {
             HDC dc = reinterpret_cast<HDC>(wParam);
-            SetBkColor(dc, themeColor(ThemeColorRole::InputBackground));
-            SetTextColor(dc, themeColor(ThemeColorRole::Text));
+            SetBkMode(dc, OPAQUE);
+            const COLORREF background = highContrastEnabled()
+                ? GetSysColor(COLOR_WINDOW) : themeColor(ThemeColorRole::InputBackground);
+            SetBkColor(dc, background);
+            SetTextColor(dc, highContrastEnabled()
+                ? GetSysColor(COLOR_WINDOWTEXT) : themeColor(ThemeColorRole::Text));
             return reinterpret_cast<LRESULT>(g_app->textEditorInputBrush
                 ? g_app->textEditorInputBrush : GetSysColorBrush(COLOR_WINDOW));
         }
