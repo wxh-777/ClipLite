@@ -82,6 +82,8 @@ public:
     bool clearType(ClipType type);
     bool clearUnfavorited(bool protectPinned = false);
     bool clearTypeUnfavorited(ClipType type);
+    bool clearCategory(std::uint8_t category, bool favoritesOnly,
+                      bool protectPinned, bool protectFavorites);
     bool pruneExpired(std::uint64_t timestamp);
     bool compactIfNeeded(bool force = false);
 

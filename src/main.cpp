@@ -11033,9 +11033,19 @@ bool clearUnusedThumbnails() {
 void clearPopupHistory(int command) {
     const HWND hwnd = g_app->popup;
     std::size_t count = 0;
+    const wchar_t* categoryLabel = g_app->favoritesOnly
+        ? tr(L"Favorites", L"收藏")
+        : g_app->filterType == 0 ? tr(L"All", L"全部")
+        : g_app->filterType == 1 ? tr(L"Text", L"文本")
+        : g_app->filterType == 2 ? tr(L"Images", L"图片")
+        : g_app->filterType == 3 ? tr(L"Files", L"文件")
+        : tr(L"Other", L"其他");
     for (const ClipItem& item : g_app->store.items()) {
-        if (command == kMenuClearAll ||
-            (!item.favorite && (command == kMenuClearUnfavorited || !item.pinned))) ++count;
+        const bool categoryMatches = isAutomaticTypeMatch(g_app->filterType, item.type);
+        const bool favoritesMatches = !g_app->favoritesOnly || item.favorite;
+        const bool protectionMatches = command == kMenuClearAll ||
+            (!item.favorite && (command == kMenuClearUnfavorited || !item.pinned));
+        if (categoryMatches && favoritesMatches && protectionMatches) ++count;
     }
     const wchar_t* scope = command == kMenuClearOrdinary
         ? tr(L"Pinned and favorite records will be kept.", L"将保留所有置顶和收藏记录。")
@@ -11045,15 +11055,21 @@ void clearPopupHistory(int command) {
             : tr(L"All records, including pinned and favorite records, will be deleted.",
                  L"所有记录都将删除，包括置顶和收藏记录。");
     wchar_t message[512]{};
-    swprintf_s(message, tr(L"Permanently delete %zu records from the entire history?\n\n%ls\n\nThis cannot be undone. Continue?",
-                          L"将从全部历史中永久删除 %zu 条记录。\n\n%ls\n\n此操作无法撤销，是否继续？"), count, scope);
+    if (languageIsChinese()) {
+        swprintf_s(message, L"将从当前“%ls”分类中永久删除 %zu 条记录。\n\n%ls\n\n此操作无法撤销，是否继续？",
+                   categoryLabel, count, scope);
+    } else {
+        swprintf_s(message, L"Permanently delete %zu records from the current \"%ls\" category?\n\n%ls\n\nThis cannot be undone. Continue?",
+                   count, categoryLabel, scope);
+    }
     g_app->popupConfirmingClear = true;
     KillTimer(hwnd, kPopupDeactivateTimer);
     const int answer = MessageBoxW(hwnd, message, settingsLocale().confirmClearTitle,
                                   MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
     if (answer == IDYES) {
-        const bool success = command == kMenuClearAll ? g_app->store.clear()
-            : g_app->store.clearUnfavorited(command == kMenuClearOrdinary);
+        const bool success = g_app->store.clearCategory(
+            static_cast<std::uint8_t>(g_app->filterType), g_app->favoritesOnly,
+            command == kMenuClearOrdinary, command != kMenuClearAll);
         if (success) {
             const bool cacheCleared = clearUnusedThumbnails();
             refreshVisible(true);

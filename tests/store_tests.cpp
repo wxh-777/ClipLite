@@ -350,6 +350,20 @@ int main() {
     formatsReopened.clear();
     formats.clear();
 
+    ClipStore categoryClear(10);
+    categoryClear.open();
+    categoryClear.clear();
+    if (!categoryClear.append(ClipType::Text, "category-text", clipLiteHash("category-text")) ||
+        !categoryClear.append(ClipType::Image, "category-image", clipLiteHash("category-image")) ||
+        !categoryClear.append(ClipType::Files, "category-files", clipLiteHash("category-files")) ||
+        !categoryClear.append(ClipType::Html, "<p>category-html</p>",
+                              clipLiteHash("<p>category-html</p>"))) return 287;
+    if (!categoryClear.clearCategory(1, false, false, false) ||
+        categoryClear.activeCount() != 2 ||
+        categoryClear.countType(ClipType::Image) != 1 ||
+        categoryClear.countType(ClipType::Files) != 1) return 288;
+    categoryClear.clear();
+
     ClipStore unicode(10);
     unicode.open();
     unicode.clear();

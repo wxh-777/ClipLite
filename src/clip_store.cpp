@@ -1792,6 +1792,25 @@ bool ClipStore::clearTypeUnfavorited(ClipType type) {
     return removeItems(removed);
 }
 
+bool ClipStore::clearCategory(std::uint8_t category, bool favoritesOnly,
+                              bool protectPinned, bool protectFavorites) {
+    std::vector<ClipItem> removed;
+    for (const ClipItem& item : items_) {
+        const bool categoryMatches = category == 0 ||
+            (category == 1 && matchesType(ClipType::Text, item.type)) ||
+            (category == 2 && matchesType(ClipType::Image, item.type)) ||
+            (category == 3 && item.type == ClipType::Files) ||
+            (category == 4 && item.type != ClipType::Text &&
+             !matchesType(ClipType::Image, item.type) && item.type != ClipType::Files &&
+             item.type != ClipType::Html);
+        if (categoryMatches && (!favoritesOnly || item.favorite) &&
+            (!protectFavorites || !item.favorite) && (!protectPinned || !item.pinned)) {
+            removed.push_back(item);
+        }
+    }
+    return removeItems(removed);
+}
+
 bool ClipStore::pruneExpired(std::uint64_t timestamp) {
     if (timestamp == 0 || items_.empty()) return true;
     std::vector<ClipItem> removed;
