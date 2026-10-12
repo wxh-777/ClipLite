@@ -36,7 +36,7 @@ ClipLite was designed to be more restrained: keep the program small, use less me
 - Favorites appear in other type-filtered lists by default; pinned items always respect the selected type. Favorite cross-category display can be disabled in Settings; All and Favorites filters remain unaffected.
 - Source application filtering, sensitive text expiry, and optional Windows DPAPI user encryption.
 - Installer and portable distribution modes; clipboard archiving, history reads, and usage statistics run through short-lived worker tasks without keeping the full history payload in memory.
-- The About page opens the GitHub source and checks GitHub Releases. ClipLite also performs one background update check after startup without blocking clipboard features.
+- The About page opens the GitHub source and checks GitHub Releases manually. Automatic update checks are disabled by default and can be enabled in Settings; when enabled, ClipLite checks in the background after startup without blocking clipboard features. New versions are shown as a tray notification, and clicking it opens the download page.
 - Update checks support a proxy prefix such as `https://gh-proxy.com`; GitHub API and installer URLs are composed as `https://gh-proxy.com/https://github.com/...`. Leave it empty to connect directly.
 - Portable mode matches and opens `ClipLite-*-portable-win-x64.zip`, while installed mode matches `ClipLite-Setup-*.exe`. Keep the portable package's `data\\` directory when replacing the application.
 - The history window does not take input focus from the original application; left-clicking an item pastes it without requiring the input field to be selected again.

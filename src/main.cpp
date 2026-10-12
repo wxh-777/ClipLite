@@ -104,6 +104,7 @@ constexpr int kSettingJoinQqGroup = 44;
 constexpr int kSettingOpenSource = 76;
 constexpr int kSettingCheckUpdate = 77;
 constexpr int kSettingUpdateProxy = 78;
+constexpr int kSettingAutoCheckUpdate = 80;
 constexpr int kSettingSearchOnOpen = 79;
 constexpr int kSettingSearchImeCompatibility = 45;
 constexpr int kSettingPromotePastedItem = 46;
@@ -180,6 +181,7 @@ constexpr int kFilterReset = 710;
 constexpr int kStorageCategoryCount = 3;
 constexpr UINT kShowPopupMessage = WM_APP + 1;
 constexpr UINT kTrayMessage = WM_APP + 2;
+constexpr UINT kTrayBalloonUserClicked = WM_USER + 5;
 constexpr UINT kShowSettingsMessage = WM_APP + 3;
 constexpr UINT kExitMessage = WM_APP + 4;
 constexpr UINT kClosePopupMessage = WM_APP + 5;
@@ -361,6 +363,7 @@ struct Settings {
     std::vector<std::string> ignoredApps;
     int sensitiveExpiryHours = 0;
     std::string updateProxy;
+    bool autoCheckUpdate = false;
     int language = -1; // -1 system, 0 English, 1 Simplified Chinese
     std::vector<std::string> categories{"General", "Work", "Code", "Links"};
     ShortcutBinding historyHotkey{MOD_ALT, 'V'};
@@ -632,6 +635,7 @@ struct AppState {
     ClipItem textEditorPendingItem;
     ClipItem textEditorItem;
     bool updateCheckRunning = false;
+    std::wstring pendingUpdateUrl;
     int settingsTab = 0;
     std::wstring settingsActionFeedback;
     bool settingsActionFeedbackSuccess = true;
@@ -1683,6 +1687,8 @@ void loadSettings(Settings& settings) {
                 settings.updateProxy.pop_back();
             }
         }
+        if (std::strncmp(line, "autoCheckUpdate=1", 18) == 0) settings.autoCheckUpdate = true;
+        if (std::strncmp(line, "autoCheckUpdate=0", 18) == 0) settings.autoCheckUpdate = false;
         for (int i = 0; i < 4; ++i) {
             const std::string prefix = "category" + std::to_string(i) + "=";
             if (std::strncmp(line, prefix.c_str(), prefix.size()) == 0) {
@@ -1825,9 +1831,10 @@ void saveSettings(const Settings& settings) {
            << "maxDiskMb=" << settings.maxDiskMb << "\n"
            << "maxContentMb=" << settings.maxContentMb << "\n"
            << "dataDirectory=" << settings.dataDirectory << "\n"
-           << "sensitiveExpiryHours=" << settings.sensitiveExpiryHours << "\n"
-           << "updateProxy=" << settings.updateProxy << "\n"
-           << "language=" << settings.language << "\n"
+            << "sensitiveExpiryHours=" << settings.sensitiveExpiryHours << "\n"
+            << "updateProxy=" << settings.updateProxy << "\n"
+            << "autoCheckUpdate=" << (settings.autoCheckUpdate ? 1 : 0) << "\n"
+            << "language=" << settings.language << "\n"
            << "shortcutHistoryModifiers=" << settings.historyHotkey.modifiers << "\n"
            << "shortcutHistoryKey=" << settings.historyHotkey.virtualKey << "\n"
            << "shortcutSettingsModifiers=" << settings.settingsHotkey.modifiers << "\n"
@@ -7865,13 +7872,16 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
     } else {
         makeCard(settingsLocale().about, {
             makeSettingsRow(hwnd, tr(L"Update proxy (optional)", L"更新代理地址（可选）"),
-                            {kSettingUpdateProxy}, {360}, {30}, contentWidth),
+                             {kSettingUpdateProxy}, {360}, {30}, contentWidth),
+            makeSettingsRow(hwnd, tr(L"Check for updates automatically", L"自动检查更新"),
+                             {kSettingAutoCheckUpdate}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, nullptr,
                             {kSettingOpenSource, kSettingCheckUpdate}, {128, 128}, {30, 30}, contentWidth)
         }, 240);
         SettingsCardLayout& aboutCard = layout.cards.back();
         aboutCard.rows[0].top = aboutCard.top + 274;
         aboutCard.rows[1].top = aboutCard.top + 326;
+        aboutCard.rows[2].top = aboutCard.top + 378;
     }
     const int controlRight = clientWidth - kSettingsBodyMargin - 14 - scrollbarReserve;
     for (SettingsCardLayout& card : layout.cards) {
@@ -7921,7 +7931,8 @@ bool settingsTabIsScrollable() {
     return g_app && (g_app->settingsTab == 0 ||
                      g_app->settingsTab == kSettingsAppearancePage ||
                      g_app->settingsTab == kSettingsShortcutPage ||
-                     g_app->settingsTab == kSettingsStoragePage);
+                     g_app->settingsTab == kSettingsStoragePage ||
+                     g_app->settingsTab == kSettingsAboutPage);
 }
 
 // 计算设置页右侧滚动条的轨道、滑块和最大滚动距离。
@@ -8507,6 +8518,26 @@ LRESULT CALLBACK textEditorEditProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
         return result;
     }
     return CallWindowProcW(oldProc, hwnd, message, wParam, lParam);
+}
+
+void showUpdateNotification(const UpdateCheckResult& result) {
+    if (!g_app || !g_app->hidden || result.downloadUrl.empty()) return;
+    g_app->pendingUpdateUrl = updateUrlWithProxy(result.downloadUrl,
+                                                  g_app->settingsData.updateProxy);
+    NOTIFYICONDATAW icon{};
+    icon.cbSize = sizeof(icon);
+    icon.hWnd = g_app->hidden;
+    icon.uID = kTrayId;
+    icon.uFlags = NIF_INFO;
+    wcscpy_s(icon.szInfoTitle, tr(L"Update available", L"发现新版本"));
+    const std::wstring version = utf8ToWide(result.version);
+    const std::wstring message = tr(L"ClipLite ", L"发现 ClipLite ") + version +
+        tr(L" is available. Click to open the download page.", L"，点击打开下载页面。");
+    wcsncpy_s(icon.szInfo, message.c_str(), _TRUNCATE);
+    icon.dwInfoFlags = NIIF_INFO;
+    if (!Shell_NotifyIconW(NIM_MODIFY, &icon)) {
+        appendDiagnosticLog("WARN", "update: unable to show tray notification", GetLastError());
+    }
 }
 
 LRESULT CALLBACK textEditorButtonSubclass(HWND hwnd, UINT message, WPARAM wParam,
@@ -10029,15 +10060,16 @@ void createSettingsControlsModern(HWND hwnd) {
                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingUpdateProxy)),
                      GetModuleHandleW(nullptr), nullptr);
     SendMessageW(settingsControl(hwnd, kSettingUpdateProxy), EM_SETCUEBANNER, FALSE,
-                 reinterpret_cast<LPARAM>(L"https://gh-proxy.com"));
+                  reinterpret_cast<LPARAM>(L"https://gh-proxy.com"));
+    createToggle(kSettingAutoCheckUpdate, 680, 458, g_app->settingsData.autoCheckUpdate);
     CreateWindowW(L"BUTTON", tr(L"Open source", L"打开源码"),
                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                  ui(520 - kSettingsSidebarWidth), ui(458 - kSettingsHeaderHeight), ui(128), ui(30), parent,
+                   ui(520 - kSettingsSidebarWidth), ui(498 - kSettingsHeaderHeight), ui(128), ui(30), parent,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingOpenSource)),
                   GetModuleHandleW(nullptr), nullptr);
     CreateWindowW(L"BUTTON", tr(L"Check for updates", L"检查更新"),
                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                  ui(680 - kSettingsSidebarWidth), ui(458 - kSettingsHeaderHeight), ui(128), ui(30), parent,
+                   ui(680 - kSettingsSidebarWidth), ui(498 - kSettingsHeaderHeight), ui(128), ui(30), parent,
                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingCheckUpdate)),
                   GetModuleHandleW(nullptr), nullptr);
 }
@@ -10111,7 +10143,8 @@ void updateSettingsTabControls(HWND hwnd, bool redraw) {
                           kSettingIgnoredApps, kSettingSensitiveExpiry, kSettingClear,
                              kSettingClearText, kSettingClearImage, kSettingClearFiles,
                           kSettingOpenLog, kSettingSupportAuthor, kSettingJoinQqGroup,
-                              kSettingOpenSource, kSettingCheckUpdate, kSettingUpdateProxy,
+                             kSettingOpenSource, kSettingCheckUpdate, kSettingUpdateProxy,
+                              kSettingAutoCheckUpdate,
                              kSettingShortcutPreview, kSettingShortcutHistory,
                           kSettingShortcutSettings, kSettingShortcutPause,
                           kSettingShortcutPaste, kSettingShortcutPastePlain,
@@ -10207,7 +10240,7 @@ void updateSettingsTabControls(HWND hwnd, bool redraw) {
         show(kSettingOpenLog, 268, 298, 128, 30);
         show(kSettingSupportAuthor, 408, 298, 128, 30);
         show(kSettingJoinQqGroup, 548, 298, 128, 30);
-        const int updateTop = layout.cards.back().rows[1].top;
+        const int updateTop = layout.cards.back().rows[2].top;
         show(kSettingOpenSource, 408, updateTop, 128, 30);
         show(kSettingCheckUpdate, 548, updateTop, 128, 30);
     }
@@ -11321,7 +11354,8 @@ void refreshSystemTheme() {
 bool isSettingsToggle(int id) {
     return id == kSettingWinV || id == kSettingPause ||
            id == kSettingStartup || id == kSettingStartupSettings ||
-           id == kSettingStartupNotification || id == kSettingRunAsAdministrator ||
+            id == kSettingStartupNotification || id == kSettingRunAsAdministrator ||
+            id == kSettingAutoCheckUpdate ||
             id == kSettingSearchImeCompatibility || id == kSettingSearchOnOpen ||
             id == kSettingRememberPopupFilter ||
             id == kSettingPromotePastedItem ||
@@ -11613,6 +11647,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     HWND startup = settingsControl(hwnd, kSettingStartup);
     HWND startupSettings = settingsControl(hwnd, kSettingStartupSettings);
     HWND startupNotification = settingsControl(hwnd, kSettingStartupNotification);
+    HWND autoCheckUpdate = settingsControl(hwnd, kSettingAutoCheckUpdate);
     HWND runAsAdministrator = settingsControl(hwnd, kSettingRunAsAdministrator);
     HWND searchImeCompatibility = settingsControl(hwnd, kSettingSearchImeCompatibility);
     HWND searchOnOpen = settingsControl(hwnd, kSettingSearchOnOpen);
@@ -11631,7 +11666,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     }
     if (!win || !language || !pause || !maxItems || !retentionDays || !maxDiskMb ||
         !maxContentMb || !dataDirectory || !updateProxy || !ignoredApps || !sensitiveExpiry || !startup ||
-        !startupSettings || !startupNotification || !runAsAdministrator ||
+         !startupSettings || !startupNotification || !autoCheckUpdate || !runAsAdministrator ||
           !searchImeCompatibility || !searchOnOpen || !rememberPopupFilter || !promotePastedItem ||
           !previewAutomatic ||
           !previewByKey || !protectPinnedCleanup || !specialAcrossCategories || !encrypt) {
@@ -11647,6 +11682,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     next.startWithWindows = settingsToggleValue(startup);
     next.showSettingsOnStartup = settingsToggleValue(startupSettings);
     next.showStartupNotification = settingsToggleValue(startupNotification);
+    next.autoCheckUpdate = settingsToggleValue(autoCheckUpdate);
     next.runAsAdministrator = settingsToggleValue(runAsAdministrator);
     next.searchImeCompatibility = settingsToggleValue(searchImeCompatibility);
     next.searchOnOpen = settingsToggleValue(searchOnOpen);
@@ -11774,6 +11810,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     const bool startupSettingsChanged = next.showSettingsOnStartup != previous.showSettingsOnStartup;
     const bool startupNotificationChanged =
         next.showStartupNotification != previous.showStartupNotification;
+    const bool autoCheckUpdateChanged = next.autoCheckUpdate != previous.autoCheckUpdate;
     const bool adminModeChanged = next.runAsAdministrator != previous.runAsAdministrator;
     const bool searchImeCompatibilityChanged =
         next.searchImeCompatibility != previous.searchImeCompatibility;
@@ -11795,7 +11832,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     const bool categoryLimitsChanged = next.categoryLimits != previous.categoryLimits;
     const bool languageChanged = next.language != previous.language;
     const bool changed = winVChanged || startupChanged ||
-        startupSettingsChanged || startupNotificationChanged || adminModeChanged || maxItemsChanged ||
+        startupSettingsChanged || startupNotificationChanged || autoCheckUpdateChanged || adminModeChanged || maxItemsChanged ||
         retentionChanged || maxDiskChanged || maxContentChanged || categoryLimitsChanged ||
         next.pauseMonitoring != previous.pauseMonitoring ||
         next.encryptData != previous.encryptData || next.language != previous.language ||
@@ -13403,19 +13440,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             return 0;
         }
-        const wchar_t* messageText = result->portable
-            ? tr(L"ClipLite %ls is available. Open the portable package download?",
-                 L"发现 ClipLite %ls，是否打开便携版下载地址？")
-            : tr(L"ClipLite %ls is available. Open the installer download?",
-                 L"发现 ClipLite %ls，是否打开安装包下载地址？");
-        wchar_t formatted[512]{};
-        swprintf_s(formatted, messageText, utf8ToWide(result->version).c_str());
-        if (MessageBoxW(g_app->settings, formatted,
-                tr(L"Update available", L"发现新版本"), MB_YESNO | MB_ICONINFORMATION) == IDYES) {
-            const std::wstring url = updateUrlWithProxy(result->downloadUrl,
-                                                        g_app->settingsData.updateProxy);
-            ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-        }
+        showUpdateNotification(*result);
         return 0;
     }
     if (textEditorWindow) {
@@ -14396,6 +14421,11 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == kTrayMessage) {
             if (lParam == WM_LBUTTONUP || lParam == WM_LBUTTONDBLCLK) showPopup();
             else if (lParam == WM_RBUTTONUP) showTrayMenu();
+            else if (lParam == kTrayBalloonUserClicked && !g_app->pendingUpdateUrl.empty()) {
+                ShellExecuteW(nullptr, L"open", g_app->pendingUpdateUrl.c_str(),
+                              nullptr, nullptr, SW_SHOWNORMAL);
+                g_app->pendingUpdateUrl.clear();
+            }
             return 0;
         }
         if (message == kClosePopupMessage) {
@@ -16257,7 +16287,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     } else if (commandSettings || app.settingsData.showSettingsOnStartup) {
         PostMessageW(app.hidden, kShowSettingsMessage, 0, 0);
     }
-    if (!commandImageBenchmark) startUpdateCheck(false);
+    if (!commandImageBenchmark && app.settingsData.autoCheckUpdate) startUpdateCheck(false);
     appendDiagnosticLog("INFO", "startup: initialization completed");
 
     MSG message{};
