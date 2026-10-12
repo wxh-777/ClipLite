@@ -166,6 +166,7 @@ constexpr int kMenuPopupDensityCompact = 121;
 constexpr int kMenuPopupDensityStandard = 122;
 constexpr int kMenuPopupDensityAdaptive = 123;
 constexpr int kMenuPopupDensity = 124;
+constexpr int kMenuCustomizeMenu = 125;
 constexpr int kFilterAll = 130;
 constexpr int kFilterText = 131;
 constexpr int kFilterFiles = 132;
@@ -331,6 +332,30 @@ constexpr wchar_t kSourceUrl[] = L"https://github.com/wxh-777/ClipLite";
 constexpr wchar_t kLatestReleaseApiUrl[] =
     L"https://api.github.com/repos/wxh-777/ClipLite/releases/latest";
 
+// 右键菜单自定义项的显示位标志，按一级菜单展示顺序排列。
+constexpr std::uint32_t kContextMaskPaste = 1u << 0;
+constexpr std::uint32_t kContextMaskPastePlain = 1u << 1;
+constexpr std::uint32_t kContextMaskEditText = 1u << 2;
+constexpr std::uint32_t kContextMaskEditNote = 1u << 3;
+constexpr std::uint32_t kContextMaskPin = 1u << 4;
+constexpr std::uint32_t kContextMaskSearchOnOpen = 1u << 5;
+constexpr std::uint32_t kContextMaskRememberFilter = 1u << 6;
+constexpr std::uint32_t kContextMaskSpecialCategories = 1u << 7;
+constexpr std::uint32_t kContextMaskPromotePasted = 1u << 8;
+constexpr std::uint32_t kContextMaskPreviewMode = 1u << 9;
+constexpr std::uint32_t kContextMaskDensity = 1u << 10;
+constexpr std::uint32_t kContextMaskDelete = 1u << 11;
+constexpr std::uint32_t kContextMaskFilter = 1u << 12;
+constexpr std::uint32_t kContextMaskClearHistory = 1u << 13;
+// 默认仅展示粘贴、编辑文本、添加备注；右键菜单自定义固定显示不参与掩码。
+constexpr std::uint32_t kPopupContextMenuDefaultMask =
+    kContextMaskPaste | kContextMaskEditText | kContextMaskEditNote;
+constexpr std::uint32_t kPopupContextMenuValidMask = kPopupContextMenuDefaultMask |
+    kContextMaskPastePlain | kContextMaskPin | kContextMaskSearchOnOpen |
+    kContextMaskRememberFilter | kContextMaskSpecialCategories |
+    kContextMaskPromotePasted | kContextMaskPreviewMode | kContextMaskDensity |
+    kContextMaskDelete | kContextMaskFilter | kContextMaskClearHistory;
+
 struct Settings {
     bool winV = false;
     bool dark = false;
@@ -344,6 +369,7 @@ struct Settings {
     bool searchImeCompatibility = false;
     bool searchOnOpen = false;
     bool rememberPopupFilter = false;
+    std::uint32_t popupContextMenuMask = kPopupContextMenuDefaultMask;
     int lastPopupFilterType = 0;
     bool lastPopupFavoritesOnly = false;
     int popupDensity = 1; // 0 compact, 1 standard, 2 adaptive
@@ -482,6 +508,31 @@ struct PopupContextMenuItem {
     bool enabled = true;
     bool checked = false;
 };
+
+// 右键菜单可自定义项定义：命令与设置掩码位的对应关系。
+struct PopupContextConfigEntry {
+    int command = 0;
+    std::uint32_t mask = 0;
+};
+
+constexpr PopupContextConfigEntry kPopupContextConfigEntries[] = {
+    {kMenuPaste, kContextMaskPaste},
+    {kMenuPastePlain, kContextMaskPastePlain},
+    {kMenuEditText, kContextMaskEditText},
+    {kMenuEditNote, kContextMaskEditNote},
+    {kMenuPopupPinned, kContextMaskPin},
+    {kMenuSearchOnOpen, kContextMaskSearchOnOpen},
+    {kMenuRememberPopupFilter, kContextMaskRememberFilter},
+    {kMenuSpecialAcrossCategories, kContextMaskSpecialCategories},
+    {kMenuPromotePastedItem, kContextMaskPromotePasted},
+    {kMenuPreviewMode, kContextMaskPreviewMode},
+    {kMenuPopupDensity, kContextMaskDensity},
+    {kMenuDelete, kContextMaskDelete},
+    {kMenuFilter, kContextMaskFilter},
+    {kMenuClearHistory, kContextMaskClearHistory},
+};
+constexpr std::size_t kPopupContextConfigCount =
+    sizeof(kPopupContextConfigEntries) / sizeof(kPopupContextConfigEntries[0]);
 
 struct AppState {
     HWND hidden = nullptr;
@@ -994,6 +1045,9 @@ void showPopupContextMenu(HWND hwnd, int row);
 void executePopupContextCommand(int command);
 void showPopupContextSubmenu(int row);
 void closePopupContextSubmenu();
+std::wstring popupContextConfigLabel(int command, const ClipItem* item);
+bool popupContextCommandChecked(int command);
+void togglePopupContextMenuItem(std::size_t entryIndex);
 void togglePopupPromotePastedItem();
 LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 UINT shortcutModifiersFromKeyboard();
@@ -1643,6 +1697,11 @@ void loadSettings(Settings& settings) {
         if (std::strncmp(line, "searchImeCompatibility=1", 24) == 0) settings.searchImeCompatibility = true;
         if (std::strncmp(line, "searchOnOpen=1", 14) == 0) settings.searchOnOpen = true;
         if (std::strncmp(line, "rememberPopupFilter=1", 22) == 0) settings.rememberPopupFilter = true;
+        if (std::strncmp(line, "popupContextMenuMask=", 21) == 0) {
+            settings.popupContextMenuMask =
+                static_cast<std::uint32_t>(std::strtoul(line + 21, nullptr, 10)) &
+                kPopupContextMenuValidMask;
+        }
         if (std::strncmp(line, "lastPopupFilterType=", 20) == 0) {
             settings.lastPopupFilterType = std::clamp(std::atoi(line + 20), 0, 4);
         }
@@ -1815,6 +1874,7 @@ void saveSettings(const Settings& settings) {
            << "searchImeCompatibility=" << (settings.searchImeCompatibility ? 1 : 0) << "\n"
            << "searchOnOpen=" << (settings.searchOnOpen ? 1 : 0) << "\n"
            << "rememberPopupFilter=" << (settings.rememberPopupFilter ? 1 : 0) << "\n"
+           << "popupContextMenuMask=" << settings.popupContextMenuMask << "\n"
            << "lastPopupFilterType=" << settings.lastPopupFilterType << "\n"
            << "lastPopupFavoritesOnly=" << (settings.lastPopupFavoritesOnly ? 1 : 0) << "\n"
            << "popupDensity=" << settings.popupDensity << "\n"
@@ -10967,8 +11027,11 @@ void showPopupContextSubmenu(int row) {
     g_app->popupContextSubmenuCommand = command;
     RECT mainRect{};
     GetWindowRect(g_app->popupContextMenu, &mainRect);
-    const int width = ui(command == kMenuClearHistory ? 300 : kPopupContextSubmenuWidth);
-    const int height = ui(3 * kPopupContextMenuRowHeight + 10);
+    const bool customize = command == kMenuCustomizeMenu;
+    const int rowCount = customize ? static_cast<int>(kPopupContextConfigCount) : 3;
+    const int width = ui(customize ? 340 : (command == kMenuClearHistory ? 300 :
+                                              kPopupContextSubmenuWidth));
+    const int height = ui(rowCount * kPopupContextMenuRowHeight + 10);
     HMONITOR monitor = MonitorFromWindow(g_app->popupContextMenu, MONITOR_DEFAULTTONEAREST);
     MONITORINFO info{sizeof(info)};
     GetMonitorInfoW(monitor, &info);
@@ -10993,6 +11056,33 @@ void paintPopupContextSubmenu(HWND hwnd, HDC dc) {
                           themeColor(ThemeColorRole::Border));
     SetBkMode(dc, TRANSPARENT);
     SelectObject(dc, g_app->popupFilterFont);
+    // 右键菜单自定义子菜单：多选勾选列表，展示全部可配置的一级菜单项。
+    if (g_app->popupContextSubmenuCommand == kMenuCustomizeMenu) {
+        for (std::size_t row = 0; row < kPopupContextConfigCount; ++row) {
+            const int top = ui(5 + static_cast<int>(row) * kPopupContextMenuRowHeight);
+            const RECT itemRect{ui(5), top, client.right - ui(5),
+                                top + ui(kPopupContextMenuRowHeight)};
+            if (static_cast<int>(row) == g_app->popupContextSubmenuHover) {
+                drawGdiRoundedSurface(dc, itemRect, settingsAccentSoftColor(),
+                                      settingsAccentSoftColor(), 5);
+            }
+            // 勾选位固定在左侧，文本统一缩进对齐，与预览模式二级菜单布局一致。
+            const bool checked = popupContextCommandChecked(
+                kPopupContextConfigEntries[row].command);
+            RECT check{ui(12), top, ui(27), itemRect.bottom};
+            if (checked) {
+                SetTextColor(dc, settingsAccentColor());
+                DrawTextW(dc, L"\x2713", -1, &check, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+            const std::wstring label = popupContextConfigLabel(
+                kPopupContextConfigEntries[row].command, nullptr);
+            RECT textRect{ui(32), top, client.right - ui(12), itemRect.bottom};
+            SetTextColor(dc, themeColor(ThemeColorRole::Text));
+            DrawTextW(dc, label.c_str(), -1, &textRect,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+        return;
+    }
     const bool clearing = g_app->popupContextSubmenuCommand == kMenuClearHistory;
     const bool density = g_app->popupContextSubmenuCommand == kMenuPopupDensity;
     const wchar_t* labels[] = {
@@ -11019,7 +11109,8 @@ void paintPopupContextSubmenu(HWND hwnd, HDC dc) {
         RECT check{ui(12), top, ui(27), itemRect.bottom};
         if (row == active) DrawTextW(dc, L"\x2713", -1, &check,
                                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        RECT label{ui(clearing || density ? 16 : 32), top, client.right - ui(12), itemRect.bottom};
+        // 历史项高度子菜单带勾选位，文本与预览模式一致统一缩进，避免与勾选标记重叠。
+        RECT label{ui(clearing ? 16 : 32), top, client.right - ui(12), itemRect.bottom};
         if (!clearing && row == 1 && !previewShortcut.empty()) {
             SIZE shortcutSize{};
             GetTextExtentPoint32W(dc, previewShortcut.c_str(),
@@ -11153,6 +11244,146 @@ void executePopupContextCommand(int command) {
     }
 }
 
+// 获取右键菜单可自定义项的显示文案；item 为空时返回稳定文案供自定义列表使用。
+std::wstring popupContextConfigLabel(int command, const ClipItem* item) {
+    switch (command) {
+    case kMenuPaste: return settingsLocale().popupPaste;
+    case kMenuPastePlain: return settingsLocale().popupPastePlain;
+    case kMenuEditText: return tr(L"Edit as plain text", L"编辑文本");
+    case kMenuEditNote:
+        return item && !item->note.empty() ? tr(L"Edit note", L"编辑备注")
+                                           : tr(L"Add note", L"添加备注");
+    case kMenuPopupPinned:
+        return item && g_app->popupPinned ? settingsLocale().popupUnpin
+                                          : settingsLocale().popupPin;
+    case kMenuSearchOnOpen: return settingsLocale().searchOnOpen;
+    case kMenuRememberPopupFilter: return settingsLocale().rememberPopupFilter;
+    case kMenuSpecialAcrossCategories:
+        return tr(L"Show favorites in other category lists", L"在其他分类列表中显示收藏");
+    case kMenuPromotePastedItem: return settingsLocale().promotePastedItem;
+    case kMenuPreviewMode: return settingsLocale().previewMode;
+    case kMenuPopupDensity: return tr(L"History item density", L"历史项高度");
+    case kMenuDelete: return settingsLocale().popupDelete;
+    case kMenuFilter: return settingsLocale().popupFilter;
+    case kMenuClearHistory: return tr(L"Clear history", L"清理历史记录");
+    default: return {};
+    }
+}
+
+// 判断指定命令当前是否被勾选为在右键一级菜单显示。
+bool popupContextCommandChecked(int command) {
+    for (std::size_t i = 0; i < kPopupContextConfigCount; ++i) {
+        if (kPopupContextConfigEntries[i].command == command) {
+            return (g_app->settingsData.popupContextMenuMask &
+                    kPopupContextConfigEntries[i].mask) != 0;
+        }
+    }
+    return false;
+}
+
+// 根据当前设置和选中项重建右键一级菜单内容；右键菜单自定义固定为最后一项。
+void rebuildPopupContextMenuItems() {
+    g_app->popupContextMenuItems.clear();
+    const bool hasRow = g_app->selected >= 0 &&
+        g_app->selected < static_cast<int>(g_app->visible.size());
+    if (hasRow) {
+        const ClipItem& item =
+            g_app->store.items()[g_app->visible[static_cast<std::size_t>(g_app->selected)]];
+        if (popupContextCommandChecked(kMenuPaste)) {
+            g_app->popupContextMenuItems.push_back({kMenuPaste, settingsLocale().popupPaste});
+        }
+        if (popupContextCommandChecked(kMenuPastePlain) &&
+            (item.type == ClipType::Html || item.type == ClipType::Files)) {
+            g_app->popupContextMenuItems.push_back({kMenuPastePlain,
+                                                    settingsLocale().popupPastePlain});
+        }
+        if (popupContextCommandChecked(kMenuEditText) &&
+            (item.type == ClipType::Text || item.type == ClipType::Html)) {
+            g_app->popupContextMenuItems.push_back(
+                {kMenuEditText, popupContextConfigLabel(kMenuEditText, &item)});
+        }
+        if (popupContextCommandChecked(kMenuEditNote)) {
+            g_app->popupContextMenuItems.push_back(
+                {kMenuEditNote, popupContextConfigLabel(kMenuEditNote, &item)});
+        }
+    }
+    if (popupContextCommandChecked(kMenuPopupPinned)) {
+        g_app->popupContextMenuItems.push_back({kMenuPopupPinned, g_app->popupPinned
+            ? settingsLocale().popupUnpin : settingsLocale().popupPin, false, true,
+            g_app->popupPinned});
+    }
+    if (popupContextCommandChecked(kMenuSearchOnOpen)) {
+        g_app->popupContextMenuItems.push_back({kMenuSearchOnOpen,
+                                                settingsLocale().searchOnOpen, false, true,
+                                                g_app->settingsData.searchOnOpen});
+    }
+    if (popupContextCommandChecked(kMenuRememberPopupFilter)) {
+        g_app->popupContextMenuItems.push_back({kMenuRememberPopupFilter,
+                                                settingsLocale().rememberPopupFilter, false,
+                                                true, g_app->settingsData.rememberPopupFilter});
+    }
+    if (popupContextCommandChecked(kMenuSpecialAcrossCategories)) {
+        g_app->popupContextMenuItems.push_back({kMenuSpecialAcrossCategories,
+            popupContextConfigLabel(kMenuSpecialAcrossCategories, nullptr), false, true,
+            g_app->settingsData.showSpecialAcrossCategories});
+    }
+    if (popupContextCommandChecked(kMenuPromotePastedItem)) {
+        g_app->popupContextMenuItems.push_back({kMenuPromotePastedItem,
+                                                settingsLocale().promotePastedItem, false, true,
+                                                g_app->settingsData.promotePastedItem});
+    }
+    if (popupContextCommandChecked(kMenuPreviewMode)) {
+        g_app->popupContextMenuItems.push_back({kMenuPreviewMode,
+                                                settingsLocale().previewMode});
+    }
+    if (popupContextCommandChecked(kMenuPopupDensity)) {
+        g_app->popupContextMenuItems.push_back(
+            {kMenuPopupDensity, popupContextConfigLabel(kMenuPopupDensity, nullptr)});
+    }
+    if (hasRow && popupContextCommandChecked(kMenuDelete)) {
+        g_app->popupContextMenuItems.push_back({kMenuDelete, settingsLocale().popupDelete});
+    }
+    if (popupContextCommandChecked(kMenuFilter)) {
+        g_app->popupContextMenuItems.push_back({kMenuFilter, settingsLocale().popupFilter});
+    }
+    if (popupContextCommandChecked(kMenuClearHistory)) {
+        g_app->popupContextMenuItems.push_back(
+            {kMenuClearHistory, popupContextConfigLabel(kMenuClearHistory, nullptr)});
+    }
+    g_app->popupContextMenuItems.push_back(
+        {kMenuCustomizeMenu, tr(L"Customize menu", L"右键菜单自定义")});
+}
+
+// 切换右键菜单自定义项的勾选状态并立即保存；保持菜单打开以便连续勾选。
+void togglePopupContextMenuItem(std::size_t entryIndex) {
+    if (!g_app || entryIndex >= kPopupContextConfigCount) return;
+    g_app->settingsData.popupContextMenuMask ^= kPopupContextConfigEntries[entryIndex].mask;
+    saveSettings(g_app->settingsData);
+    // 勾选状态变化后立即重绘子菜单，不等鼠标移动才刷新。
+    if (g_app->popupContextSubmenu && IsWindow(g_app->popupContextSubmenu)) {
+        InvalidateRect(g_app->popupContextSubmenu, nullptr, FALSE);
+    }
+    if (!g_app->popupContextMenu || !IsWindow(g_app->popupContextMenu)) return;
+    rebuildPopupContextMenuItems();
+    g_app->popupContextMenuHover = -1;
+    const int width = ui(kPopupContextMenuWidth);
+    const int height = ui(static_cast<int>(g_app->popupContextMenuItems.size()) *
+                          kPopupContextMenuRowHeight + 10);
+    HMONITOR monitor = MonitorFromWindow(g_app->popupContextMenu, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{sizeof(info)};
+    GetMonitorInfoW(monitor, &info);
+    RECT rect{};
+    GetWindowRect(g_app->popupContextMenu, &rect);
+    const int y = std::clamp(static_cast<int>(rect.top), static_cast<int>(info.rcWork.top),
+                             std::max(static_cast<int>(info.rcWork.top),
+                                      static_cast<int>(info.rcWork.bottom) - height));
+    SetWindowPos(g_app->popupContextMenu, nullptr, rect.left, y, width, height,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    // 窗口尺寸变化后同步更新圆角裁剪区域，避免新增区域被旧 region 裁掉。
+    applyPopupWindowFrame(g_app->popupContextMenu, width, height);
+    InvalidateRect(g_app->popupContextMenu, nullptr, FALSE);
+}
+
 void showPopupContextMenu(HWND hwnd, int row) {
     if (!g_app || !hwnd) return;
     closePopupNoteEdit(false);
@@ -11161,45 +11392,10 @@ void showPopupContextMenu(HWND hwnd, int row) {
     hideDetailPreview();
     KillTimer(hwnd, kPopupPreviewHoverTimer);
     KillTimer(hwnd, kPopupPreviewHideTimer);
-    g_app->popupContextMenuItems.clear();
     if (row >= 0 && row < static_cast<int>(g_app->visible.size())) {
         g_app->selected = row;
-        const ClipItem& item = g_app->store.items()[g_app->visible[static_cast<std::size_t>(row)]];
-        g_app->popupContextMenuItems.push_back({kMenuPaste, settingsLocale().popupPaste});
-        if (item.type == ClipType::Html || item.type == ClipType::Files) {
-            g_app->popupContextMenuItems.push_back({kMenuPastePlain, settingsLocale().popupPastePlain});
-        }
-        if (item.type == ClipType::Text || item.type == ClipType::Html) {
-            g_app->popupContextMenuItems.push_back({
-                kMenuEditText, tr(L"Edit as plain text", L"编辑文本")});
-        }
-        g_app->popupContextMenuItems.push_back({
-            kMenuEditNote, item.note.empty() ? tr(L"Add note", L"添加备注")
-                                              : tr(L"Edit note", L"编辑备注")});
     }
-    g_app->popupContextMenuItems.push_back({kMenuPopupPinned, g_app->popupPinned
-        ? settingsLocale().popupUnpin : settingsLocale().popupPin, false, true, g_app->popupPinned});
-    g_app->popupContextMenuItems.push_back({kMenuSearchOnOpen, settingsLocale().searchOnOpen,
-                                              false, true, g_app->settingsData.searchOnOpen});
-    g_app->popupContextMenuItems.push_back({kMenuRememberPopupFilter,
-                                             settingsLocale().rememberPopupFilter, false, true,
-                                             g_app->settingsData.rememberPopupFilter});
-    g_app->popupContextMenuItems.push_back({kMenuSpecialAcrossCategories,
-                                             tr(L"Show favorites in other category lists",
-                                                L"在其他分类列表中显示收藏"), false, true,
-                                             g_app->settingsData.showSpecialAcrossCategories});
-    g_app->popupContextMenuItems.push_back({kMenuPromotePastedItem,
-                                             settingsLocale().promotePastedItem, false, true,
-                                             g_app->settingsData.promotePastedItem});
-    g_app->popupContextMenuItems.push_back({kMenuPreviewMode,
-                                              settingsLocale().previewMode});
-    g_app->popupContextMenuItems.push_back({kMenuPopupDensity,
-                                             tr(L"History item density", L"历史项高度")});
-    if (row >= 0 && row < static_cast<int>(g_app->visible.size())) {
-        g_app->popupContextMenuItems.push_back({kMenuDelete, settingsLocale().popupDelete});
-    }
-    g_app->popupContextMenuItems.push_back({kMenuFilter, settingsLocale().popupFilter});
-    g_app->popupContextMenuItems.push_back({kMenuClearHistory, tr(L"Clear history", L"清理历史记录")});
+    rebuildPopupContextMenuItems();
 
     POINT point{0, 0};
     GetCursorPos(&point);
@@ -11245,7 +11441,8 @@ void paintPopupContextMenuWindow(HWND hwnd, HDC dc) {
         SetTextColor(dc, text);
         const bool hasArrow = g_app->popupContextMenuItems[i].command == kMenuPreviewMode ||
             g_app->popupContextMenuItems[i].command == kMenuClearHistory ||
-            g_app->popupContextMenuItems[i].command == kMenuPopupDensity;
+            g_app->popupContextMenuItems[i].command == kMenuPopupDensity ||
+            g_app->popupContextMenuItems[i].command == kMenuCustomizeMenu;
         const bool hasCheck = g_app->popupContextMenuItems[i].checked;
         const std::wstring shortcut = popupContextMenuShortcut(
             g_app->popupContextMenuItems[i].command);
@@ -11268,7 +11465,8 @@ void paintPopupContextMenuWindow(HWND hwnd, HDC dc) {
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         if (g_app->popupContextMenuItems[i].command == kMenuPreviewMode ||
             g_app->popupContextMenuItems[i].command == kMenuClearHistory ||
-            g_app->popupContextMenuItems[i].command == kMenuPopupDensity) {
+            g_app->popupContextMenuItems[i].command == kMenuPopupDensity ||
+            g_app->popupContextMenuItems[i].command == kMenuCustomizeMenu) {
             RECT arrow{client.right - ui(26), top, client.right - ui(10), row.bottom};
             SetTextColor(dc, themeColor(ThemeColorRole::SecondaryText));
             DrawTextW(dc, L">", -1, &arrow, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -13550,6 +13748,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             SetCursor(LoadCursorW(nullptr, IDC_HAND));
             return TRUE;
         }
+        const int submenuRowCount = g_app->popupContextSubmenuCommand == kMenuCustomizeMenu
+            ? static_cast<int>(kPopupContextConfigCount) : 3;
         if (message == WM_MOUSEMOVE) {
             TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};
             TrackMouseEvent(&tracking);
@@ -13557,7 +13757,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 KillTimer(g_app->popupContextMenu, kPopupContextSubmenuHideTimer);
             }
             const int row = (GET_Y_LPARAM(lParam) - ui(5)) / ui(kPopupContextMenuRowHeight);
-            const int next = row >= 0 && row < 3 ? row : -1;
+            const int next = row >= 0 && row < submenuRowCount ? row : -1;
             if (next != g_app->popupContextSubmenuHover) {
                 g_app->popupContextSubmenuHover = next;
                 InvalidateRect(hwnd, nullptr, FALSE);
@@ -13572,7 +13772,12 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == WM_LBUTTONDOWN) return 0;
         if (message == WM_LBUTTONUP) {
             const int row = (GET_Y_LPARAM(lParam) - ui(5)) / ui(kPopupContextMenuRowHeight);
-            if (row >= 0 && row < 3) {
+            if (row >= 0 && row < submenuRowCount) {
+                // 右键菜单自定义子菜单：多选切换勾选，保持菜单打开便于连续配置。
+                if (g_app->popupContextSubmenuCommand == kMenuCustomizeMenu) {
+                    togglePopupContextMenuItem(static_cast<std::size_t>(row));
+                    return 0;
+                }
                 const int command = (g_app->popupContextSubmenuCommand == kMenuClearHistory
                     ? kMenuClearOrdinary
                     : (g_app->popupContextSubmenuCommand == kMenuPopupDensity
@@ -13634,7 +13839,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const int command = next >= 0
                 ? g_app->popupContextMenuItems[static_cast<std::size_t>(next)].command : 0;
             if (command == kMenuPreviewMode || command == kMenuClearHistory ||
-                command == kMenuPopupDensity) {
+                command == kMenuPopupDensity || command == kMenuCustomizeMenu) {
                 KillTimer(hwnd, kPopupContextSubmenuHideTimer);
                 if ((!g_app->popupContextSubmenu || g_app->popupContextSubmenuCommand != command) &&
                     next != g_app->popupContextMenuPendingSubmenu) {
@@ -13707,7 +13912,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (row >= 0 && row < static_cast<int>(g_app->popupContextMenuItems.size())) {
                 const int command = g_app->popupContextMenuItems[static_cast<std::size_t>(row)].command;
                 if (command == kMenuPreviewMode || command == kMenuClearHistory ||
-                    command == kMenuPopupDensity) {
+                    command == kMenuPopupDensity || command == kMenuCustomizeMenu) {
                     showPopupContextSubmenu(row);
                     return 0;
                 }
