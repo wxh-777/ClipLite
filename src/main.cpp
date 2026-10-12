@@ -7523,19 +7523,49 @@ int automaticFilterCommand(int slot) {
     return kFilterOther;
 }
 
+// 分类标签统一宽度：测量当前语言全部标签取最大文本宽度加固定内边距；字体或语言变化后自动重测。
+int automaticFilterChipWidth() {
+    static int cachedWidth = 0;
+    static HFONT cachedFont = nullptr;
+    static bool cachedChinese = false;
+    HFONT font = g_app ? g_app->popupFilterFont : nullptr;
+    const bool chinese = languageIsChinese();
+    if (cachedWidth == 0 || cachedFont != font || cachedChinese != chinese) {
+        const wchar_t* labels[] = {
+            settingsLocale().popupFilterAll, settingsLocale().popupFilterPinned,
+            settingsLocale().popupFilterText, settingsLocale().popupFilterImages,
+            settingsLocale().popupFilterFiles, settingsLocale().popupFilterOther};
+        HDC dc = GetDC(nullptr);
+        HGDIOBJ oldFont = font ? SelectObject(dc, font) : nullptr;
+        int measured = 0;
+        for (const wchar_t* label : labels) {
+            SIZE size{};
+            if (GetTextExtentPoint32W(dc, label, lstrlenW(label), &size)) {
+                measured = std::max(measured, static_cast<int>(size.cx));
+            }
+        }
+        if (font) SelectObject(dc, oldFont);
+        ReleaseDC(nullptr, dc);
+        cachedWidth = std::max(static_cast<int>(measured) + 22, 44);
+        cachedFont = font;
+        cachedChinese = chinese;
+    }
+    return cachedWidth;
+}
+
 RECT automaticFilterRect(int slot, int scrollOffset = 0) {
-    static const int widths[] = {44, 44, 44, 46, 56, 44};
+    const int width = automaticFilterChipWidth();
     int left = ui(16);
-    for (int i = 0; i < slot; ++i) left += ui(widths[i] + 6);
+    for (int i = 0; i < slot; ++i) left += ui(width + 6);
     left -= scrollOffset;
-    return RECT{left, ui(kPopupFilterTop), left + ui(widths[slot]), ui(kPopupFilterBottom)};
+    return RECT{left, ui(kPopupFilterTop), left + ui(width), ui(kPopupFilterBottom)};
 }
 
 int filterContentWidth() {
-    static const int widths[] = {44, 44, 44, 46, 56, 44};
-    int width = 0;
-    for (const int value : widths) width += ui(value + 6);
-    return width - ui(6);
+    const int width = automaticFilterChipWidth();
+    int total = 0;
+    for (int i = 0; i < 6; ++i) total += ui(width + 6);
+    return total - ui(6);
 }
 
 void clampFilterScroll() {
