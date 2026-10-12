@@ -249,18 +249,18 @@ constexpr UINT kPasteInputTimeoutMs = 500;
 constexpr UINT kTrayId = 1;
 constexpr int kPopupFilterTop = 58;
 constexpr int kPopupFilterBottom = 82;
-// 历史窗口顶部搜索框、筛选、图钉和关闭按钮的统一高度区域。
+// 历史窗口顶部搜索框、筛选、图钉和关闭按钮的统一高度区域；图标按钮统一 28 宽，间距统一 6。
 constexpr int kPopupHeaderTop = 14;
 constexpr int kPopupHeaderBottom = 42;
-constexpr int kPopupSearchLeft = 86;
-constexpr int kPopupSearchRight = 240;
-constexpr int kPopupClearLeft = 244;
-constexpr int kPopupClearRight = 272;
-constexpr int kPopupFilterButtonLeft = 278;
-constexpr int kPopupFilterButtonRight = 338;
-constexpr int kPopupPinLeft = 344;
-constexpr int kPopupPinRight = 368;
-constexpr int kPopupCloseLeft = 374;
+constexpr int kPopupSearchLeft = 94;
+constexpr int kPopupSearchRight = 224;
+constexpr int kPopupClearLeft = 230;
+constexpr int kPopupClearRight = 258;
+constexpr int kPopupFilterButtonLeft = 264;
+constexpr int kPopupFilterButtonRight = 324;
+constexpr int kPopupPinLeft = 330;
+constexpr int kPopupPinRight = 358;
+constexpr int kPopupCloseLeft = 364;
 constexpr int kPopupCloseRightInset = 8;
 constexpr int kPopupWidth = 400;
 constexpr int kPopupHeight = 600;
@@ -9188,7 +9188,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
                           ui(kPopupSearchRight), ui(kPopupHeaderBottom)};
     drawGdiRoundedSurface(dc, searchRect,
                           themeColor(ThemeColorRole::InputBackground),
-                          searchBorder, 6);
+                          searchBorder, 5);
     drawSearchIcon(dc, ui(kPopupSearchLeft + 14), ui(28),
                    g_app->searchEdit && g_app->popupSearchInputActive ? accent : secondary);
     SelectObject(dc, filterFont);
@@ -9196,7 +9196,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
                    ui(kPopupClearRight), ui(kPopupHeaderBottom)};
     if (g_app->hoveredFilter == 7) {
         drawGdiRoundedSurface(dc, clearRect, settingsAccentSoftColor(),
-                              settingsAccentSoftColor(), 4);
+                              settingsAccentSoftColor(), 5);
     }
     SetTextColor(dc, g_app->hoveredFilter == 7 ? accent : secondary);
     drawDeleteIcon(dc, (clearRect.left + clearRect.right) / 2 - ui(5),
@@ -9222,11 +9222,11 @@ void paintPopupContent(HWND hwnd, HDC dc) {
                          client.right - ui(kPopupCloseRightInset), ui(kPopupHeaderBottom)};
     if (g_app->hoveredFilter == 8 && !g_app->popupPinned) {
         drawGdiRoundedSurface(dc, pinRect, settingsAccentSoftColor(),
-                              settingsAccentSoftColor(), 4);
+                              settingsAccentSoftColor(), 5);
     }
     if (g_app->hoveredFilter == 9) {
         drawGdiRoundedSurface(dc, closeRect, settingsAccentSoftColor(),
-                              settingsAccentSoftColor(), 4);
+                              settingsAccentSoftColor(), 5);
     }
     const COLORREF pinColor = g_app->popupPinned ? RGB(245, 158, 11) :
         (g_app->hoveredFilter == 8 ? accent : secondary);
