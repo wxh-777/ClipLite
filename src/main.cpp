@@ -292,9 +292,14 @@ constexpr int kPopupAdaptiveMinTextHeight = 56;
 constexpr int kPopupCardGap = 6;
 constexpr int kPopupCardInset = 12;
 constexpr int kPopupPreviewSize = 60;
+constexpr float kPopupToolbarIconStroke = 1.5f;
+constexpr float kPopupRowIconStroke = 1.35f;
+constexpr float kPopupEmptyIconStroke = 1.25f;
 constexpr int kSettingsWidth = 740;
 constexpr int kSettingsHeight = 520;
 constexpr int kSettingsSidebarWidth = 180;
+constexpr int kSettingsNavIconSize = 20;
+constexpr float kSettingsNavIconStroke = 1.35f;
 constexpr int kSettingsHeaderHeight = 58;
 constexpr int kSettingsBodyMargin = 14;
 constexpr int kSettingsScrollbarReserve = 22;
@@ -720,6 +725,7 @@ struct AppState {
     std::string query;
     bool popupSearchInputActive = false;
     bool popupSearchControlDown = false;
+    std::array<bool, 256> popupSearchKeys{};
     bool popupSuppressImeTriggerSpace = false;
     bool detailPreviewDragging = false;
     POINT detailPreviewDragStart{};
@@ -987,7 +993,6 @@ void appendDiagnosticLog(const char* level, const char* message, DWORD errorCode
 
 LONGLONG settingsToggleClock();
 LONGLONG settingsToggleClockFrequency();
-float settingsThemeProgress();
 enum class ThemeColorRole {
     WindowBackground,
     SidebarBackground,
@@ -1004,9 +1009,9 @@ enum class ThemeColorRole {
     Accent,
     AccentSoft,
     Error,
+    Pin,
 };
 COLORREF themeColor(ThemeColorRole role);
-COLORREF settingsModeColor(COLORREF light, COLORREF dark);
 COLORREF settingsAccentColor();
 COLORREF settingsAccentSoftColor();
 void animateSettingsTheme(HWND hwnd, bool fromDark, bool toDark);
@@ -3320,7 +3325,7 @@ void invalidatePopupStatus(HWND hwnd) {
     if (!hwnd) return;
     RECT client{};
     GetClientRect(hwnd, &client);
-    RECT statusRect{ui(12), ui(81), client.right - ui(12), ui(98)};
+    RECT statusRect{ui(12), ui(kPopupFilterBottom), client.right - ui(12), ui(kPopupListTop)};
     InvalidateRect(hwnd, &statusRect, FALSE);
 }
 
@@ -3555,11 +3560,12 @@ void drawPinIcon(HDC dc, int right, int centerY, COLORREF color, bool filled = f
     Gdiplus::Graphics graphics(dc);
     configureGdiGraphics(graphics);
     const float scale = static_cast<float>(g_uiDpi) / 96.0f * (10.0f / 14.0f);
+    const float strokeScale = static_cast<float>(g_uiDpi) / 96.0f;
     const float originX = static_cast<float>(right) - 19.0f * scale;
     const float originY = static_cast<float>(centerY) - 12.0f * scale;
     const auto px = [originX, scale](float value) { return originX + value * scale; };
     const auto py = [originY, scale](float value) { return originY + value * scale; };
-    Gdiplus::Pen pen(makeGdiColor(color), 1.5f * scale);
+    Gdiplus::Pen pen(makeGdiColor(color), kPopupRowIconStroke * strokeScale);
     pen.SetStartCap(Gdiplus::LineCapRound);
     pen.SetEndCap(Gdiplus::LineCapRound);
     pen.SetLineJoin(Gdiplus::LineJoinRound);
@@ -3609,7 +3615,8 @@ void drawEmptyClipboardIcon(HDC dc, int centerX, int top, COLORREF color) {
     if (!g_app || g_app->gdiplusToken == 0) return;
     Gdiplus::Graphics graphics(dc);
     configureGdiGraphics(graphics);
-    Gdiplus::Pen pen(makeGdiColor(color), 1.0f);
+    const float scale = static_cast<float>(g_uiDpi) / 96.0f;
+    Gdiplus::Pen pen(makeGdiColor(color), kPopupEmptyIconStroke * scale);
     Gdiplus::GraphicsPath body;
     addGdiRoundedRect(body, Gdiplus::RectF(
         static_cast<float>(centerX - ui(14)), static_cast<float>(top + ui(6)),
@@ -3626,15 +3633,49 @@ void drawEmptyClipboardIcon(HDC dc, int centerX, int top, COLORREF color) {
                       static_cast<float>(centerX + ui(3)), static_cast<float>(top + ui(27)));
 }
 
-void drawDeleteIcon(HDC dc, int x, int y, COLORREF color) {
+void drawCloseIcon(HDC dc, int x, int y, COLORREF color) {
     if (!g_app || g_app->gdiplusToken == 0) return;
     Gdiplus::Graphics graphics(dc);
     configureGdiGraphics(graphics);
-    Gdiplus::Pen pen(makeGdiColor(color), 1.0f);
+    const float scale = static_cast<float>(g_uiDpi) / 96.0f;
+    Gdiplus::Pen pen(makeGdiColor(color), kPopupRowIconStroke * scale);
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
     graphics.DrawLine(&pen, static_cast<float>(x), static_cast<float>(y),
                       static_cast<float>(x + ui(10)), static_cast<float>(y + ui(10)));
     graphics.DrawLine(&pen, static_cast<float>(x + ui(10)), static_cast<float>(y),
                       static_cast<float>(x), static_cast<float>(y + ui(10)));
+}
+
+void drawDeleteIcon(HDC dc, int x, int y, COLORREF color) {
+    if (!g_app || g_app->gdiplusToken == 0) return;
+    Gdiplus::Graphics graphics(dc);
+    configureGdiGraphics(graphics);
+    const float scale = static_cast<float>(g_uiDpi) / 96.0f;
+    const auto px = [x, scale](float value) { return static_cast<float>(x) + value * scale; };
+    const auto py = [y, scale](float value) { return static_cast<float>(y) + value * scale; };
+    Gdiplus::Pen pen(makeGdiColor(color), kPopupRowIconStroke * scale);
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    pen.SetLineJoin(Gdiplus::LineJoinRound);
+
+    Gdiplus::GraphicsPath body;
+    body.AddLine(px(0.5f), py(1.0f), px(1.0f), py(10.5f));
+    body.AddBezier(px(1.0f), py(10.5f), px(1.0f), py(11.3f),
+                   px(1.7f), py(12.0f), px(2.5f), py(12.0f));
+    body.AddLine(px(2.5f), py(12.0f), px(7.5f), py(12.0f));
+    body.AddBezier(px(7.5f), py(12.0f), px(8.3f), py(12.0f),
+                   px(9.0f), py(11.3f), px(9.0f), py(10.5f));
+    body.AddLine(px(9.0f), py(10.5f), px(9.5f), py(1.0f));
+    graphics.DrawPath(&pen, &body);
+    Gdiplus::GraphicsPath handle;
+    handle.AddLine(px(3.0f), py(1.0f), px(3.0f), py(-1.0f));
+    handle.AddLine(px(3.0f), py(-1.0f), px(7.0f), py(-1.0f));
+    handle.AddLine(px(7.0f), py(-1.0f), px(7.0f), py(1.0f));
+    graphics.DrawPath(&pen, &handle);
+    graphics.DrawLine(&pen, px(-1.0f), py(1.0f), px(11.0f), py(1.0f));
+    graphics.DrawLine(&pen, px(3.5f), py(4.0f), px(3.5f), py(9.0f));
+    graphics.DrawLine(&pen, px(6.5f), py(4.0f), px(6.5f), py(9.0f));
 }
 
 void drawSearchIcon(HDC dc, int centerX, int centerY, COLORREF color) {
@@ -3644,7 +3685,7 @@ void drawSearchIcon(HDC dc, int centerX, int centerY, COLORREF color) {
     const float scale = static_cast<float>(g_uiDpi) / 96.0f;
     const float x = static_cast<float>(centerX);
     const float y = static_cast<float>(centerY);
-    Gdiplus::Pen pen(makeGdiColor(color), 1.5f * scale);
+    Gdiplus::Pen pen(makeGdiColor(color), kPopupToolbarIconStroke * scale);
     pen.SetStartCap(Gdiplus::LineCapRound);
     pen.SetEndCap(Gdiplus::LineCapRound);
     graphics.DrawEllipse(&pen, x - 5.0f * scale, y - 6.0f * scale,
@@ -3658,7 +3699,7 @@ void drawFilterIcon(HDC dc, int centerX, int centerY, COLORREF color) {
     Gdiplus::Graphics graphics(dc);
     configureGdiGraphics(graphics);
     const float scale = static_cast<float>(g_uiDpi) / 96.0f;
-    Gdiplus::Pen pen(makeGdiColor(color), 1.5f * scale);
+    Gdiplus::Pen pen(makeGdiColor(color), kPopupToolbarIconStroke * scale);
     pen.SetStartCap(Gdiplus::LineCapRound);
     pen.SetEndCap(Gdiplus::LineCapRound);
     const float x = static_cast<float>(centerX);
@@ -3700,10 +3741,12 @@ void drawSettingsNavIcon(HDC dc, int index, int x, int y, COLORREF color) {
     if (!g_app || g_app->gdiplusToken == 0 || index < 0 || index > 5) return;
     Gdiplus::Graphics graphics(dc);
     configureGdiGraphics(graphics);
-    const float scale = static_cast<float>(g_uiDpi) / 96.0f;
-    const auto px = [x, scale](float value) { return static_cast<float>(x) + value * scale; };
-    const auto py = [y, scale](float value) { return static_cast<float>(y) + value * scale; };
-    Gdiplus::Pen pen(makeGdiColor(color), 1.5f * scale);
+    const float dpiScale = static_cast<float>(g_uiDpi) / 96.0f;
+    const float scale = dpiScale * kSettingsNavIconSize / 24.0f;
+    const float inset = (24.0f - kSettingsNavIconSize) / 2.0f * dpiScale;
+    const auto px = [x, inset, scale](float value) { return static_cast<float>(x) + inset + value * scale; };
+    const auto py = [y, inset, scale](float value) { return static_cast<float>(y) + inset + value * scale; };
+    Gdiplus::Pen pen(makeGdiColor(color), kSettingsNavIconStroke * dpiScale);
     pen.SetStartCap(Gdiplus::LineCapRound);
     pen.SetEndCap(Gdiplus::LineCapRound);
     pen.SetLineJoin(Gdiplus::LineJoinRound);
@@ -3712,19 +3755,33 @@ void drawSettingsNavIcon(HDC dc, int index, int x, int y, COLORREF color) {
         const float lines[] = {7.0f, 12.0f, 17.0f};
         const float knobs[] = {9.0f, 15.0f, 11.0f};
         for (int row = 0; row < 3; ++row) {
-            graphics.DrawLine(&pen, px(4.0f), py(lines[row]), px(20.0f), py(lines[row]));
+            graphics.DrawLine(&pen, px(4.0f), py(lines[row]), px(knobs[row] - 2.0f), py(lines[row]));
+            graphics.DrawLine(&pen, px(knobs[row] + 2.0f), py(lines[row]), px(20.0f), py(lines[row]));
             graphics.DrawEllipse(&pen, px(knobs[row] - 2.0f), py(lines[row] - 2.0f),
                                  4.0f * scale, 4.0f * scale);
         }
     } else if (index == 1) {
-        const float centers[][2] = {{7.0f, 8.0f}, {17.0f, 8.0f}, {12.0f, 17.0f}};
+        Gdiplus::GraphicsPath palette;
+        palette.AddBezier(px(12.0f), py(3.0f), px(7.0f), py(3.0f),
+                          px(3.0f), py(7.0f), px(3.0f), py(12.0f));
+        palette.AddBezier(px(3.0f), py(12.0f), px(3.0f), py(17.0f),
+                          px(7.0f), py(21.0f), px(12.0f), py(21.0f));
+        palette.AddBezier(px(12.0f), py(21.0f), px(14.5f), py(21.0f),
+                          px(15.5f), py(19.5f), px(14.5f), py(18.0f));
+        palette.AddBezier(px(14.5f), py(18.0f), px(12.5f), py(16.5f),
+                          px(13.0f), py(14.5f), px(15.0f), py(14.5f));
+        palette.AddBezier(px(15.0f), py(14.5f), px(18.0f), py(14.5f),
+                          px(21.0f), py(13.0f), px(21.0f), py(10.5f));
+        palette.AddBezier(px(21.0f), py(10.5f), px(21.0f), py(6.0f),
+                          px(17.0f), py(3.0f), px(12.0f), py(3.0f));
+        palette.CloseFigure();
+        graphics.DrawPath(&pen, &palette);
+        Gdiplus::SolidBrush brush(makeGdiColor(color));
+        const float centers[][2] = {{8.0f, 8.0f}, {13.0f, 6.8f}, {17.5f, 9.3f}, {6.5f, 12.8f}};
         for (const auto& center : centers) {
-            graphics.DrawEllipse(&pen, px(center[0] - 3.0f), py(center[1] - 3.0f),
-                                 6.0f * scale, 6.0f * scale);
+            graphics.FillEllipse(&brush, px(center[0] - 1.2f), py(center[1] - 1.2f),
+                                 2.4f * scale, 2.4f * scale);
         }
-        graphics.DrawLine(&pen, px(9.5f), py(9.5f), px(14.5f), py(9.5f));
-        graphics.DrawLine(&pen, px(8.5f), py(10.5f), px(10.5f), py(14.5f));
-        graphics.DrawLine(&pen, px(15.5f), py(10.5f), px(13.5f), py(14.5f));
     } else if (index == 2) {
         Gdiplus::GraphicsPath keyboard;
         addGdiRoundedRect(keyboard, Gdiplus::RectF(px(3.5f), py(5.5f),
@@ -3757,33 +3814,24 @@ void drawSettingsNavIcon(HDC dc, int index, int x, int y, COLORREF color) {
         graphics.DrawPath(&pen, &middle);
     } else if (index == 4) {
         Gdiplus::GraphicsPath shield;
-        shield.AddLine(px(12.0f), py(3.0f), px(18.5f), py(5.5f));
-        shield.AddLine(px(18.5f), py(5.5f), px(18.5f), py(10.5f));
-        shield.AddBezier(px(18.5f), py(10.5f), px(18.5f), py(14.8f),
-                         px(16.0f), py(17.8f), px(12.0f), py(19.5f));
-        shield.AddBezier(px(12.0f), py(19.5f), px(8.0f), py(17.8f),
-                         px(5.5f), py(14.8f), px(5.5f), py(10.5f));
-        shield.AddLine(px(5.5f), py(10.5f), px(5.5f), py(5.5f));
+        shield.AddLine(px(12.0f), py(3.0f), px(20.0f), py(6.0f));
+        shield.AddLine(px(20.0f), py(6.0f), px(20.0f), py(11.0f));
+        shield.AddBezier(px(20.0f), py(11.0f), px(20.0f), py(15.5f),
+                         px(16.5f), py(19.0f), px(12.0f), py(21.0f));
+        shield.AddBezier(px(12.0f), py(21.0f), px(7.5f), py(19.0f),
+                         px(4.0f), py(15.5f), px(4.0f), py(11.0f));
+        shield.AddLine(px(4.0f), py(11.0f), px(4.0f), py(6.0f));
         shield.CloseFigure();
         graphics.DrawPath(&pen, &shield);
-        Gdiplus::GraphicsPath lock;
-        addGdiRoundedRect(lock, Gdiplus::RectF(px(9.5f), py(10.0f),
-                                               5.0f * scale, 4.0f * scale), 1.0f * scale);
-        graphics.DrawPath(&pen, &lock);
-        Gdiplus::GraphicsPath shackle;
-        shackle.StartFigure();
-        shackle.AddLine(px(10.5f), py(10.0f), px(10.5f), py(8.5f));
-        shackle.AddBezier(px(10.5f), py(8.5f), px(10.5f), py(7.5f),
-                          px(11.0f), py(6.5f), px(12.0f), py(6.5f));
-        shackle.AddBezier(px(12.0f), py(6.5f), px(13.0f), py(6.5f),
-                          px(13.5f), py(7.5f), px(13.5f), py(8.5f));
-        shackle.AddLine(px(13.5f), py(8.5f), px(13.5f), py(10.0f));
-        graphics.DrawPath(&pen, &shackle);
+        Gdiplus::GraphicsPath check;
+        check.AddLine(px(8.0f), py(12.0f), px(11.0f), py(15.0f));
+        check.AddLine(px(11.0f), py(15.0f), px(16.0f), py(9.5f));
+        graphics.DrawPath(&pen, &check);
     } else {
         graphics.DrawEllipse(&pen, px(4.0f), py(4.0f), 16.0f * scale, 16.0f * scale);
         graphics.DrawLine(&pen, px(12.0f), py(11.5f), px(12.0f), py(15.5f));
         Gdiplus::SolidBrush dot(makeGdiColor(color));
-        graphics.FillEllipse(&dot, px(11.5f), py(8.0f), scale, scale);
+        graphics.FillEllipse(&dot, px(11.2f), py(7.7f), 1.6f * scale, 1.6f * scale);
     }
 }
 
@@ -4427,7 +4475,7 @@ void drawFavoriteIcon(HDC dc, int right, int centerY, COLORREF color, bool fille
     };
     Gdiplus::GraphicsPath path;
     path.AddPolygon(points, ARRAYSIZE(points));
-    Gdiplus::Pen pen(makeGdiColor(color), 1.4f * scale);
+    Gdiplus::Pen pen(makeGdiColor(color), kPopupRowIconStroke * scale);
     if (filled) {
         Gdiplus::SolidBrush brush(makeGdiColor(color));
         graphics.FillPath(&brush, &path);
@@ -5172,7 +5220,8 @@ bool ensureDetailPreviewWindow() {
         if (!g_app->detailPreviewRenderer->attach(g_app->detailPreview)) {
             g_app->detailPreviewRenderer.reset();
         } else {
-            g_app->detailPreviewRenderer->setBackground(g_app->themePalette.previewBackground);
+            g_app->detailPreviewRenderer->setBackground(highContrastEnabled()
+                ? GetSysColor(COLOR_WINDOW) : g_app->themePalette.previewBackground);
         }
         const int width = ui(kPopupDetailPreviewWidth);
         const int height = ui(kPopupDetailPreviewHeight);
@@ -5472,8 +5521,11 @@ LRESULT CALLBACK detailPreviewTextEditSubclass(HWND hwnd, UINT message, WPARAM w
 // 更新文本控件的主题颜色和字体，不改动用户当前选区。
 void refreshDetailPreviewTextEditAppearance() {
     if (!g_app || !g_app->detailPreviewTextEdit) return;
-    const COLORREF background = g_app->themePalette.previewBackground;
-    const COLORREF text = g_app->themePalette.text;
+    const bool highContrast = highContrastEnabled();
+    const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW)
+        : g_app->themePalette.previewBackground;
+    const COLORREF text = highContrast ? GetSysColor(COLOR_WINDOWTEXT)
+        : g_app->themePalette.text;
     SendMessageW(g_app->detailPreviewTextEdit, WM_SETFONT,
                  reinterpret_cast<WPARAM>(g_app->popupPreviewFont), TRUE);
     SendMessageW(g_app->detailPreviewTextEdit, EM_SETBKGNDCOLOR, 0, background);
@@ -5582,12 +5634,16 @@ void paintDetailPreview(HWND hwnd, HDC dc) {
         return;
     }
     HGDIOBJ previous = SelectObject(buffer, bitmap);
-    const COLORREF background = g_app->themePalette.surfaceBackground;
-    const COLORREF contentBackground = g_app->themePalette.previewBackground;
-    const COLORREF border = g_app->themePalette.border;
-    const COLORREF divider = g_app->themePalette.divider;
-    const COLORREF text = g_app->themePalette.text;
-    const COLORREF secondary = g_app->themePalette.secondaryText;
+    const bool highContrast = highContrastEnabled();
+    const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW)
+        : g_app->themePalette.surfaceBackground;
+    const COLORREF contentBackground = highContrast ? GetSysColor(COLOR_WINDOW)
+        : g_app->themePalette.previewBackground;
+    const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT) : g_app->themePalette.border;
+    const COLORREF divider = highContrast ? GetSysColor(COLOR_WINDOWTEXT) : g_app->themePalette.divider;
+    const COLORREF text = highContrast ? GetSysColor(COLOR_WINDOWTEXT) : g_app->themePalette.text;
+    const COLORREF secondary = highContrast ? GetSysColor(COLOR_WINDOWTEXT)
+        : g_app->themePalette.secondaryText;
     HBRUSH backgroundBrush = CreateSolidBrush(background);
     if (dwmCornersSupported(g_app->detailPreview)) {
         FillRect(buffer, &client, backgroundBrush);
@@ -6560,8 +6616,8 @@ bool activatePopupSearchFocus(bool imeMode) {
     g_app->popupActivated = GetForegroundWindow() == g_app->popup;
     if (!g_app->popupActivated) {
         g_app->popupImeMode = false;
-        // Win+V 弹窗不抢占前台，输入由低级键盘钩子转发；只有 IME 模式需要真实焦点。
-        if (imeMode) g_app->popupSearchInputActive = false;
+        // 聚焦失败不能继续全局转发，否则其他应用的键盘输入会被搜索框吞掉。
+        g_app->popupSearchInputActive = false;
         g_app->popupSuppressImeTriggerSpace = false;
         return false;
     }
@@ -6638,6 +6694,30 @@ bool popupCommandShortcutMatches(UINT virtualKey) {
         shortcutMatches(g_app->settingsData.popupFilterHotkey, virtualKey);
 }
 
+// 无系统焦点时只转发搜索编辑键与明确配置的历史快捷键。
+bool isPopupSearchKey(UINT virtualKey, UINT modifiers) {
+    const Settings& settings = g_app->settingsData;
+    const auto matches = [virtualKey, modifiers](const ShortcutBinding& binding) {
+        return binding.virtualKey == virtualKey && binding.modifiers == modifiers;
+    };
+    if (matches(settings.popupEditTextHotkey) || matches(settings.popupPinHotkey) ||
+        matches(settings.popupSpecialCategoriesHotkey) || matches(settings.popupFilterHotkey) ||
+        matches(settings.popupPasteHotkey) || matches(settings.popupPlainPasteHotkey) ||
+        matches(settings.popupCloseHotkey) || matches(settings.popupSettingsHotkey) ||
+        matches(settings.popupClearFilterHotkey) ||
+        (settings.previewByKey && matches(settings.popupPreviewHotkey))) return true;
+    if ((modifiers & (MOD_ALT | MOD_WIN)) != 0) return false;
+    if ((modifiers & MOD_CONTROL) != 0) {
+        return virtualKey == 'A' || virtualKey == 'C' || virtualKey == 'V' ||
+            virtualKey == 'X' || virtualKey == 'Z' || virtualKey == 'Y' ||
+            virtualKey == VK_BACK || virtualKey == VK_DELETE || virtualKey == VK_INSERT ||
+            virtualKey == VK_LEFT || virtualKey == VK_RIGHT || virtualKey == VK_HOME ||
+            virtualKey == VK_END || virtualKey == VK_SPACE;
+    }
+    return isPopupTextInputKey(virtualKey) || virtualKey == VK_INSERT ||
+        (isPopupKeyboardCommand(virtualKey) && virtualKey != VK_F10);
+}
+
 LPARAM popupKeyMessageLParam(const KBDLLHOOKSTRUCT& key, bool keyUp) {
     LPARAM value = 1L | (static_cast<LPARAM>(key.scanCode & 0xff) << 16);
     if ((key.flags & LLKHF_EXTENDED) != 0) value |= 1L << 24;
@@ -6645,18 +6725,18 @@ LPARAM popupKeyMessageLParam(const KBDLLHOOKSTRUCT& key, bool keyUp) {
     return value;
 }
 
-void forwardPopupSearchKey(const KBDLLHOOKSTRUCT& key, WPARAM hookMessage) {
-    if (!g_app || !g_app->searchEdit || !IsWindow(g_app->searchEdit)) return;
+bool forwardPopupSearchKey(const KBDLLHOOKSTRUCT& key, WPARAM hookMessage) {
+    if (!g_app || !g_app->searchEdit || !IsWindow(g_app->searchEdit)) return false;
     const bool keyDown = hookMessage == WM_KEYDOWN || hookMessage == WM_SYSKEYDOWN;
     const bool keyUp = hookMessage == WM_KEYUP || hookMessage == WM_SYSKEYUP;
-    if (!keyDown && !keyUp) return;
+    if (!keyDown && !keyUp) return false;
     const bool systemKey = (key.flags & LLKHF_ALTDOWN) != 0;
     const UINT message = keyDown
         ? (systemKey ? WM_SYSKEYDOWN : WM_KEYDOWN)
         : (systemKey ? WM_SYSKEYUP : WM_KEYUP);
     const LPARAM lParam = popupKeyMessageLParam(key, keyUp);
     updatePopupSearchKeyboardState(key, keyDown);
-    PostMessageW(g_app->searchEdit, message, key.vkCode, lParam);
+    return PostMessageW(g_app->searchEdit, message, key.vkCode, lParam) != FALSE;
 }
 
 LRESULT CALLBACK popupKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
@@ -6666,7 +6746,12 @@ LRESULT CALLBACK popupKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
         const bool keyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
         const bool keyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
         const bool injected = (key->flags & LLKHF_INJECTED) != 0;
-        const bool popupHasNoSystemFocus = GetForegroundWindow() != g_app->popup;
+        const HWND foreground = GetForegroundWindow();
+        const bool popupHasNoSystemFocus = foreground != g_app->popup;
+        if (key->vkCode >= g_app->popupSearchKeys.size() || !IsWindowVisible(g_app->popup) ||
+            (popupHasNoSystemFocus && (g_app->popupActivated || foreground != g_app->targetWindow))) {
+            return CallNextHookEx(nullptr, code, wParam, lParam);
+        }
         const bool searchHasFocus = popupSearchHasFocus();
         const bool noteHasFocus = popupNoteHasFocus();
         if (!injected && (keyDown || keyUp) && !searchHasFocus &&
@@ -6687,16 +6772,45 @@ LRESULT CALLBACK popupKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
         }
         if (!injected && popupHasNoSystemFocus && searchHasFocus && (keyDown || keyUp) &&
             key->vkCode != VK_LWIN && key->vkCode != VK_RWIN) {
+            // 修饰键交给系统，同时同步转发搜索所需的键盘状态。
+            if (key->vkCode == VK_SHIFT || key->vkCode == VK_LSHIFT || key->vkCode == VK_RSHIFT ||
+                key->vkCode == VK_CONTROL || key->vkCode == VK_LCONTROL || key->vkCode == VK_RCONTROL ||
+                key->vkCode == VK_MENU || key->vkCode == VK_LMENU || key->vkCode == VK_RMENU ||
+                key->vkCode == VK_CAPITAL || key->vkCode == VK_NUMLOCK || key->vkCode == VK_SCROLL) {
+                updatePopupSearchKeyboardState(*key, keyDown);
+                return CallNextHookEx(nullptr, code, wParam, lParam);
+            }
+            if (keyUp) {
+                if (!g_app->popupSearchKeys[key->vkCode]) return CallNextHookEx(nullptr, code, wParam, lParam);
+                g_app->popupSearchKeys[key->vkCode] = false;
+                return forwardPopupSearchKey(*key, wParam) ? 1 : CallNextHookEx(nullptr, code, wParam, lParam);
+            }
+            UINT modifiers = 0;
+            if (GetAsyncKeyState(VK_CONTROL) & 0x8000) modifiers |= MOD_CONTROL;
+            if ((GetAsyncKeyState(VK_MENU) & 0x8000) || (key->flags & LLKHF_ALTDOWN)) modifiers |= MOD_ALT;
+            if (GetAsyncKeyState(VK_SHIFT) & 0x8000) modifiers |= MOD_SHIFT;
+            if (g_app->winKeyDown || ((GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000)) {
+                modifiers |= MOD_WIN;
+            }
+            if (!g_app->popupSearchKeys[key->vkCode] &&
+                ((modifiers & MOD_WIN) != 0 || !isPopupSearchKey(key->vkCode, modifiers))) {
+                return CallNextHookEx(nullptr, code, wParam, lParam);
+            }
             if (keyDown && popupShouldEnterImeMode(*key)) {
                 auto* event = new PopupImeKeyEvent{*key, wParam};
                 if (!PostMessageW(g_app->hidden, kPopupEnterImeMessage,
                                   reinterpret_cast<WPARAM>(event), 0)) {
                     delete event;
+                    return CallNextHookEx(nullptr, code, wParam, lParam);
                 }
+                g_app->popupSearchKeys[key->vkCode] = true;
                 return 1;
             }
-            forwardPopupSearchKey(*key, wParam);
-            return 1;
+            if (forwardPopupSearchKey(*key, wParam)) {
+                g_app->popupSearchKeys[key->vkCode] = true;
+                return 1;
+            }
+            return CallNextHookEx(nullptr, code, wParam, lParam);
         }
         if (!injected && (keyDown || keyUp) && isPopupKeyboardCommand(key->vkCode) &&
             popupHasNoSystemFocus && !searchHasFocus && !noteHasFocus) {
@@ -6721,6 +6835,7 @@ LRESULT CALLBACK popupKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
 
 void updatePopupKeyboardHook() {
     if (!g_app) return;
+    g_app->popupSearchKeys.fill(false);
     if (g_app->popupKeyboardHook) {
         UnhookWindowsHookEx(g_app->popupKeyboardHook);
         g_app->popupKeyboardHook = nullptr;
@@ -7590,8 +7705,13 @@ LRESULT CALLBACK editProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         g_app->popupSuppressImeTriggerSpace = false;
         return 0;
     }
-    if (message == WM_KEYUP && wParam == VK_SPACE) {
+    if ((message == WM_KEYUP || message == WM_SYSKEYUP) && wParam == VK_SPACE) {
         g_app->popupSuppressImeTriggerSpace = false;
+    }
+    if ((message == WM_KEYUP || message == WM_SYSKEYUP) && g_app->detailPreviewHeld &&
+        wParam == g_app->settingsData.popupPreviewHotkey.virtualKey) {
+        updateDetailPreviewKeyState(false);
+        return 0;
     }
     if (message == WM_LBUTTONDOWN && !g_app->settingsData.searchImeCompatibility) {
         activatePopupSearchFocus(false);
@@ -7605,12 +7725,28 @@ LRESULT CALLBACK editProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         if (message == WM_KILLFOCUS) {
             g_app->popupSearchInputActive = false;
             g_app->popupSearchControlDown = false;
+            g_app->popupSearchKeys.fill(false);
+            if (g_app->detailPreviewHeld) updateDetailPreviewKeyState(false);
         }
         InvalidateRect(hwnd, nullptr, FALSE);
         if (g_app->popup) InvalidateRect(g_app->popup, nullptr, FALSE);
         return result;
     }
-    if (message == WM_KEYDOWN) {
+    if (message == WM_KEYDOWN || message == WM_SYSKEYDOWN) {
+        if (wParam == 'A' && shortcutModifiersFromKeyboard() == MOD_CONTROL) {
+            SendMessageW(hwnd, EM_SETSEL, 0, -1);
+            return 0;
+        }
+        if (g_app->settingsData.previewByKey &&
+            shortcutMatches(g_app->settingsData.popupPreviewHotkey, static_cast<UINT>(wParam))) {
+            updateDetailPreviewKeyState(true);
+            return 0;
+        }
+        if (shortcutMatches(g_app->settingsData.popupClearFilterHotkey, static_cast<UINT>(wParam))) {
+            resetPopupFilters();
+            refreshVisibleForFilter();
+            return 0;
+        }
         if (shortcutMatches(g_app->settingsData.popupEditTextHotkey, static_cast<UINT>(wParam))) {
             closePopupContextMenu();
             executePopupContextCommand(kMenuEditText);
@@ -7643,7 +7779,8 @@ LRESULT CALLBACK editProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
             closePopup();
             return 0;
         }
-        if (wParam == VK_DOWN || wParam == VK_UP || wParam == VK_TAB) {
+        if ((wParam == VK_DOWN || wParam == VK_UP || wParam == VK_TAB) &&
+            shortcutModifiersFromKeyboard() == 0) {
             PostMessageW(g_app->hidden, kPopupKeyboardMessage, wParam, 0);
             return 0;
         }
@@ -8227,7 +8364,7 @@ void paintSettingsScrollbar(HWND hwnd, HDC dc, int contentHeight) {
     GetClientRect(hwnd, &client);
     const bool highContrast = highContrastEnabled();
     const COLORREF trackColor = highContrast ? GetSysColor(COLOR_SCROLLBAR) :
-        settingsModeColor(RGB(232, 236, 240), RGB(44, 52, 62));
+        themeColor(ThemeColorRole::Divider);
     const COLORREF thumbColor = highContrast ? GetSysColor(COLOR_HIGHLIGHT) :
         (g_app->settingsScrollDragging ? settingsAccentColor() :
             themeColor(ThemeColorRole::DisabledText));
@@ -8281,9 +8418,9 @@ void createPopupPaintFonts() {
     if (!g_app) return;
     g_app->popupTitleFont = createCachedFont(13, FW_SEMIBOLD, L"Microsoft YaHei");
     g_app->popupHeaderFont = createCachedFont(11, FW_SEMIBOLD, L"Microsoft YaHei");
-    g_app->popupFilterFont = createCachedFont(11, FW_NORMAL, L"Microsoft YaHei");
+    g_app->popupFilterFont = createCachedFont(11, FW_MEDIUM, L"Microsoft YaHei");
     g_app->popupPreviewFont = createCachedFont(13, FW_NORMAL, L"Microsoft YaHei");
-    g_app->popupMetaFont = createCachedFont(10, FW_NORMAL, L"Microsoft YaHei");
+    g_app->popupMetaFont = createCachedFont(10, FW_MEDIUM, L"Microsoft YaHei");
 }
 
 void drawTextEditorButton(const DRAWITEMSTRUCT& item) {
@@ -8921,7 +9058,8 @@ void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
     COLORREF text = themeColor(ThemeColorRole::Text);
     COLORREF secondary = themeColor(ThemeColorRole::SecondaryText);
     COLORREF accent = settingsAccentColor();
-    if (highContrastEnabled()) {
+    const bool highContrast = highContrastEnabled();
+    if (highContrast) {
         windowBackground = GetSysColor(COLOR_WINDOW);
         sidebarBackground = GetSysColor(COLOR_BTNFACE);
         cardBackground = GetSysColor(COLOR_WINDOW);
@@ -9022,13 +9160,14 @@ void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
     RECT menuTitle{ui(24), ui(22), ui(156), ui(42)};
     DrawTextW(dc, L"ClipLite", -1, &menuTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     for (int i = 0; i < 6; ++i) {
-        const int top = 54 + i * 38;
+        const int top = 50 + i * 38;
         const bool active = i == g_app->settingsTab;
         const bool hovered = i == g_app->hoveredSettingsTab;
         const COLORREF navColor = active || hovered ? accent : secondary;
         SetTextColor(dc, navColor);
-        drawSettingsNavIcon(dc, i, ui(24), ui(top + 3), navColor);
-        RECT label{ui(52), ui(top), ui(168), ui(top + 30)};
+        RECT label{ui(52), ui(top), ui(168), ui(top + 34)};
+        drawSettingsNavIcon(dc, i, ui(24),
+                            label.top + (label.bottom - label.top - ui(24)) / 2, navColor);
         DrawTextW(dc, navLabels[i], -1, &label, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
@@ -9049,7 +9188,8 @@ void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
     SelectObject(dc, bodyFont);
     SetTextColor(dc, g_app->settingsActionFeedback.empty()
         ? secondary
-        : (g_app->settingsActionFeedbackSuccess ? accent : RGB(185, 28, 28)));
+        : (highContrast ? text :
+            (g_app->settingsActionFeedbackSuccess ? accent : themeColor(ThemeColorRole::Error))));
     RECT saveState{themeLeft + themeWidth + ui(kSettingsThemeGap), ui(20),
                    themeLeft + themeWidth + ui(kSettingsThemeGap + kSettingsThemeSaveWidth), ui(42)};
     const wchar_t* saveLabel = g_app->settingsActionFeedback.empty()
@@ -9057,8 +9197,9 @@ void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
     DrawTextW(dc, saveLabel, -1, &saveState,
               DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     if (g_app->settingsTab == kSettingsAppearancePage) {
-        const COLORREF themeSurface = themeColor(ThemeColorRole::SidebarBackground);
-        const COLORREF themeLine = themeColor(ThemeColorRole::Border);
+        const COLORREF themeSurface = highContrast ? sidebarBackground
+            : themeColor(ThemeColorRole::SidebarBackground);
+        const COLORREF themeLine = line;
         drawRounded(RECT{themeLeft, themeTop, themeLeft + themeWidth, themeTop + ui(30)},
                     themeSurface, themeLine, 15);
         const int themeMode = g_app->settingsData.themeSelection.followSystem ? 0 :
@@ -9071,10 +9212,11 @@ void paintSettingsContent(HWND hwnd, HDC dc, bool bodyOnly = false) {
             const bool hovered = g_app->hoveredSettingsThemeMode == i;
             if (selected || hovered) {
                 const COLORREF segmentBackground = selected ? accent :
-                    themeColor(ThemeColorRole::HoverBackground);
+                    (highContrast ? GetSysColor(COLOR_WINDOW) : themeColor(ThemeColorRole::HoverBackground));
                 drawRounded(modeRect, segmentBackground, segmentBackground, 12);
             }
-            const COLORREF iconColor = selected ? RGB(255, 255, 255) :
+            const COLORREF iconColor = selected ? (highContrast ? GetSysColor(COLOR_HIGHLIGHTTEXT)
+                                                               : RGB(255, 255, 255)) :
                 (hovered ? accent : secondary);
             drawSettingsThemeIcon(dc, i,
                                   (modeRect.left + modeRect.right) / 2,
@@ -9401,7 +9543,16 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     COLORREF cardBorder = themeColor(ThemeColorRole::Divider);
     COLORREF chip = themeColor(ThemeColorRole::InputBackground);
     COLORREF accent = settingsAccentColor();
-    if (highContrastEnabled()) {
+    COLORREF previewBackground = themeColor(ThemeColorRole::PreviewBackground);
+    COLORREF hover = themeColor(ThemeColorRole::HoverBackground);
+    COLORREF accentSoft = settingsAccentSoftColor();
+    COLORREF pin = RGB((GetRValue(secondary) * 3 + GetRValue(accent)) / 4,
+                       (GetGValue(secondary) * 3 + GetGValue(accent)) / 4,
+                       (GetBValue(secondary) * 3 + GetBValue(accent)) / 4);
+    COLORREF error = themeColor(ThemeColorRole::Error);
+    COLORREF disabled = themeColor(ThemeColorRole::DisabledText);
+    const bool highContrast = highContrastEnabled();
+    if (highContrast) {
         background = GetSysColor(COLOR_WINDOW);
         text = GetSysColor(COLOR_WINDOWTEXT);
         secondary = GetSysColor(COLOR_WINDOWTEXT);
@@ -9410,6 +9561,12 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         cardBorder = GetSysColor(COLOR_WINDOWTEXT);
         chip = GetSysColor(COLOR_WINDOW);
         accent = GetSysColor(COLOR_HIGHLIGHT);
+        previewBackground = GetSysColor(COLOR_WINDOW);
+        hover = GetSysColor(COLOR_WINDOW);
+        accentSoft = GetSysColor(COLOR_WINDOW);
+        pin = GetSysColor(COLOR_WINDOWTEXT);
+        error = GetSysColor(COLOR_WINDOWTEXT);
+        disabled = GetSysColor(COLOR_WINDOWTEXT);
     }
     if (!g_app->popupDwmFrame && g_app->popupWinRegion) {
         // Win10 回退：背景与边框直接由窗口区域生成，外框与轮廓逐像素一致，无杂色缝隙。
@@ -9448,7 +9605,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     RECT titleRect{ui(12), ui(kPopupHeaderTop), ui(76), ui(kPopupHeaderBottom)};
     if (g_app->hoveredHeader) {
         drawGdiRoundedSurface(dc, titleRect,
-                              settingsAccentSoftColor(), settingsAccentSoftColor(), 6);
+                              accentSoft, accentSoft, 6);
     }
     DrawTextW(dc, L"ClipLite", -1, &titleRect,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -9457,7 +9614,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     const RECT searchRect{ui(kPopupSearchLeft), ui(kPopupHeaderTop),
                           ui(kPopupSearchRight), ui(kPopupHeaderBottom)};
     drawGdiRoundedSurface(dc, searchRect,
-                          themeColor(ThemeColorRole::InputBackground),
+                          chip,
                           searchBorder, 6);
     drawSearchIcon(dc, ui(kPopupSearchLeft + 14), ui(28),
                    g_app->searchEdit && g_app->popupSearchInputActive ? accent : secondary);
@@ -9468,11 +9625,10 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         if (g_app->hoveredFilter == 7) {
             RECT clearHoverRect = clearRect;
             InflateRect(&clearHoverRect, -ui(1), -ui(2));
-            drawGdiRoundedSurface(dc, clearHoverRect, settingsAccentSoftColor(),
-                                  settingsAccentSoftColor(), 4);
+            drawGdiRoundedSurface(dc, clearHoverRect, accentSoft, accentSoft, 4);
         }
         SetTextColor(dc, g_app->hoveredFilter == 7 ? accent : secondary);
-        drawDeleteIcon(dc, (clearRect.left + clearRect.right) / 2 - ui(5),
+        drawCloseIcon(dc, (clearRect.left + clearRect.right) / 2 - ui(5),
                        (clearRect.top + clearRect.bottom) / 2 - ui(5),
                        g_app->hoveredFilter == 7 ? accent : secondary);
     }
@@ -9481,7 +9637,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     const RECT filterButtonRect{ui(kPopupFilterButtonLeft), ui(kPopupHeaderTop),
                                 ui(kPopupFilterButtonRight), ui(kPopupHeaderBottom)};
     drawGdiRoundedSurface(dc, filterButtonRect,
-                          filterActive ? settingsAccentSoftColor() : chip,
+                          filterActive ? accentSoft : chip,
                           filterActive || g_app->hoveredFilter == 10 ? accent : border, 6);
     const COLORREF filterColor = filterActive || g_app->hoveredFilter == 10 ? accent : secondary;
     drawFilterIcon(dc, ui(kPopupFilterButtonLeft + 13), ui(28), filterColor);
@@ -9495,22 +9651,20 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     const RECT closeRect{ui(kPopupCloseLeft), ui(kPopupHeaderTop),
                          client.right - ui(kPopupCloseRightInset), ui(kPopupHeaderBottom)};
     if (g_app->hoveredFilter == 8 && !g_app->popupPinned) {
-        drawGdiRoundedSurface(dc, pinRect, settingsAccentSoftColor(),
-                              settingsAccentSoftColor(), 6);
+        drawGdiRoundedSurface(dc, pinRect, accentSoft, accentSoft, 6);
     }
     if (g_app->hoveredFilter == 9) {
-        drawGdiRoundedSurface(dc, closeRect, settingsAccentSoftColor(),
-                              settingsAccentSoftColor(), 6);
+        drawGdiRoundedSurface(dc, closeRect, accentSoft, accentSoft, 6);
     }
-    const COLORREF pinColor = g_app->popupPinned ? RGB(245, 158, 11) :
-        (g_app->hoveredFilter == 8 ? accent : secondary);
+    const COLORREF pinColor = g_app->hoveredFilter == 8 ? accent :
+        (g_app->popupPinned ? pin : secondary);
     const int pinCenterX = (pinRect.left + pinRect.right) / 2;
     const float pinScale = static_cast<float>(g_uiDpi) / 96.0f * (10.0f / 14.0f);
     const int pinRight = pinCenterX + static_cast<int>(7.0f * pinScale + 0.5f);
     drawPinIcon(dc, pinRight, ui(28), pinColor, g_app->popupPinned);
-    drawDeleteIcon(dc, (closeRect.left + closeRect.right) / 2 - ui(5),
+    drawCloseIcon(dc, (closeRect.left + closeRect.right) / 2 - ui(5),
                    (closeRect.top + closeRect.bottom) / 2 - ui(5),
-                   g_app->hoveredFilter == 9 ? RGB(220, 38, 38) : secondary);
+                   g_app->hoveredFilter == 9 ? error : secondary);
 
     const wchar_t* filterLabels[] = {
         settingsLocale().popupFilterAll, settingsLocale().popupFilterPinned,
@@ -9526,10 +9680,11 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         const bool active = isAutomaticFilterActive(slot);
         const bool hovered = slot == g_app->hoveredFilter;
         const COLORREF chipBackground = active ? accent :
-            (hovered ? themeColor(ThemeColorRole::HoverBackground) : chip);
+            (hovered ? hover : chip);
         const COLORREF chipBorder = active ? accent : (hovered ? accent : border);
         drawGdiRoundedSurface(dc, chipRect, chipBackground, chipBorder, 6);
-        SetTextColor(dc, active || hovered ? (active ? RGB(255, 255, 255) : accent) : secondary);
+        SetTextColor(dc, active ? (highContrast ? GetSysColor(COLOR_HIGHLIGHTTEXT) : RGB(255, 255, 255))
+                               : (hovered ? accent : secondary));
         DrawTextW(dc, filterLabels[slot], -1, const_cast<RECT*>(&chipRect),
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
@@ -9563,8 +9718,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         }
         const bool rowHovered = row == g_app->hoveredRow;
         const bool rowSelected = row == g_app->selected;
-        const COLORREF rowFill = rowSelected ? settingsAccentSoftColor() :
-            (rowHovered ? themeColor(ThemeColorRole::HoverBackground) : card);
+        const COLORREF rowFill = rowSelected ? accentSoft : (rowHovered ? hover : card);
         const COLORREF rowBorder = rowSelected || rowHovered ? accent : cardBorder;
         if (!drawCachedPopupSurface(dc, rowRect, rowFill, rowBorder, 8)) {
             drawGdiRoundedSurface(dc, rowRect, rowFill, rowBorder, 8);
@@ -9610,9 +9764,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         if (missingFiles && missingTagVisible) {
             drawMetadataTag(dc, missingRect,
                             tr(L"File missing", L"文件已不存在"),
-                            settingsModeColor(RGB(254, 226, 226), RGB(76, 52, 56)),
-                            settingsModeColor(RGB(252, 165, 165), RGB(130, 77, 83)),
-                            themeColor(ThemeColorRole::Error), 3);
+                            card, error, error, 3);
         }
         const wchar_t* kind = automaticTypeLabel(item.type);
         SetTextColor(dc, secondary);
@@ -9623,35 +9775,34 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         if (metadataVisible) {
             RECT sourceRect{rowRect.left + ui(12), metadataTop,
                             rowRect.left + ui(84), metadataTop + ui(16)};
-            drawMetadataTag(dc, sourceRect, source, RGB(240, 244, 248), RGB(229, 231, 235),
-                            RGB(75, 85, 99), 3);
+            drawMetadataTag(dc, sourceRect, source, chip, border, secondary, 3);
             RECT typeRect{rowRect.left + ui(92), metadataTop,
                           rowRect.left + ui(140), metadataTop + ui(16)};
-            drawMetadataTag(dc, typeRect, kind, RGB(239, 241, 243), RGB(239, 241, 243),
-                            RGB(85, 85, 85), 3);
+            drawMetadataTag(dc, typeRect, kind, previewBackground,
+                            highContrast ? border : previewBackground,
+                            secondary, 3);
             const std::wstring time = formatRelativeTime(item.timestamp);
             RECT timeRect{rowRect.right - ui(110), metadataTop,
                           rowRect.right - ui(54), metadataTop + ui(16)};
-            SetTextColor(dc, RGB(136, 136, 136));
+            SetTextColor(dc, secondary);
             DrawTextW(dc, time.c_str(), -1, &timeRect, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
             const bool pinHovered = row == g_app->hoveredPinRow;
             const bool favoriteHovered = row == g_app->hoveredFavoriteRow;
             if (item.favorite || rowHovered) {
                 drawFavoriteIcon(dc, rowRect.right - ui(30), metadataTop + ui(8),
-                    item.favorite ? (favoriteHovered ? RGB(217, 119, 6) : RGB(245, 158, 11))
-                                  : (favoriteHovered ? accent : RGB(176, 176, 176)), item.favorite);
+                    favoriteHovered ? accent : (item.favorite ? pin : secondary), item.favorite);
             }
             if (item.pinned) {
                 drawPinIcon(dc, rowRect.right - ui(10), metadataTop + ui(8),
-                            pinHovered ? RGB(217, 119, 6) : RGB(245, 158, 11), true);
+                            pinHovered ? accent : pin, true);
             } else if (rowHovered) {
                 drawPinIcon(dc, rowRect.right - ui(10), metadataTop + ui(8),
-                            pinHovered ? accent : RGB(176, 176, 176));
+                            pinHovered ? accent : secondary);
             }
         }
         if (rowHovered) {
             drawDeleteIcon(dc, rowRect.right - ui(20), y + ui(9),
-                           row == g_app->hoveredDeleteRow ? RGB(220, 38, 38) : RGB(176, 176, 176));
+                           row == g_app->hoveredDeleteRow ? error : secondary);
         }
         y += height + ui(kPopupCardGap);
     }
@@ -9661,7 +9812,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         const int centerX = client.right / 2;
         const int emptyTop = ui(kPopupListTop + 54);
         drawEmptyClipboardIcon(dc, centerX, emptyTop,
-                                 themeColor(ThemeColorRole::DisabledText));
+                                 disabled);
         RECT emptyRect{ui(12), emptyTop + ui(48), client.right - ui(12), emptyTop + ui(72)};
         DrawTextW(dc, empty, -1, &emptyRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
@@ -9673,7 +9824,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     if (popupScrollMetrics(trackTop, trackBottom, thumbTop, thumbHeight, maxOffset)) {
         const RECT scrollRect{client.right - ui(5), thumbTop, client.right - ui(2),
                                thumbTop + thumbHeight};
-        const COLORREF scrollColor = settingsModeColor(RGB(192, 192, 192), RGB(103, 113, 124));
+        const COLORREF scrollColor = highContrast ? GetSysColor(COLOR_HIGHLIGHT) : disabled;
         drawGdiRoundedSurface(dc, scrollRect, scrollColor, scrollColor, 3);
     }
     RestoreDC(dc, listClip);
@@ -9687,7 +9838,7 @@ void paintPopupContent(HWND hwnd, HDC dc) {
     }
     SelectObject(dc, metaFont);
     SetTextColor(dc, secondary);
-    RECT statusRect{ui(12), ui(76), client.right - ui(12), ui(94)};
+    RECT statusRect{ui(12), ui(kPopupFilterBottom), client.right - ui(12), ui(kPopupListTop)};
     DrawTextW(dc, status, -1, &statusRect,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     RestoreDC(dc, popupFrameClip);
@@ -10121,7 +10272,8 @@ bool syncThemeEditorControls(HWND settings) {
     g_app->settingsData.dark = g_app->themeEditorDraft.appearance == ThemeAppearance::Dark;
     g_app->settingsData.themeMode = g_app->settingsData.dark ? 2 : 1;
     if (g_app->detailPreviewRenderer) {
-        g_app->detailPreviewRenderer->setBackground(g_app->themePalette.previewBackground);
+        g_app->detailPreviewRenderer->setBackground(highContrastEnabled()
+            ? GetSysColor(COLOR_WINDOW) : g_app->themePalette.previewBackground);
     }
     refreshDetailPreviewTextEditAppearance();
     if (g_app->detailPreview) InvalidateRect(g_app->detailPreview, nullptr, FALSE);
@@ -10925,12 +11077,16 @@ void paintFilterMenuWindow(HWND hwnd, HDC dc) {
     RECT client{};
     GetClientRect(hwnd, &client);
     const bool isSubmenu = hwnd == g_app->filterSubmenuWindow;
-    const COLORREF background = themeColor(ThemeColorRole::SurfaceBackground);
-    const COLORREF border = themeColor(ThemeColorRole::Border);
-    const COLORREF text = themeColor(ThemeColorRole::Text);
-    const COLORREF secondary = themeColor(ThemeColorRole::SecondaryText);
-    const COLORREF hover = settingsAccentSoftColor();
-    const COLORREF accent = settingsAccentColor();
+    const bool highContrast = highContrastEnabled();
+    const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW)
+        : themeColor(ThemeColorRole::SurfaceBackground);
+    const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT)
+        : themeColor(ThemeColorRole::Border);
+    const COLORREF text = highContrast ? GetSysColor(COLOR_WINDOWTEXT)
+        : themeColor(ThemeColorRole::Text);
+    const COLORREF secondary = highContrast ? text : themeColor(ThemeColorRole::SecondaryText);
+    const COLORREF hover = highContrast ? GetSysColor(COLOR_HIGHLIGHT) : settingsAccentSoftColor();
+    const COLORREF accent = highContrast ? text : settingsAccentColor();
     paintPopupMenuSurface(hwnd, dc, client, background, border);
     SetBkMode(dc, TRANSPARENT);
     SelectObject(dc, g_app->popupFilterFont);
@@ -10959,7 +11115,10 @@ void paintFilterMenuWindow(HWND hwnd, HDC dc) {
         for (int row = 0; row < 4; ++row) {
             RECT rect{ui(5), ui(5 + row * kFilterMenuRowHeight),
                       client.right - ui(5), ui(5 + (row + 1) * kFilterMenuRowHeight)};
-            if (g_app->filterMenuHover == row) {
+            const bool hovered = g_app->filterMenuHover == row;
+            const COLORREF rowText = highContrast && hovered ? GetSysColor(COLOR_HIGHLIGHTTEXT) : text;
+            const COLORREF rowSecondary = highContrast && hovered ? rowText : secondary;
+            if (hovered) {
                 drawGdiRoundedSurface(dc, rect, hover, hover, 5);
             }
             std::wstring value;
@@ -10971,20 +11130,21 @@ void paintFilterMenuWindow(HWND hwnd, HDC dc) {
                     : tr(L"Selected ", L"已选 ") + std::to_wstring(g_app->filterSources.size());
             } else value = sortValues[g_app->filterSort];
             RECT label{ui(16), rect.top, client.right - ui(90), rect.bottom};
-            drawText(groups[row], label, text, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            drawText(groups[row], label, rowText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             RECT valueRect{client.right - ui(88), rect.top, client.right - ui(22), rect.bottom};
-            drawText(value, valueRect, secondary,
+            drawText(value, valueRect, rowSecondary,
                      DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             RECT arrow{client.right - ui(20), rect.top, client.right - ui(10), rect.bottom};
-            drawText(L">", arrow, secondary, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            drawText(L">", arrow, rowSecondary, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
         drawGdiLine(dc, ui(12), ui(141), client.right - ui(12), ui(141),
-                    themeColor(ThemeColorRole::Divider));
+                    highContrast ? text : themeColor(ThemeColorRole::Divider));
         RECT resetRect{ui(5), ui(146), client.right - ui(5), ui(178)};
         if (g_app->filterMenuHover == 4) drawGdiRoundedSurface(dc, resetRect, hover, hover, 5);
         drawText(tr(L"Reset filters", L"重置筛选"),
                  RECT{ui(16), resetRect.top, client.right - ui(16), resetRect.bottom},
-                 popupFilterConditionCount() == 0 ? secondary : text,
+                 highContrast && g_app->filterMenuHover == 4 ? GetSysColor(COLOR_HIGHLIGHTTEXT)
+                     : (popupFilterConditionCount() == 0 ? secondary : text),
                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         return;
     }
@@ -11000,7 +11160,10 @@ void paintFilterMenuWindow(HWND hwnd, HDC dc) {
         const int top = 5 + (row - scroll) * kFilterSubmenuRowHeight;
         RECT rect{ui(5), ui(top), client.right - ui(5), ui(top + kFilterSubmenuRowHeight)};
         if (top + kFilterSubmenuRowHeight <= 5 || top >= MulDiv(client.bottom, 96, static_cast<int>(g_uiDpi))) continue;
-        if (g_app->filterSubmenuHover == row) drawGdiRoundedSurface(dc, rect, hover, hover, 5);
+        const bool hovered = g_app->filterSubmenuHover == row;
+        const COLORREF rowText = highContrast && hovered ? GetSysColor(COLOR_HIGHLIGHTTEXT) : text;
+        const COLORREF rowAccent = highContrast && hovered ? rowText : accent;
+        if (hovered) drawGdiRoundedSurface(dc, rect, hover, hover, 5);
         bool active = false;
         std::wstring label;
         if (submenu == 0) {
@@ -11029,19 +11192,19 @@ void paintFilterMenuWindow(HWND hwnd, HDC dc) {
                                icon, ui(16), ui(16), 0, nullptr, DI_NORMAL);
                 }
             } else {
-                drawFilterIcon(dc, ui(20), rect.top + ui(15), secondary);
+                drawFilterIcon(dc, ui(20), rect.top + ui(15), highContrast ? rowText : secondary);
             }
             if (active) drawText(L"\x2713",
                                  RECT{client.right - ui(27), rect.top, client.right - ui(10), rect.bottom},
-                                 accent, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                                 rowAccent, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             drawText(label, RECT{ui(34), rect.top, client.right - ui(30), rect.bottom},
-                     active ? accent : text,
+                     active ? rowAccent : rowText,
                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         } else {
-            if (active) drawText(L"\x2713", RECT{ui(12), rect.top, ui(27), rect.bottom}, accent,
+            if (active) drawText(L"\x2713", RECT{ui(12), rect.top, ui(27), rect.bottom}, rowAccent,
                                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             drawText(label, RECT{ui(32), rect.top, client.right - ui(12), rect.bottom},
-                     active ? accent : text,
+                     active ? rowAccent : rowText,
                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         }
     }
@@ -11056,8 +11219,10 @@ void paintFilterMenuWindow(HWND hwnd, HDC dc) {
         const RECT track{client.right - ui(8), trackTop, client.right - ui(5), trackBottom};
         const RECT thumb{client.right - ui(10), thumbTop, client.right - ui(4),
                          thumbTop + thumbHeight};
-        const COLORREF trackColor = settingsModeColor(RGB(242, 244, 247), RGB(58, 64, 72));
-        const COLORREF thumbColor = settingsModeColor(RGB(190, 195, 202), RGB(112, 123, 136));
+        const COLORREF trackColor = highContrast ? GetSysColor(COLOR_SCROLLBAR)
+            : themeColor(ThemeColorRole::Divider);
+        const COLORREF thumbColor = highContrast ? GetSysColor(COLOR_HIGHLIGHT)
+            : themeColor(ThemeColorRole::DisabledText);
         drawGdiRoundedSurface(dc, track, trackColor, trackColor, 2);
         drawGdiRoundedSurface(dc, thumb,
                               thumbColor, thumbColor, 3);
@@ -11389,8 +11554,17 @@ void showPopupContextSubmenu(int row) {
 void paintPopupContextSubmenu(HWND hwnd, HDC dc) {
     RECT client{};
     GetClientRect(hwnd, &client);
-    paintPopupMenuSurface(hwnd, dc, client, themeColor(ThemeColorRole::SurfaceBackground),
-                          themeColor(ThemeColorRole::Border));
+    const bool highContrast = highContrastEnabled();
+    const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW)
+        : themeColor(ThemeColorRole::SurfaceBackground);
+    const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT)
+        : themeColor(ThemeColorRole::Border);
+    const COLORREF text = highContrast ? GetSysColor(COLOR_WINDOWTEXT)
+        : themeColor(ThemeColorRole::Text);
+    const COLORREF secondary = highContrast ? text : themeColor(ThemeColorRole::SecondaryText);
+    const COLORREF hover = highContrast ? GetSysColor(COLOR_HIGHLIGHT) : settingsAccentSoftColor();
+    const COLORREF accent = highContrast ? text : settingsAccentColor();
+    paintPopupMenuSurface(hwnd, dc, client, background, border);
     SetBkMode(dc, TRANSPARENT);
     SelectObject(dc, g_app->popupFilterFont);
     // 右键菜单自定义子菜单：多选勾选列表，展示全部可配置的一级菜单项。
@@ -11399,22 +11573,23 @@ void paintPopupContextSubmenu(HWND hwnd, HDC dc) {
             const int top = ui(5 + static_cast<int>(row) * kPopupContextMenuRowHeight);
             const RECT itemRect{ui(5), top, client.right - ui(5),
                                 top + ui(kPopupContextMenuRowHeight)};
-            if (static_cast<int>(row) == g_app->popupContextSubmenuHover) {
-                drawGdiRoundedSurface(dc, itemRect, settingsAccentSoftColor(),
-                                      settingsAccentSoftColor(), 5);
+            const bool hovered = static_cast<int>(row) == g_app->popupContextSubmenuHover;
+            const COLORREF rowText = highContrast && hovered ? GetSysColor(COLOR_HIGHLIGHTTEXT) : text;
+            if (hovered) {
+                drawGdiRoundedSurface(dc, itemRect, hover, hover, 5);
             }
             // 勾选位固定在左侧，文本统一缩进对齐，与预览模式二级菜单布局一致。
             const bool checked = popupContextCommandChecked(
                 kPopupContextConfigEntries[row].command);
             RECT check{ui(12), top, ui(27), itemRect.bottom};
             if (checked) {
-                SetTextColor(dc, settingsAccentColor());
+                SetTextColor(dc, highContrast ? rowText : accent);
                 DrawTextW(dc, L"\x2713", -1, &check, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
             const std::wstring label = popupContextConfigLabel(
                 kPopupContextConfigEntries[row].command, nullptr);
             RECT textRect{ui(32), top, client.right - ui(12), itemRect.bottom};
-            SetTextColor(dc, themeColor(ThemeColorRole::Text));
+            SetTextColor(dc, rowText);
             DrawTextW(dc, label.c_str(), -1, &textRect,
                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         }
@@ -11438,11 +11613,13 @@ void paintPopupContextSubmenu(HWND hwnd, HDC dc) {
     for (int row = 0; row < 3; ++row) {
         const int top = ui(5 + row * kPopupContextMenuRowHeight);
         const RECT itemRect{ui(5), top, client.right - ui(5), top + ui(kPopupContextMenuRowHeight)};
-        if (row == g_app->popupContextSubmenuHover) {
-            drawGdiRoundedSurface(dc, itemRect, settingsAccentSoftColor(),
-                                  settingsAccentSoftColor(), 5);
+        const bool hovered = row == g_app->popupContextSubmenuHover;
+        const COLORREF rowText = highContrast && hovered ? GetSysColor(COLOR_HIGHLIGHTTEXT)
+            : (row == active ? accent : text);
+        if (hovered) {
+            drawGdiRoundedSurface(dc, itemRect, hover, hover, 5);
         }
-        SetTextColor(dc, row == active ? settingsAccentColor() : themeColor(ThemeColorRole::Text));
+        SetTextColor(dc, rowText);
         RECT check{ui(12), top, ui(27), itemRect.bottom};
         if (row == active) DrawTextW(dc, L"\x2713", -1, &check,
                                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -11457,11 +11634,10 @@ void paintPopupContextSubmenu(HWND hwnd, HDC dc) {
                                                       shortcutRight - shortcutSize.cx);
             label.right = std::max<LONG>(label.left, shortcutLeft - ui(8));
             RECT shortcut{shortcutLeft, top, shortcutRight, itemRect.bottom};
-            SetTextColor(dc, themeColor(ThemeColorRole::SecondaryText));
+            SetTextColor(dc, highContrast ? rowText : secondary);
             DrawTextW(dc, previewShortcut.c_str(), -1, &shortcut,
                       DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
-            SetTextColor(dc, row == active ? settingsAccentColor() :
-                         themeColor(ThemeColorRole::Text));
+            SetTextColor(dc, rowText);
         }
         DrawTextW(dc, labels[row], -1, &label, DT_LEFT | DT_VCENTER | DT_SINGLELINE |
                   DT_END_ELLIPSIS);
@@ -11763,20 +11939,27 @@ void showPopupContextMenu(HWND hwnd, int row) {
 void paintPopupContextMenuWindow(HWND hwnd, HDC dc) {
     RECT client{};
     GetClientRect(hwnd, &client);
-    const COLORREF background = themeColor(ThemeColorRole::SurfaceBackground);
-    const COLORREF border = themeColor(ThemeColorRole::Border);
-    const COLORREF text = themeColor(ThemeColorRole::Text);
-    const COLORREF hover = settingsAccentSoftColor();
+    const bool highContrast = highContrastEnabled();
+    const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW)
+        : themeColor(ThemeColorRole::SurfaceBackground);
+    const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT)
+        : themeColor(ThemeColorRole::Border);
+    const COLORREF text = highContrast ? GetSysColor(COLOR_WINDOWTEXT)
+        : themeColor(ThemeColorRole::Text);
+    const COLORREF hover = highContrast ? GetSysColor(COLOR_HIGHLIGHT) : settingsAccentSoftColor();
     paintPopupMenuSurface(hwnd, dc, client, background, border);
     SetBkMode(dc, TRANSPARENT);
     SelectObject(dc, g_app->popupFilterFont);
     for (std::size_t i = 0; i < g_app->popupContextMenuItems.size(); ++i) {
         const int top = ui(5 + static_cast<int>(i) * kPopupContextMenuRowHeight);
         RECT row{ui(5), top, client.right - ui(5), top + ui(kPopupContextMenuRowHeight)};
-        if (static_cast<int>(i) == g_app->popupContextMenuHover) {
+        const bool hovered = static_cast<int>(i) == g_app->popupContextMenuHover;
+        const COLORREF rowText = highContrast && hovered ? GetSysColor(COLOR_HIGHLIGHTTEXT) : text;
+        const COLORREF rowSecondary = highContrast ? rowText : themeColor(ThemeColorRole::SecondaryText);
+        if (hovered) {
             drawGdiRoundedSurface(dc, row, hover, hover, 5);
         }
-        SetTextColor(dc, text);
+        SetTextColor(dc, rowText);
         const bool hasArrow = g_app->popupContextMenuItems[i].command == kMenuPreviewMode ||
             g_app->popupContextMenuItems[i].command == kMenuClearHistory ||
             g_app->popupContextMenuItems[i].command == kMenuPopupDensity ||
@@ -11794,10 +11977,10 @@ void paintPopupContextMenuWindow(HWND hwnd, HDC dc) {
                                                       shortcutRight - shortcutSize.cx);
             label.right = std::max<LONG>(label.left, shortcutLeft - ui(8));
             RECT shortcutRect{shortcutLeft, top, shortcutRight, row.bottom};
-            SetTextColor(dc, themeColor(ThemeColorRole::SecondaryText));
+            SetTextColor(dc, rowSecondary);
             DrawTextW(dc, shortcut.c_str(), -1, &shortcutRect,
                       DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
-            SetTextColor(dc, text);
+            SetTextColor(dc, rowText);
         }
         DrawTextW(dc, g_app->popupContextMenuItems[i].label.c_str(), -1, &label,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -11806,12 +11989,12 @@ void paintPopupContextMenuWindow(HWND hwnd, HDC dc) {
             g_app->popupContextMenuItems[i].command == kMenuPopupDensity ||
             g_app->popupContextMenuItems[i].command == kMenuCustomizeMenu) {
             RECT arrow{client.right - ui(26), top, client.right - ui(10), row.bottom};
-            SetTextColor(dc, themeColor(ThemeColorRole::SecondaryText));
+            SetTextColor(dc, rowSecondary);
             DrawTextW(dc, L">", -1, &arrow, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
         if (g_app->popupContextMenuItems[i].checked) {
             RECT check{client.right - ui(28), top, client.right - ui(10), row.bottom};
-            SetTextColor(dc, settingsAccentColor());
+            SetTextColor(dc, highContrast ? rowText : settingsAccentColor());
             DrawTextW(dc, L"\x2713", -1, &check, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
     }
@@ -11872,8 +12055,11 @@ void refreshSystemTheme() {
     refreshSettingsBrushes();
     refreshPopupBrush();
     if (g_app->detailPreviewRenderer) {
-        g_app->detailPreviewRenderer->setBackground(g_app->themePalette.previewBackground);
+        g_app->detailPreviewRenderer->setBackground(highContrastEnabled()
+            ? GetSysColor(COLOR_WINDOW) : g_app->themePalette.previewBackground);
     }
+    refreshDetailPreviewTextEditAppearance();
+    clearPopupSurfaceCache();
     invalidateThemeWindow(g_app->settings);
     invalidateThemeWindow(g_app->popup);
     invalidateThemeWindow(g_app->detailPreview);
@@ -11948,8 +12134,10 @@ void invalidateSettingsTheme(HWND hwnd) {
     refreshSettingsBrushes();
     refreshPopupBrush();
     if (g_app->detailPreviewRenderer) {
-        g_app->detailPreviewRenderer->setBackground(g_app->themePalette.previewBackground);
+        g_app->detailPreviewRenderer->setBackground(highContrastEnabled()
+            ? GetSysColor(COLOR_WINDOW) : g_app->themePalette.previewBackground);
     }
+    refreshDetailPreviewTextEditAppearance();
     clearPopupSurfaceCache();
     if (g_app->popup) clearPopupImagePreviews();
     invalidateThemeWindow(hwnd);
@@ -11957,6 +12145,10 @@ void invalidateSettingsTheme(HWND hwnd) {
     invalidateThemeWindow(g_app->detailPreview);
     invalidateThemeWindow(g_app->detailPreviewTextEdit);
     invalidateThemeWindow(g_app->languageDropdown);
+    invalidateThemeWindow(g_app->filterMenuWindow);
+    invalidateThemeWindow(g_app->filterSubmenuWindow);
+    invalidateThemeWindow(g_app->popupContextMenu);
+    invalidateThemeWindow(g_app->popupContextSubmenu);
 }
 
 void setSettingsThemeMode(HWND hwnd, int mode) {
@@ -12486,11 +12678,6 @@ LONGLONG settingsToggleClockFrequency() {
     return frequency;
 }
 
-float settingsThemeProgress() {
-    if (!g_app || !g_app->settingsThemeAnimating) return 1.0f;
-    return g_app->settingsThemeProgressValue;
-}
-
 bool advanceSettingsThemeAnimation() {
     if (!g_app || !g_app->settingsThemeAnimating) return true;
     const LONGLONG elapsed = settingsToggleClock() - g_app->settingsThemeStartTicks;
@@ -12519,23 +12706,9 @@ COLORREF themeColor(ThemeColorRole role) {
     case ThemeColorRole::Accent: return palette.accent;
     case ThemeColorRole::AccentSoft: return palette.accentSoft;
     case ThemeColorRole::Error: return palette.error;
+    case ThemeColorRole::Pin: return palette.pin;
     }
     return palette.windowBackground;
-}
-
-COLORREF settingsModeColor(COLORREF light, COLORREF dark) {
-    if (!g_app) return light;
-    if (!g_app->settingsThemeAnimating) return g_app->settingsData.dark ? dark : light;
-    const float progress = settingsThemeProgress();
-    const float eased = progress * progress * (3.0f - 2.0f * progress);
-    const COLORREF from = g_app->settingsThemeFromDark ? dark : light;
-    const COLORREF to = g_app->settingsThemeToDark ? dark : light;
-    const auto blend = [eased](BYTE first, BYTE second) {
-        return static_cast<BYTE>(first + (second - first) * eased + 0.5f);
-    };
-    return RGB(blend(GetRValue(from), GetRValue(to)),
-               blend(GetGValue(from), GetGValue(to)),
-               blend(GetBValue(from), GetBValue(to)));
 }
 
 COLORREF settingsAccentColor() {
@@ -12798,7 +12971,7 @@ void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
         const COLORREF surface = highContrast ? GetSysColor(COLOR_WINDOW) :
             themeColor(ThemeColorRole::SurfaceBackground);
         const COLORREF knobSurface = highContrast ? GetSysColor(COLOR_WINDOW) :
-            settingsModeColor(RGB(255, 255, 255), RGB(47, 53, 60));
+            themeColor(ThemeColorRole::InputBackground);
         const COLORREF accent = highContrast ? GetSysColor(COLOR_HIGHLIGHT) : settingsAccentColor();
         const auto lighten = [](COLORREF value, BYTE amount) {
             return RGB(static_cast<BYTE>(GetRValue(value) +
@@ -12808,12 +12981,11 @@ void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
                        static_cast<BYTE>(GetBValue(value) +
                            (255 - GetBValue(value)) * amount / 255));
         };
-        const COLORREF track = checked
-            ? (hovered ? lighten(accent, 28) : accent)
-            : (hovered ? settingsAccentSoftColor()
-                       : settingsModeColor(RGB(197, 208, 208), RGB(75, 84, 95)));
+        const COLORREF track = highContrast ? GetSysColor(checked ? COLOR_HIGHLIGHT : COLOR_WINDOW)
+            : (checked ? (hovered ? lighten(accent, 28) : accent)
+                       : (hovered ? settingsAccentSoftColor() : themeColor(ThemeColorRole::DisabledText)));
         const COLORREF trackBorder = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-            (checked ? track : settingsModeColor(RGB(155, 171, 167), RGB(112, 123, 135)));
+            (checked ? track : themeColor(ThemeColorRole::Border));
         const int centerY = (item.rcItem.top + item.rcItem.bottom) / 2;
         const float trackWidth = static_cast<float>(ui(kSettingsTrackWidth));
         const float trackHeight = static_cast<float>(ui(kSettingsTrackHeight));
@@ -12866,7 +13038,7 @@ void drawSettingsToggle(const DRAWITEMSTRUCT& item) {
         graphics.DrawPath(&trackPen, &trackPath);
         Gdiplus::SolidBrush knobBrush(makeColor(knobSurface));
         Gdiplus::Pen knobPen(makeColor(highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-            settingsModeColor(RGB(224, 231, 228), RGB(214, 220, 226))), 1.0f);
+            themeColor(ThemeColorRole::Border)), 1.0f);
         graphics.FillEllipse(&knobBrush, knobRect);
         graphics.DrawEllipse(&knobPen, knobRect);
         if (bufferBitmap) {
@@ -13009,7 +13181,7 @@ void drawSettingsButton(const DRAWITEMSTRUCT& item) {
            blend(error, surface, hovered || pressed ? 180 : 100));
     const COLORREF text = neutral
         ? (highContrast ? GetSysColor(COLOR_WINDOWTEXT) : settingsAccentColor())
-        : (highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
+        : (highContrast ? GetSysColor(pressed ? COLOR_HIGHLIGHTTEXT : COLOR_WINDOWTEXT) :
            error);
     const int offset = pressed ? ui(1) : 0;
     RECT buttonRect = item.rcItem;
@@ -13048,19 +13220,20 @@ void drawSettingsShortcut(const DRAWITEMSTRUCT& item) {
     const bool focused = (item.itemState & ODS_FOCUS) != 0 || GetFocus() == item.hwndItem;
     const bool hovered = g_app->hoveredSettingsControl == id;
     const bool conflicted = findShortcutConflict(g_app->settingsData, id).firstId >= 0;
-    const COLORREF background = themeColor(ThemeColorRole::SurfaceBackground);
-    const COLORREF border = highContrastEnabled() ? GetSysColor(COLOR_WINDOWTEXT) :
-        (conflicted ? settingsModeColor(RGB(220, 38, 38), RGB(248, 113, 113)) :
+    const bool highContrast = highContrastEnabled();
+    const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW)
+        : themeColor(ThemeColorRole::SurfaceBackground);
+    const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
+        (conflicted ? themeColor(ThemeColorRole::Error) :
          (capturing || focused ? settingsAccentColor() :
           hovered ? settingsAccentColor() :
                     themeColor(ThemeColorRole::Border)));
     drawGdiRoundedSurface(item.hDC, item.rcItem, background, border, 6);
     wchar_t label[128]{};
     GetWindowTextW(item.hwndItem, label, static_cast<int>(sizeof(label) / sizeof(label[0])));
-    const COLORREF shortcutText = conflicted
-        ? themeColor(ThemeColorRole::Error)
-        : (capturing ? settingsAccentColor()
-                     : settingsModeColor(settingsAccentColor(), RGB(238, 241, 245)));
+    const COLORREF shortcutText = highContrast ? GetSysColor(COLOR_WINDOWTEXT)
+        : (conflicted ? themeColor(ThemeColorRole::Error)
+                      : (capturing ? settingsAccentColor() : themeColor(ThemeColorRole::Text)));
     drawSettingsText(item.hDC, g_app->settingsBodyFont, label, item.rcItem, shortcutText,
                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 }
@@ -13189,7 +13362,7 @@ void paintLanguageDropdown(HWND hwnd, HDC dc) {
             }
             const bool hovered = row == g_app->languageDropdownHover;
             if (!active && !hovered) continue;
-            const BYTE alpha = active ? 42 : 24;
+            const BYTE alpha = highContrast ? 255 : (active ? 42 : 24);
             Gdiplus::SolidBrush rowBrush(makeColor(accent, alpha));
             const Gdiplus::RectF rowRect(static_cast<float>(ui(2)),
                                           static_cast<float>(ui(row * 30 + 2)),
@@ -13216,8 +13389,9 @@ void paintLanguageDropdown(HWND hwnd, HDC dc) {
             Gdiplus::GraphicsPath thumbPath;
             addRoundedRect(trackPath, trackRect, static_cast<float>(ui(2)));
             addRoundedRect(thumbPath, thumbRect, static_cast<float>(ui(3)));
-            Gdiplus::SolidBrush trackBrush(makeColor(border, 55));
-            Gdiplus::SolidBrush thumbBrush(makeColor(accent, 190));
+            Gdiplus::SolidBrush trackBrush(makeColor(
+                highContrast ? GetSysColor(COLOR_SCROLLBAR) : border, highContrast ? 255 : 55));
+            Gdiplus::SolidBrush thumbBrush(makeColor(accent, highContrast ? 255 : 190));
             graphics.FillPath(&trackBrush, &trackPath);
             graphics.FillPath(&thumbBrush, &thumbPath);
         }
@@ -13249,12 +13423,14 @@ void paintLanguageDropdown(HWND hwnd, HDC dc) {
             rowLabel = theme ? theme->name.c_str() : L"";
             selectedRow = theme && theme->id == selectedThemeId(g_app->themeDropdownControlId);
         }
-        SetTextColor(renderDc, text);
+        const bool highlighted = selectedRow || row == g_app->languageDropdownHover;
+        const COLORREF rowText = highContrast && highlighted ? GetSysColor(COLOR_HIGHLIGHTTEXT) : text;
+        SetTextColor(renderDc, rowText);
         DrawTextW(renderDc, rowLabel, -1, &rowRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         if (selectedRow) {
             RECT checkRect{contentWidth - ui(26), ui(row * 30 + 3),
                            contentWidth - ui(8), ui(row * 30 + 27)};
-            SetTextColor(renderDc, accent);
+            SetTextColor(renderDc, highContrast ? rowText : accent);
             DrawTextW(renderDc, L"\x2713", -1, &checkRect,
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
@@ -13407,7 +13583,7 @@ void paintSettingsEdit(HWND hwnd, HDC dc, WNDPROC oldProc) {
         RECT placeholder{ui(10), ui(8), width - ui(10), height - ui(8)};
         SetBkMode(bufferDc, TRANSPARENT);
         SetTextColor(bufferDc, highContrast ? GetSysColor(COLOR_GRAYTEXT) :
-            settingsModeColor(RGB(150, 160, 157), RGB(145, 155, 166)));
+            themeColor(ThemeColorRole::DisabledText));
         DrawTextW(bufferDc, settingsLocale().ignoredAppsPlaceholder, -1,
                   &placeholder, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
@@ -13554,9 +13730,7 @@ void paintSettingsEditBorders(HWND hwnd, HDC dc) {
         const bool focused = GetFocus() == edit;
         const bool hovered = g_app->hoveredSettingsControl == id;
         const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT) :
-            (focused ? settingsAccentColor() :
-             hovered ? settingsModeColor(RGB(120, 145, 137), RGB(119, 132, 145)) :
-                       themeColor(ThemeColorRole::Border));
+            (focused || hovered ? settingsAccentColor() : themeColor(ThemeColorRole::Border));
         if (g_app->gdiplusToken != 0) {
             auto makeColor = [](COLORREF value) {
                 return Gdiplus::Color(255, GetRValue(value), GetGValue(value), GetBValue(value));
@@ -13703,6 +13877,11 @@ LRESULT CALLBACK settingsControlProc(HWND hwnd, UINT message, WPARAM wParam, LPA
     HWND settings = settingsWindowFromControl(hwnd);
     wchar_t className[32]{};
     GetClassNameW(hwnd, className, static_cast<int>(sizeof(className) / sizeof(className[0])));
+    if (std::wcscmp(className, L"Edit") == 0 && message == WM_KEYDOWN &&
+        wParam == 'A' && shortcutModifiersFromKeyboard() == MOD_CONTROL) {
+        SendMessageW(hwnd, EM_SETSEL, 0, -1);
+        return 0;
+    }
     if (std::wcscmp(className, L"Edit") == 0 && message == WM_ERASEBKGND) {
         return 1;
     }
@@ -14636,7 +14815,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 : themeColor(ThemeColorRole::InputBackground));
             const int searchEditWidth = kPopupSearchRight - kPopupSearchLeft - 50;
             g_app->searchEdit = CreateWindowExW(0, L"EDIT", L"",
-                                                 WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOHSCROLL,
+                                                 WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                                  ui(kPopupSearchLeft + 27), ui(16), ui(searchEditWidth), ui(24), hwnd,
                                                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSearchEdit)),
                                                  GetModuleHandleW(nullptr), nullptr);
@@ -14644,6 +14823,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                          reinterpret_cast<WPARAM>(g_app->popupFont), TRUE);
             SendMessageW(g_app->searchEdit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
                          MAKELPARAM(ui(0), ui(2)));
+            // 单行 EDIT 顶部绘制文字，按实际字体高度将控件本身居中，光标随之对齐。
             HDC editDc = GetDC(g_app->searchEdit);
             TEXTMETRICW textMetrics{};
             if (editDc) {
@@ -14652,15 +14832,13 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 SelectObject(editDc, oldFont);
                 ReleaseDC(g_app->searchEdit, editDc);
             }
-            const int editHeight = ui(24);
             const int textHeight = textMetrics.tmHeight > 0
                 ? static_cast<int>(textMetrics.tmHeight) : ui(14);
-            const int verticalPadding = std::max(ui(4),
-                (editHeight - textHeight) / 2);
-            RECT editFormat{0, verticalPadding, ui(searchEditWidth - 2),
-                            editHeight - verticalPadding};
-            SendMessageW(g_app->searchEdit, EM_SETRECTNP, 0,
-                         reinterpret_cast<LPARAM>(&editFormat));
+            const int editHeight = textHeight + 2;
+            const int editTop = ui(kPopupHeaderTop) +
+                (ui(kPopupHeaderBottom) - ui(kPopupHeaderTop) - editHeight) / 2;
+            SetWindowPos(g_app->searchEdit, nullptr, ui(kPopupSearchLeft + 27), editTop,
+                         ui(searchEditWidth), editHeight, SWP_NOZORDER | SWP_NOACTIVATE);
             SendMessageW(g_app->searchEdit, EM_SETCUEBANNER, FALSE,
             reinterpret_cast<LPARAM>(settingsLocale().popupSearchPlaceholder));
             g_app->oldEditProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
@@ -16398,6 +16576,11 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 }
                 return 0;
             }
+            if (inSearch) {
+                if (g_app->settingsData.searchImeCompatibility) SetFocus(g_app->searchEdit);
+                else activatePopupSearchFocus(false);
+                return 0;
+            }
             if (GET_Y_LPARAM(lParam) >= ui(kPopupHeaderTop) &&
                 GET_Y_LPARAM(lParam) < ui(kPopupHeaderBottom) &&
                 GET_X_LPARAM(lParam) >= ui(kPopupPinLeft) &&
@@ -16504,6 +16687,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE) {
             if (g_app->filterMenuOpen || g_app->popupContextMenuOpen ||
                 g_app->textEditor || g_app->textEditorLoading) return 0;
+            deactivatePopupSearchFocus();
+            g_app->popupImeMode = false;
             if (g_app->popupPinned || g_app->popupOpenedByWinV) {
                 const HWND target = reinterpret_cast<HWND>(lParam);
                 if (IsWindow(target) && target != hwnd) rememberPasteTarget(target, false);

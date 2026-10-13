@@ -2,9 +2,23 @@
 
 ## Unreleased
 
+- Added Ctrl+A selection to single-line and multiline settings inputs without changing shortcut capture controls.
+- Fixed history-search keyboard hooks swallowing unrelated shortcuts and function keys by limiting forwarding, passing modifiers through, and tracking forwarded key releases; search interception stops after focus failure or foreground loss.
+- Added select-all, clear-filter, and preview shortcut handling in search; modified arrow and Tab keys are no longer unconditionally treated as list navigation.
+- Centered settings navigation text and icons within their selection backgrounds; appearance now uses a palette icon and security/privacy uses a shield with a checkmark.
+- Refined settings navigation icons with a centered 20-logical-pixel canvas and shared 1.35-logical-pixel stroke; removed lines crossing slider knobs and adjusted the information dot.
+- Active favorite stars and pinned item/window icons use a muted blend of secondary text and accent colors, with the full accent on hover; filled states and high-contrast system text colors are retained.
+- Added system high-contrast colors to history filter and context menus, including matching highlighted text, shortcuts, arrows, and checkmarks.
+- Settings toggles, shortcut conflict states, placeholders, hover borders, and scrollbar tracks now use the active palette; dropdown high-contrast highlights are opaque, and the obsolete fixed light/dark color helper was removed.
+- History source/type tags, timestamps, action icons, missing-file labels, and list/source-filter scrollbars now use the active theme palette, with additional high-contrast handling for history content.
+- Fixed open detail text previews retaining their previous text/background colors after theme changes; theme refresh also repaints related menus and clears cached card surfaces.
+- Replaced the history-item delete cross with a trash icon using the shared 1.35 logical-pixel stroke, rounded caps, and GDI+ antialiasing; search-clear and window-close icons remain unchanged.
+- Fixed stale or clipped pixels at the top of history filter status text by matching its partial repaint region to its drawing bounds across DPI scales.
 - Fixed a Windows 10 issue where opening the text editor after focusing history search could leave the editor unclickable; closing or saving now restores the history window position, search results, and scroll position, while Save and paste goes directly to the original target window.
 - Opening the history context or filter menu now clears search focus; fixed missing-file tags overflowing, leaving stale pixels, or changing size after saving a note with Enter.
+- Changed history search to a single-line input centered using actual font metrics so text and caret align together; clicking the vertical padding still focuses search.
 - Unified rounded-corner rendering across the history window, related menus, and detail preview: Windows 11 uses DWM antialiased corners and Windows 10 uses a consistent region fallback.
+- Refined history-window text and icon weights: preview text remains regular, filter and metadata text use a moderate weight, and list action icons now use consistent antialiased strokes across DPI scales.
 
 ## [1.5.2] - 2026-10-11
 
