@@ -44,6 +44,8 @@ void PopupPreviewRenderer::detach() {
 
 void PopupPreviewRenderer::resize(const RECT& content) {
     if (!window_) return;
+    // 在图片到达前预热渲染目标，避免首次显示图片时同步创建 Direct2D 资源。
+    createDeviceResources();
     SetWindowPos(window_, nullptr, content.left, content.top,
                  std::max(0L, content.right - content.left),
                  std::max(0L, content.bottom - content.top),

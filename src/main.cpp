@@ -4240,7 +4240,8 @@ bool isImageFilePath(const std::wstring& path) {
         extensionStart + 1 >= path.size()) return false;
     const std::wstring extension = path.substr(extensionStart + 1);
     const wchar_t* imageExtensions[] = {
-        L"bmp", L"dib", L"gif", L"ico", L"jfif", L"jpeg", L"jpg", L"png", L"tif", L"tiff"
+        L"bmp", L"dib", L"gif", L"ico", L"jpe", L"jfif", L"jpeg", L"jpg", L"png", L"tif", L"tiff",
+        L"webp"
     };
     for (const wchar_t* imageExtension : imageExtensions) {
         if (_wcsicmp(extension.c_str(), imageExtension) == 0) return true;
