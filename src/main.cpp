@@ -335,7 +335,7 @@ constexpr int kSupportQqWidth = 560;
 constexpr int kSupportQqHeight = 700;
 constexpr std::size_t kPopupImagePreviewCacheLimit = 24;
 constexpr std::size_t kPopupSourceIconCacheLimit = 32;
-constexpr char kCurrentVersion[] = "1.5.2";
+constexpr char kCurrentVersion[] = "1.5.3";
 constexpr wchar_t kSourceUrl[] = L"https://github.com/wxh-777/ClipLite";
 constexpr wchar_t kLatestReleaseApiUrl[] =
     L"https://api.github.com/repos/wxh-777/ClipLite/releases/latest";
@@ -1430,7 +1430,7 @@ const SettingsLocale kEnglishSettingsLocale{
      L"Some shortcuts could not be registered. Choose different combinations.",
     L"Custom shortcuts require at least one modifier key.",
     L"Sensitive markers: password, token, api_key, secret, and private keys; detected by content pattern.",
-         L"Application    ClipLite", L"Version        1.5.2 x64", L"Storage format  v4",
+         L"Application    ClipLite", L"Version        1.5.3 x64", L"Storage format  v4",
       L"Data directory  %LOCALAPPDATA%\\ClipLite", L"Browse", L"Clear non-favorite history", L"Clear non-favorite text",
       L"Clear non-favorite images", L"Clear non-favorite files", L"Press shortcut", L"Need modifier", L"One application per line", L"Auto",
     L"ClipLite Settings", L"Choose a valid cache directory.", L"Unable to create the cache directory.",
@@ -1482,7 +1482,7 @@ const SettingsLocale kChineseSettingsLocale{
      L"无法注册“%ls”（%ls），可能已被其他程序或 Windows 占用，已恢复为 %ls。",
      L"部分快捷键注册失败，请更换组合键。", L"自定义快捷键至少需要一个修饰键。",
     L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。",
-          L"应用名称    ClipLite", L"版本        1.5.2 x64", L"存储格式    v4",
+           L"应用名称    ClipLite", L"版本        1.5.3 x64", L"存储格式    v4",
       L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清理未收藏历史", L"清理未收藏文本", L"清理未收藏图片",
        L"清理未收藏文件", L"按下组合键", L"需要修饰键", L"每行一个应用名称", L"自动", L"ClipLite 设置",
     L"请选择有效的缓存目录。", L"无法创建缓存目录。", L"目标目录已有历史数据，请选择空目录。",

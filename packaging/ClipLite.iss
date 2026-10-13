@@ -1,6 +1,6 @@
 #define AppName "ClipLite"
 #ifndef AppVersion
-  #define AppVersion "1.5.2"
+  #define AppVersion "1.5.3"
 #endif
 #ifndef SourceRoot
   #define SourceRoot ".."
@@ -65,13 +65,32 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\ClipLite.exe"; Tasks: desktop
 [Run]
 Filename: "{app}\ClipLite.exe"; Description: "{cm:LaunchApp}"; Flags: nowait postinstall skipifsilent
 
-[Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "ClipLite"; Flags: uninsdeletevalue
-
 [UninstallRun]
 Filename: "{app}\ClipLite.exe"; Parameters: "--exit"; RunOnceId: "ClipLiteExit"; Flags: runhidden waituntilterminated
 
 [Code]
+var
+  StartupRegistrationEnabled: Boolean;
+
+function InitializeSetup(): Boolean;
+var
+  StartupCommand: String;
+begin
+  StartupRegistrationEnabled := RegQueryStringValue(
+    HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'ClipLite', StartupCommand);
+  Result := True;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if (CurStep <> ssPostInstall) or not StartupRegistrationEnabled then
+    Exit;
+
+  RegWriteStringValue(
+    HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'ClipLite',
+    AddQuotes(ExpandConstant('{app}\ClipLite.exe')));
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ExitCode: Integer;
@@ -94,7 +113,14 @@ end;
 procedure CurUninstallStepChanged(UninstallStep: TUninstallStep);
 var
   DataDirectory: String;
+  StartupCommand: String;
 begin
+  if UninstallStep = usUninstall then
+    if RegQueryStringValue(
+         HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'ClipLite', StartupCommand) and
+       (Pos(LowerCase(ExpandConstant('{app}\ClipLite.exe')), LowerCase(StartupCommand)) > 0) then
+      RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'ClipLite');
+
   if UninstallStep <> usPostUninstall then
     Exit;
 
