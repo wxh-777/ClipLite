@@ -4,7 +4,7 @@
 
 复制过的文字、图片、文件和网页内容，之后都可以从历史窗口中搜索并再次粘贴。ClipLite 常驻系统托盘，但尽量不占用本来就有限的桌面资源。
 
-当前正式版本：**1.5.3（Windows x64）**
+当前正式版本：**1.5.4（Windows x64）**
 
 ![Windows](https://img.shields.io/badge/Windows-10%2B-0078D6?style=flat-square&logo=windows&logoColor=white)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?style=flat-square&logo=c%2B%2B&logoColor=white)
@@ -12,6 +12,8 @@
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange?style=flat-square)
 
 [下载和运行](#下载和运行) · [完整使用说明](USAGE.md) · [更新日志](CHANGELOG.md) · [English](README.en.md)
+
+官方网站：https://moyu888.top/clip-lite
 
 ## 小而全
 
@@ -48,6 +50,7 @@ ClipLite 保留剪贴板历史所需的常用功能，同时控制程序体积�
 - 支持按类型、时间范围、内容长度、来源应用和排序方式组合筛选。
 - 收藏和置顶相互独立，历史窗口可以记住上次打开的分类。
 - 历史列表支持紧凑、标准和自适应三种高度模式。
+- 历史窗口支持跟随鼠标、记住上次位置或按屏幕坐标固定弹出位置。
 - 可以限制历史条数、磁盘空间、保留天数和单条内容大小，也可以暂时暂停监听。
 
 ### 预览、编辑和粘贴
@@ -84,8 +87,8 @@ ClipLite 保留剪贴板历史所需的常用功能，同时控制程序体积�
 
 | 版本 | 文件 | 适用方式 |
 | --- | --- | --- |
-| 安装版 | `ClipLite-Setup-1.5.3-x64.exe` | 安装到系统，支持开始菜单、桌面快捷方式和标准卸载 |
-| 便携版 | `ClipLite-1.5.3-portable-win-x64.zip` | 解压整个目录后运行，适合放在 U 盘或其他便携目录 |
+| 安装版 | `ClipLite-Setup-1.5.4-x64.exe` | 安装到系统，支持开始菜单、桌面快捷方式和标准卸载 |
+| 便携版 | `ClipLite-1.5.4-portable-win-x64.zip` | 解压整个目录后运行，适合放在 U 盘或其他便携目录 |
 
 便携版的数据保存在程序目录内的 `data\\` 文件夹。更新便携版时请保留该文件夹，不要只复制新的 `ClipLite.exe`。
 

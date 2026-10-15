@@ -140,6 +140,12 @@ constexpr int kSettingProtectPinnedCleanup = 140;
 constexpr int kSettingSpecialAcrossCategories = 141;
 constexpr int kSettingRememberPopupFilter = 147;
 constexpr int kSettingPopupDensity = 148;
+constexpr int kSettingPopupPositionMode = 149;
+constexpr int kSettingPopupFixedX = 150;
+constexpr int kSettingPopupFixedY = 151;
+constexpr int kPopupPositionCursor = 0;
+constexpr int kPopupPositionLast = 1;
+constexpr int kPopupPositionFixed = 2;
 constexpr std::array<std::size_t, 14> kEditableThemeColorIndices = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14, 17,
 };
@@ -335,7 +341,7 @@ constexpr int kSupportQqWidth = 560;
 constexpr int kSupportQqHeight = 700;
 constexpr std::size_t kPopupImagePreviewCacheLimit = 24;
 constexpr std::size_t kPopupSourceIconCacheLimit = 32;
-constexpr char kCurrentVersion[] = "1.5.3";
+constexpr char kCurrentVersion[] = "1.5.4";
 constexpr wchar_t kSourceUrl[] = L"https://github.com/wxh-777/ClipLite";
 constexpr wchar_t kLatestReleaseApiUrl[] =
     L"https://api.github.com/repos/wxh-777/ClipLite/releases/latest";
@@ -387,6 +393,12 @@ struct Settings {
     bool historyWindowPinned = false;
     bool protectPinnedFromAutoCleanup = false;
     bool showSpecialAcrossCategories = true;
+    int popupPositionMode = kPopupPositionCursor;
+    bool popupLastPositionValid = false;
+    int popupLastX = 0;
+    int popupLastY = 0;
+    int popupFixedX = 0;
+    int popupFixedY = 0;
     bool runAsAdministrator = false;
     bool encryptData = false;
     int maxItems = 1000;
@@ -1441,7 +1453,7 @@ const SettingsLocale kEnglishSettingsLocale{
      L"Some shortcuts could not be registered. Choose different combinations.",
     L"Custom shortcuts require at least one modifier key.",
     L"Sensitive markers: password, token, api_key, secret, and private keys; detected by content pattern.",
-         L"Application    ClipLite", L"Version        1.5.3 x64", L"Storage format  v4",
+         L"Application    ClipLite", L"Version        1.5.4 x64", L"Storage format  v4",
       L"Data directory  %LOCALAPPDATA%\\ClipLite", L"Browse", L"Clear non-favorite history", L"Clear non-favorite text",
       L"Clear non-favorite images", L"Clear non-favorite files", L"Press shortcut", L"Need modifier", L"One application per line", L"Auto",
     L"ClipLite Settings", L"Choose a valid cache directory.", L"Unable to create the cache directory.",
@@ -1493,7 +1505,7 @@ const SettingsLocale kChineseSettingsLocale{
      L"无法注册“%ls”（%ls），可能已被其他程序或 Windows 占用，已恢复为 %ls。",
      L"部分快捷键注册失败，请更换组合键。", L"自定义快捷键至少需要一个修饰键。",
     L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。",
-           L"应用名称    ClipLite", L"版本        1.5.3 x64", L"存储格式    v4",
+           L"应用名称    ClipLite", L"版本        1.5.4 x64", L"存储格式    v4",
       L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清理未收藏历史", L"清理未收藏文本", L"清理未收藏图片",
        L"清理未收藏文件", L"按下组合键", L"需要修饰键", L"每行一个应用名称", L"自动", L"ClipLite 设置",
     L"请选择有效的缓存目录。", L"无法创建缓存目录。", L"目标目录已有历史数据，请选择空目录。",
@@ -1749,6 +1761,27 @@ void loadSettings(Settings& settings) {
         if (std::strncmp(line, "popupDensity=", 13) == 0) {
             settings.popupDensity = std::clamp(std::atoi(line + 13), 0, 2);
         }
+        if (std::strncmp(line, "popupPositionMode=", sizeof("popupPositionMode=") - 1) == 0) {
+            settings.popupPositionMode = std::clamp(
+                std::atoi(line + sizeof("popupPositionMode=") - 1),
+                kPopupPositionCursor, kPopupPositionFixed);
+        }
+        if (std::strncmp(line, "popupLastPositionValid=1",
+                         sizeof("popupLastPositionValid=1") - 1) == 0) {
+            settings.popupLastPositionValid = true;
+        }
+        if (std::strncmp(line, "popupLastX=", sizeof("popupLastX=") - 1) == 0) {
+            settings.popupLastX = std::atoi(line + sizeof("popupLastX=") - 1);
+        }
+        if (std::strncmp(line, "popupLastY=", sizeof("popupLastY=") - 1) == 0) {
+            settings.popupLastY = std::atoi(line + sizeof("popupLastY=") - 1);
+        }
+        if (std::strncmp(line, "popupFixedX=", sizeof("popupFixedX=") - 1) == 0) {
+            settings.popupFixedX = std::atoi(line + sizeof("popupFixedX=") - 1);
+        }
+        if (std::strncmp(line, "popupFixedY=", sizeof("popupFixedY=") - 1) == 0) {
+            settings.popupFixedY = std::atoi(line + sizeof("popupFixedY=") - 1);
+        }
         if (std::strncmp(line, "promotePastedItem=1", 19) == 0) settings.promotePastedItem = true;
         if (std::strncmp(line, "previewAutomatic=0", 18) == 0) settings.previewAutomatic = false;
         if (std::strncmp(line, "previewAutomatic=1", 18) == 0) settings.previewAutomatic = true;
@@ -1873,6 +1906,8 @@ void loadSettings(Settings& settings) {
     normalizeShortcutBinding(settings.historyHotkey, ShortcutBinding{MOD_ALT, 'V'});
     if (settings.lastPopupFilterType != 0) settings.lastPopupFavoritesOnly = false;
     settings.popupDensity = std::clamp(settings.popupDensity, 0, 2);
+    settings.popupPositionMode = std::clamp(settings.popupPositionMode,
+                                             kPopupPositionCursor, kPopupPositionFixed);
     normalizeShortcutBinding(settings.settingsHotkey, ShortcutBinding{MOD_CONTROL | MOD_ALT, 'S'});
     normalizeShortcutBinding(settings.pauseHotkey, ShortcutBinding{MOD_CONTROL | MOD_SHIFT, 'P'});
     const auto normalizePopupShortcut = [](ShortcutBinding& binding, const ShortcutBinding& fallback) {
@@ -1914,9 +1949,15 @@ void saveSettings(const Settings& settings) {
            << "rememberPopupFilter=" << (settings.rememberPopupFilter ? 1 : 0) << "\n"
            << "popupContextMenuMask=" << settings.popupContextMenuMask << "\n"
            << "lastPopupFilterType=" << settings.lastPopupFilterType << "\n"
-           << "lastPopupFavoritesOnly=" << (settings.lastPopupFavoritesOnly ? 1 : 0) << "\n"
-           << "popupDensity=" << settings.popupDensity << "\n"
-           << "promotePastedItem=" << (settings.promotePastedItem ? 1 : 0) << "\n"
+            << "lastPopupFavoritesOnly=" << (settings.lastPopupFavoritesOnly ? 1 : 0) << "\n"
+            << "popupDensity=" << settings.popupDensity << "\n"
+            << "popupPositionMode=" << settings.popupPositionMode << "\n"
+            << "popupLastPositionValid=" << (settings.popupLastPositionValid ? 1 : 0) << "\n"
+            << "popupLastX=" << settings.popupLastX << "\n"
+            << "popupLastY=" << settings.popupLastY << "\n"
+            << "popupFixedX=" << settings.popupFixedX << "\n"
+            << "popupFixedY=" << settings.popupFixedY << "\n"
+            << "promotePastedItem=" << (settings.promotePastedItem ? 1 : 0) << "\n"
            << "previewAutomatic=" << (settings.previewAutomatic ? 1 : 0) << "\n"
            << "previewByKey=" << (settings.previewByKey ? 1 : 0) << "\n"
            << "historyWindowPinned=" << (settings.historyWindowPinned ? 1 : 0) << "\n"
@@ -6307,6 +6348,31 @@ void applyPopupWindowFrame(HWND hwnd, int width, int height) {
 
 bool activatePopupSearchFocus(bool imeMode);
 
+void rememberPopupPosition(HWND hwnd) {
+    if (!g_app || !hwnd || !IsWindow(hwnd)) return;
+    RECT rect{};
+    if (!GetWindowRect(hwnd, &rect)) return;
+    const bool changed = !g_app->settingsData.popupLastPositionValid ||
+        g_app->settingsData.popupLastX != rect.left ||
+        g_app->settingsData.popupLastY != rect.top;
+    g_app->settingsData.popupLastPositionValid = true;
+    g_app->settingsData.popupLastX = rect.left;
+    g_app->settingsData.popupLastY = rect.top;
+    if (changed) saveSettings(g_app->settingsData);
+}
+
+POINT popupPositionAnchor(const POINT& cursor) {
+    if (!g_app) return cursor;
+    if (g_app->settingsData.popupPositionMode == kPopupPositionLast &&
+        g_app->settingsData.popupLastPositionValid) {
+        return POINT{g_app->settingsData.popupLastX, g_app->settingsData.popupLastY};
+    }
+    if (g_app->settingsData.popupPositionMode == kPopupPositionFixed) {
+        return POINT{g_app->settingsData.popupFixedX, g_app->settingsData.popupFixedY};
+    }
+    return cursor;
+}
+
 void showPopup(bool openedByWinV = false) {
     if (g_app->popup) {
         if (GetForegroundWindow() != g_app->popup) rememberPasteTarget();
@@ -6331,7 +6397,11 @@ void showPopup(bool openedByWinV = false) {
     }
     rememberPasteTarget();
     GetCursorPos(&g_app->popupPoint);
-    const HMONITOR monitor = MonitorFromPoint(g_app->popupPoint, MONITOR_DEFAULTTONEAREST);
+    const POINT anchor = popupPositionAnchor(g_app->popupPoint);
+    const bool cursorPlacement = g_app->settingsData.popupPositionMode == kPopupPositionCursor ||
+        (g_app->settingsData.popupPositionMode == kPopupPositionLast &&
+         !g_app->settingsData.popupLastPositionValid);
+    const HMONITOR monitor = MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST);
     g_uiDpi = monitorDpi(monitor);
     g_app->query.clear();
     g_app->selected = 0;
@@ -6371,8 +6441,10 @@ void showPopup(bool openedByWinV = false) {
     MONITORINFO info{sizeof(info)};
     GetMonitorInfoW(monitor, &info);
     height = std::min(height, static_cast<int>(info.rcWork.bottom - info.rcWork.top - 20));
-    int x = g_app->popupPoint.x + 12;
-    int y = g_app->popupPoint.y + 12;
+    int x = cursorPlacement
+        ? g_app->popupPoint.x + 12 : anchor.x;
+    int y = cursorPlacement
+        ? g_app->popupPoint.y + 12 : anchor.y;
     if (x + width > info.rcWork.right) x = info.rcWork.right - width;
     if (y + height > info.rcWork.bottom) y = info.rcWork.bottom - height;
     x = std::max(x, static_cast<int>(info.rcWork.left));
@@ -8195,7 +8267,7 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
             makeSettingsRow(hwnd, settingsLocale().runAsAdministrator,
                             {kSettingRunAsAdministrator}, {36}, {20}, contentWidth)
         });
-        makeCard(tr(L"History window", L"历史窗口"), {
+        std::vector<SettingsRowLayout> historyRows{
             makeSettingsRow(hwnd, tr(L"Show favorites in other category lists",
                                      L"在其他分类列表中显示收藏"),
                             {kSettingSpecialAcrossCategories}, {36}, {20}, contentWidth),
@@ -8207,13 +8279,24 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
                             {kSettingRememberPopupFilter}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, tr(L"History item density", L"历史项高度模式"),
                              {kSettingPopupDensity}, {150}, {30}, contentWidth),
-            makeSettingsRow(hwnd, settingsLocale().promotePastedItem,
-                             {kSettingPromotePastedItem}, {36}, {20}, contentWidth),
-            makeSettingsRow(hwnd, settingsLocale().automaticPreview,
-                            {kSettingPreviewAutomatic}, {36}, {20}, contentWidth),
-            makeSettingsRow(hwnd, settingsLocale().keyPreview,
-                            {kSettingPreviewByKey}, {36}, {20}, contentWidth)
-        });
+            makeSettingsRow(hwnd, tr(L"History window position", L"历史窗口弹出位置"),
+                             {kSettingPopupPositionMode}, {150}, {30}, contentWidth)
+        };
+        if (g_app->settingsData.popupPositionMode == kPopupPositionFixed) {
+            historyRows.push_back(makeSettingsRow(
+                hwnd, tr(L"Fixed position X coordinate", L"固定位置 X 坐标"),
+                {kSettingPopupFixedX}, {120}, {30}, contentWidth));
+            historyRows.push_back(makeSettingsRow(
+                hwnd, tr(L"Fixed position Y coordinate", L"固定位置 Y 坐标"),
+                {kSettingPopupFixedY}, {120}, {30}, contentWidth));
+        }
+        historyRows.push_back(makeSettingsRow(hwnd, settingsLocale().promotePastedItem,
+                                              {kSettingPromotePastedItem}, {36}, {20}, contentWidth));
+        historyRows.push_back(makeSettingsRow(hwnd, settingsLocale().automaticPreview,
+                                              {kSettingPreviewAutomatic}, {36}, {20}, contentWidth));
+        historyRows.push_back(makeSettingsRow(hwnd, settingsLocale().keyPreview,
+                                              {kSettingPreviewByKey}, {36}, {20}, contentWidth));
+        makeCard(tr(L"History window", L"历史窗口"), std::move(historyRows));
     } else if (g_app->settingsTab == kSettingsAppearancePage) {
         std::vector<SettingsRowLayout> appearanceRows;
         if (!g_app->settingsData.themeSelection.followSystem) {
@@ -10493,6 +10576,22 @@ void createSettingsControlsModern(HWND hwnd) {
     createToggle(kSettingRememberPopupFilter, 640, 509,
                  g_app->settingsData.rememberPopupFilter);
     createThemeSelector(parent, kSettingPopupDensity, 544);
+    createThemeSelector(parent, kSettingPopupPositionMode, 579);
+    wchar_t popupPositionValue[32]{};
+    swprintf_s(popupPositionValue, L"%d", g_app->settingsData.popupFixedX);
+    CreateWindowExW(0, L"EDIT", popupPositionValue,
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL,
+                    ui(520 - kSettingsSidebarWidth), ui(614 - kSettingsHeaderHeight),
+                    ui(120), ui(30), parent,
+                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingPopupFixedX)),
+                    GetModuleHandleW(nullptr), nullptr);
+    swprintf_s(popupPositionValue, L"%d", g_app->settingsData.popupFixedY);
+    CreateWindowExW(0, L"EDIT", popupPositionValue,
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL,
+                    ui(520 - kSettingsSidebarWidth), ui(649 - kSettingsHeaderHeight),
+                    ui(120), ui(30), parent,
+                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingPopupFixedY)),
+                    GetModuleHandleW(nullptr), nullptr);
     createToggle(kSettingPromotePastedItem, 640, 579,
                  g_app->settingsData.promotePastedItem);
     createToggle(kSettingPreviewAutomatic, 640, 614, g_app->settingsData.previewAutomatic);
@@ -10771,10 +10870,11 @@ void updateSettingsTabControls(HWND hwnd, bool redraw) {
                             kSettingThemeDelete,
                            kSettingWinV, kSettingLanguage, kSettingPause,
                             kSettingStartup, kSettingStartupSettings, kSettingStartupNotification,
-                            kSettingRunAsAdministrator, kSettingSearchImeCompatibility, kSettingSearchOnOpen,
-                            kSettingRememberPopupFilter,
-                            kSettingPopupDensity,
-                           kSettingPreviewAutomatic, kSettingPreviewByKey,
+                             kSettingRunAsAdministrator, kSettingSearchImeCompatibility, kSettingSearchOnOpen,
+                             kSettingRememberPopupFilter,
+                             kSettingPopupDensity,
+                             kSettingPopupPositionMode, kSettingPopupFixedX, kSettingPopupFixedY,
+                            kSettingPreviewAutomatic, kSettingPreviewByKey,
                           kSettingProtectPinnedCleanup, kSettingSpecialAcrossCategories,
                           kSettingPromotePastedItem, kSettingEncrypt, kSettingMaxItems,
                         kSettingRetentionDays, kSettingMaxDiskMb, kSettingMaxContentMb,
@@ -10874,6 +10974,13 @@ void updateSettingsTabControls(HWND hwnd, bool redraw) {
                      row.controlWidths[i], controlHeight);
             }
         }
+    }
+    const bool fixedPopupPosition = g_app->settingsData.popupPositionMode == kPopupPositionFixed;
+    if (HWND control = settingsControl(hwnd, kSettingPopupFixedX)) {
+        ShowWindow(control, fixedPopupPosition && g_app->settingsTab == 0 ? SW_SHOW : SW_HIDE);
+    }
+    if (HWND control = settingsControl(hwnd, kSettingPopupFixedY)) {
+        ShowWindow(control, fixedPopupPosition && g_app->settingsTab == 0 ? SW_SHOW : SW_HIDE);
     }
     if (g_app->settingsTab == kSettingsAboutPage) {
         show(kSettingOpenLog, 268, 298, 128, 30);
@@ -12429,6 +12536,25 @@ void restoreSettingsRetentionControls(HWND hwnd, const Settings& settings) {
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
+bool readPopupCoordinate(HWND control, int fallback, int& value) {
+    if (!control) return false;
+    wchar_t text[32]{};
+    GetWindowTextW(control, text, ARRAYSIZE(text));
+    if (text[0] == L'\0') {
+        value = fallback;
+        return true;
+    }
+    wchar_t* end = nullptr;
+    const long parsed = std::wcstol(text, &end, 10);
+    if (end == text || *end != L'\0') {
+        value = fallback;
+        return false;
+    }
+    value = static_cast<int>(std::clamp(parsed, static_cast<long>(std::numeric_limits<int>::min()),
+                                        static_cast<long>(std::numeric_limits<int>::max())));
+    return true;
+}
+
 bool settingsWouldPruneExisting(const Settings& previous, const Settings& next) {
     if (!g_app) return false;
     if (next.maxItems != previous.maxItems && next.maxItems > 0 &&
@@ -12490,6 +12616,8 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     HWND searchImeCompatibility = settingsControl(hwnd, kSettingSearchImeCompatibility);
     HWND searchOnOpen = settingsControl(hwnd, kSettingSearchOnOpen);
     HWND rememberPopupFilter = settingsControl(hwnd, kSettingRememberPopupFilter);
+    HWND popupFixedX = settingsControl(hwnd, kSettingPopupFixedX);
+    HWND popupFixedY = settingsControl(hwnd, kSettingPopupFixedY);
     HWND promotePastedItem = settingsControl(hwnd, kSettingPromotePastedItem);
     HWND previewAutomatic = settingsControl(hwnd, kSettingPreviewAutomatic);
     HWND previewByKey = settingsControl(hwnd, kSettingPreviewByKey);
@@ -12505,8 +12633,9 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     if (!win || !language || !pause || !maxItems || !retentionDays || !maxDiskMb ||
         !maxContentMb || !dataDirectory || !updateProxy || !ignoredApps || !sensitiveExpiry || !startup ||
          !startupSettings || !startupNotification || !autoCheckUpdate || !runAsAdministrator ||
-          !searchImeCompatibility || !searchOnOpen || !rememberPopupFilter || !promotePastedItem ||
-          !previewAutomatic ||
+           !searchImeCompatibility || !searchOnOpen || !rememberPopupFilter || !promotePastedItem ||
+           !popupFixedX || !popupFixedY ||
+           !previewAutomatic ||
           !previewByKey || !protectPinnedCleanup || !specialAcrossCategories || !encrypt) {
         return false;
     }
@@ -12525,6 +12654,8 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     next.searchImeCompatibility = settingsToggleValue(searchImeCompatibility);
     next.searchOnOpen = settingsToggleValue(searchOnOpen);
     next.rememberPopupFilter = settingsToggleValue(rememberPopupFilter);
+    readPopupCoordinate(popupFixedX, next.popupFixedX, next.popupFixedX);
+    readPopupCoordinate(popupFixedY, next.popupFixedY, next.popupFixedY);
     next.promotePastedItem = settingsToggleValue(promotePastedItem);
     next.previewAutomatic = settingsToggleValue(previewAutomatic);
     next.previewByKey = settingsToggleValue(previewByKey);
@@ -12675,7 +12806,8 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
         next.pauseMonitoring != previous.pauseMonitoring ||
         next.encryptData != previous.encryptData || next.language != previous.language ||
         dataDirectoryChanged ||
-         next.sensitiveExpiryHours != previous.sensitiveExpiryHours || searchImeCompatibilityChanged ||
+         next.popupFixedX != previous.popupFixedX || next.popupFixedY != previous.popupFixedY ||
+          next.sensitiveExpiryHours != previous.sensitiveExpiryHours || searchImeCompatibilityChanged ||
           searchOnOpenChanged || rememberPopupFilterChanged ||
         promotePastedItemChanged || protectPinnedChanged || specialAcrossCategoriesChanged ||
         previewChanged || next.updateProxy != previous.updateProxy ||
@@ -12880,7 +13012,8 @@ void animateSettingsToggle(HWND hwnd) {
 
 int settingsDropdownItemCount() {
     if (g_app->themeDropdownControlId == 0) return 3;
-    if (g_app->themeDropdownControlId == kSettingPopupDensity) return 3;
+    if (g_app->themeDropdownControlId == kSettingPopupDensity ||
+        g_app->themeDropdownControlId == kSettingPopupPositionMode) return 3;
     int count = 0;
     for (const ThemeDefinition& theme : g_app->themeRegistry.themes()) {
         if (g_app->themeDropdownControlId == kSettingFixedTheme ||
@@ -12920,6 +13053,10 @@ int settingsDropdownSelectedRow() {
     }
     if (g_app->themeDropdownControlId == kSettingPopupDensity) {
         return std::clamp(g_app->settingsData.popupDensity, 0, 2);
+    }
+    if (g_app->themeDropdownControlId == kSettingPopupPositionMode) {
+        return std::clamp(g_app->settingsData.popupPositionMode,
+                          kPopupPositionCursor, kPopupPositionFixed);
     }
     int row = 0;
     for (const ThemeDefinition& theme : g_app->themeRegistry.themes()) {
@@ -13467,6 +13604,9 @@ void paintLanguageDropdown(HWND hwnd, HDC dc) {
                     settingsControl(g_app->settings, kSettingLanguage));
             } else if (g_app->themeDropdownControlId == kSettingPopupDensity) {
                 active = itemRow == std::clamp(g_app->settingsData.popupDensity, 0, 2);
+            } else if (g_app->themeDropdownControlId == kSettingPopupPositionMode) {
+                active = itemRow == std::clamp(g_app->settingsData.popupPositionMode,
+                                               kPopupPositionCursor, kPopupPositionFixed);
             } else if (const ThemeDefinition* theme = themeDropdownThemeAt(itemRow)) {
                 active = theme->id == selectedThemeId(g_app->themeDropdownControlId);
             }
@@ -13528,6 +13668,16 @@ void paintLanguageDropdown(HWND hwnd, HDC dc) {
                                               tr(L"Adaptive", L"自适应")};
             rowLabel = densityLabels[std::clamp(itemRow, 0, 2)];
             selectedRow = itemRow == std::clamp(g_app->settingsData.popupDensity, 0, 2);
+        } else if (g_app->themeDropdownControlId == kSettingPopupPositionMode) {
+            const wchar_t* positionLabels[] = {
+                tr(L"Follow mouse", L"跟随鼠标"),
+                tr(L"Last position", L"上次位置"),
+                tr(L"Fixed position", L"固定位置")
+            };
+            rowLabel = positionLabels[std::clamp(itemRow, kPopupPositionCursor,
+                                                 kPopupPositionFixed)];
+            selectedRow = itemRow == std::clamp(g_app->settingsData.popupPositionMode,
+                                                kPopupPositionCursor, kPopupPositionFixed);
         } else if (g_app->themeDropdownControlId != 0) {
             const ThemeDefinition* theme = themeDropdownThemeAt(itemRow);
             rowLabel = theme ? theme->name.c_str() : L"";
@@ -13560,6 +13710,7 @@ void paintSettingsSelector(HWND hwnd, HDC dc) {
     const bool themeSelector = id == kSettingFixedTheme ||
         id == kSettingSystemLightTheme || id == kSettingSystemDarkTheme;
     const bool popupDensitySelector = id == kSettingPopupDensity;
+    const bool popupPositionSelector = id == kSettingPopupPositionMode;
     RECT client{};
     GetClientRect(hwnd, &client);
     const int width = client.right - client.left;
@@ -13567,8 +13718,9 @@ void paintSettingsSelector(HWND hwnd, HDC dc) {
     const bool highContrast = highContrastEnabled();
     const bool active = g_app->languageDropdown != nullptr &&
         (themeSelector ? g_app->themeDropdownControlId == id :
-            (popupDensitySelector ? g_app->themeDropdownControlId == id
-                                  : g_app->themeDropdownControlId == 0));
+            (popupDensitySelector || popupPositionSelector
+                 ? g_app->themeDropdownControlId == id
+                                   : g_app->themeDropdownControlId == 0));
     const bool hovered = g_app->hoveredSettingsControl == id;
     const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW) :
         themeColor(ThemeColorRole::SurfaceBackground);
@@ -13633,6 +13785,12 @@ void paintSettingsSelector(HWND hwnd, HDC dc) {
         const wchar_t* labels[] = {tr(L"Compact", L"紧凑"), tr(L"Standard", L"标准"),
                                    tr(L"Adaptive", L"自适应")};
         wcscpy_s(value, labels[std::clamp(g_app->settingsData.popupDensity, 0, 2)]);
+    } else if (popupPositionSelector) {
+        const wchar_t* labels[] = {tr(L"Follow mouse", L"跟随鼠标"),
+                                   tr(L"Last position", L"上次位置"),
+                                   tr(L"Fixed position", L"固定位置")};
+        wcscpy_s(value, labels[std::clamp(g_app->settingsData.popupPositionMode,
+                                          kPopupPositionCursor, kPopupPositionFixed)]);
     } else {
         const int index = settingsLanguageSelection(hwnd);
         const wchar_t* labels[] = {settingsLocale().autoLanguage, L"English", L"简体中文"};
@@ -13831,7 +13989,7 @@ void invalidateSettingsEditBorder(HWND edit) {
 void paintSettingsEditBorders(HWND hwnd, HDC dc) {
     const int ids[] = {kSettingThemeName, kSettingMaxItems, kSettingRetentionDays,
                        kSettingMaxDiskMb, kSettingMaxContentMb, kSettingIgnoredApps,
-                       kSettingSensitiveExpiry};
+                       kSettingSensitiveExpiry, kSettingPopupFixedX, kSettingPopupFixedY};
     const bool highContrast = highContrastEnabled();
     for (const int id : ids) {
         HWND edit = settingsControl(hwnd, id);
@@ -13886,6 +14044,8 @@ void configureSettingsEdit(HWND hwnd) {
         textLimit = 2;
     } else if (id == kSettingSensitiveExpiry) {
         textLimit = 3;
+    } else if (id == kSettingPopupFixedX || id == kSettingPopupFixedY) {
+        textLimit = 12;
     } else if (id == kSettingThemeName) {
         textLimit = 48;
     }
@@ -13926,7 +14086,7 @@ void configureSettingsEdit(HWND hwnd) {
 bool isSettingsSelector(int id) {
     return id == kSettingLanguage || id == kSettingFixedTheme ||
            id == kSettingSystemLightTheme || id == kSettingSystemDarkTheme ||
-           id == kSettingPopupDensity;
+           id == kSettingPopupDensity || id == kSettingPopupPositionMode;
 }
 
 bool handleSettingsSelectorMessage(HWND hwnd, HWND settings, int id, UINT message,
@@ -14101,7 +14261,8 @@ void subclassSettingsControls(HWND hwnd) {
                 GetDlgCtrlID(child) == kSettingFixedTheme ||
                 GetDlgCtrlID(child) == kSettingSystemLightTheme ||
                 GetDlgCtrlID(child) == kSettingSystemDarkTheme ||
-                GetDlgCtrlID(child) == kSettingPopupDensity)) &&
+                 (GetDlgCtrlID(child) == kSettingPopupDensity ||
+                  GetDlgCtrlID(child) == kSettingPopupPositionMode))) &&
             !isSettingsThemeSwatch(GetDlgCtrlID(child))) {
             continue;
         }
@@ -15123,6 +15284,13 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                     }
                     saveSettings(g_app->settingsData);
                     InvalidateRect(settingsControl(g_app->settings, kSettingPopupDensity), nullptr, FALSE);
+                } else if (g_app->themeDropdownControlId == kSettingPopupPositionMode) {
+                    g_app->settingsData.popupPositionMode = std::clamp(
+                        row, kPopupPositionCursor, kPopupPositionFixed);
+                    saveSettings(g_app->settingsData);
+                    updateSettingsTabControls(g_app->settings, true);
+                    InvalidateRect(settingsControl(g_app->settings,
+                                                   kSettingPopupPositionMode), nullptr, FALSE);
                 } else if (const ThemeDefinition* theme = themeDropdownThemeAt(row)) {
                     const int selectorId = g_app->themeDropdownControlId;
                     if (!confirmThemeEditorExit(g_app->settings)) {
@@ -15174,6 +15342,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
     }
     if (message == WM_DESTROY && hwnd == g_app->popup) {
+        rememberPopupPosition(hwnd);
         cancelPopupSearch();
         destroyDetailPreview();
         stopPreviewWorker();
@@ -15987,10 +16156,12 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                  LOWORD(wParam) == kSettingMaxDiskMb ||
                  LOWORD(wParam) == kSettingMaxContentMb ||
                     LOWORD(wParam) == kSettingDataDirectory ||
-                    LOWORD(wParam) == kSettingUpdateProxy ||
-                    LOWORD(wParam) == kSettingIgnoredApps ||
-                   LOWORD(wParam) == kSettingSensitiveExpiry ||
-                    (LOWORD(wParam) >= kSettingCategoryMaxBase &&
+                     LOWORD(wParam) == kSettingUpdateProxy ||
+                     LOWORD(wParam) == kSettingIgnoredApps ||
+                    LOWORD(wParam) == kSettingSensitiveExpiry ||
+                     LOWORD(wParam) == kSettingPopupFixedX ||
+                     LOWORD(wParam) == kSettingPopupFixedY ||
+                     (LOWORD(wParam) >= kSettingCategoryMaxBase &&
                      LOWORD(wParam) < kSettingCategoryDiskBase + kStorageCategoryCount))) {
                 if (g_app->restoringSettingsControls) return 0;
                 InvalidateRect(reinterpret_cast<HWND>(lParam), nullptr, FALSE);
@@ -16159,6 +16330,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
              (message == WM_TIMER && wParam == kPopupDeactivateTimer))) return 0;
         if (message == WM_MOUSEACTIVATE) {
             return g_app->popupImeMode ? MA_ACTIVATE : MA_NOACTIVATE;
+        }
+        if (message == WM_EXITSIZEMOVE) {
+            rememberPopupPosition(hwnd);
+            return 0;
         }
         if (message == WM_SETCURSOR) {
             POINT point{};

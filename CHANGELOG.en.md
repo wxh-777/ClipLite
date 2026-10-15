@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## [1.5.4] - 2026-10-16
 
-- Shortened the Windows Terminal source name to `Terminal` for new clipboard records while preserving source icons and filtering.
+- Added configurable history-window placement: follow the mouse, remember the last position, or use fixed screen coordinates; fixed category-memory restoration after restart.
+- Improved Windows Terminal source display and image previews, including image-extension handling and first-load responsiveness.
 
 ## [1.5.3] - 2026-10-13
 

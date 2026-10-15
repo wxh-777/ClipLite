@@ -4,7 +4,7 @@ A small but full-featured clipboard history manager for Windows.
 
 ClipLite keeps copied text, images, files, and web content available for later search and pasting. It runs in the system tray while keeping its program size, background usage, and data reads under control.
 
-Current release: **1.5.3 (Windows x64)**
+Current release: **1.5.4 (Windows x64)**
 
 ![Windows](https://img.shields.io/badge/Windows-10%2B-0078D6?style=flat-square&logo=windows&logoColor=white)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?style=flat-square&logo=c%2B%2B&logoColor=white)
@@ -12,6 +12,8 @@ Current release: **1.5.3 (Windows x64)**
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange?style=flat-square)
 
 [Download](#download-and-run) · [中文文档](README.md) · [Changelog](CHANGELOG.en.md)
+
+Official website: https://moyu888.top/clip-lite
 
 ## Small but Full-Featured
 
@@ -48,6 +50,7 @@ The project uses a native Windows implementation:
 - Combine filters for type, time range, content length, source application, and sort order.
 - Favorites and pins are independent. The history window can remember its last category.
 - Choose Compact, Standard, or Adaptive list density.
+- Choose whether the history window follows the mouse, remembers its last position, or uses fixed screen coordinates.
 - Limit record count, disk usage, retention period, and item size, or pause monitoring temporarily.
 
 ### Preview, Editing, and Paste
@@ -84,8 +87,8 @@ The Windows x64 release provides two packages:
 
 | Package | File | Use case |
 | --- | --- | --- |
-| Installer | `ClipLite-Setup-1.5.3-x64.exe` | Installs ClipLite with Start menu, desktop shortcut, and standard uninstall support |
-| Portable | `ClipLite-1.5.3-portable-win-x64.zip` | Extract the complete directory and run `ClipLite.exe`; suitable for a USB drive or portable folder |
+| Installer | `ClipLite-Setup-1.5.4-x64.exe` | Installs ClipLite with Start menu, desktop shortcut, and standard uninstall support |
+| Portable | `ClipLite-1.5.4-portable-win-x64.zip` | Extract the complete directory and run `ClipLite.exe`; suitable for a USB drive or portable folder |
 
 Portable data is stored in the package's `data\\` directory. Keep that directory when updating; do not replace only `ClipLite.exe`.
 
