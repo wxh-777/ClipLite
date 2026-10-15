@@ -2286,7 +2286,7 @@ std::string sourceNameFromExecutable(const std::wstring& executablePath) {
     if (_wcsicmp(stem.c_str(), L"photoshop") == 0) return "Photoshop";
     if (_wcsicmp(stem.c_str(), L"explorer") == 0) return "File Explorer";
     if (_wcsicmp(stem.c_str(), L"windowsterminal") == 0 ||
-        _wcsicmp(stem.c_str(), L"wt") == 0) return "Windows Terminal";
+        _wcsicmp(stem.c_str(), L"wt") == 0) return "Terminal";
     return stem.empty() ? std::string{} : wideToUtf8(stem.c_str(), stem.size());
 }
 
@@ -10999,6 +10999,7 @@ std::wstring popupSourceExecutableName(const std::string& source) {
     if (source == "PowerPoint") return L"powerpnt";
     if (source == "Photoshop") return L"photoshop";
     if (source == "File Explorer") return L"explorer";
+    if (source == "Terminal" || source == "Windows Terminal") return L"windowsterminal";
     return utf8ToWide(source);
 }
 

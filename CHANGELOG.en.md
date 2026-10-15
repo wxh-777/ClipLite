@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-None.
+- Shortened the Windows Terminal source name to `Terminal` for new clipboard records while preserving source icons and filtering.
 
 ## [1.5.3] - 2026-10-13
 
