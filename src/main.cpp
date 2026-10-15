@@ -1729,16 +1729,21 @@ void loadSettings(Settings& settings) {
         if (std::strncmp(line, "showStartupNotification=1", 25) == 0) settings.showStartupNotification = true;
         if (std::strncmp(line, "searchImeCompatibility=1", 24) == 0) settings.searchImeCompatibility = true;
         if (std::strncmp(line, "searchOnOpen=1", 14) == 0) settings.searchOnOpen = true;
-        if (std::strncmp(line, "rememberPopupFilter=1", 22) == 0) settings.rememberPopupFilter = true;
+        if (std::strncmp(line, "rememberPopupFilter=1",
+                         sizeof("rememberPopupFilter=1") - 1) == 0) {
+            settings.rememberPopupFilter = true;
+        }
         if (std::strncmp(line, "popupContextMenuMask=", 21) == 0) {
             settings.popupContextMenuMask =
                 static_cast<std::uint32_t>(std::strtoul(line + 21, nullptr, 10)) &
                 kPopupContextMenuValidMask;
         }
-        if (std::strncmp(line, "lastPopupFilterType=", 20) == 0) {
+        if (std::strncmp(line, "lastPopupFilterType=",
+                         sizeof("lastPopupFilterType=") - 1) == 0) {
             settings.lastPopupFilterType = std::clamp(std::atoi(line + 20), 0, 4);
         }
-        if (std::strncmp(line, "lastPopupFavoritesOnly=1", 25) == 0) {
+        if (std::strncmp(line, "lastPopupFavoritesOnly=1",
+                         sizeof("lastPopupFavoritesOnly=1") - 1) == 0) {
             settings.lastPopupFavoritesOnly = true;
         }
         if (std::strncmp(line, "popupDensity=", 13) == 0) {
@@ -2999,6 +3004,10 @@ std::wstring localizedPopupPreview(const ClipItem& item) {
             sizeof(filesPrefix) / sizeof(filesPrefix[0]) - 1);
     }
     return preview;
+}
+
+std::wstring popupNoteDisplay(const std::string& note) {
+    return std::wstring(tr(L"Note: ", L"备注：")) + utf8ToWide(note);
 }
 
 bool popupFileIsImage(std::size_t itemIndex, const ClipItem& item) {
@@ -5737,6 +5746,9 @@ void paintDetailPreview(HWND hwnd, HDC dc) {
     const COLORREF text = highContrast ? GetSysColor(COLOR_WINDOWTEXT) : g_app->themePalette.text;
     const COLORREF secondary = highContrast ? GetSysColor(COLOR_WINDOWTEXT)
         : g_app->themePalette.secondaryText;
+    const COLORREF accent = highContrast ? GetSysColor(COLOR_HIGHLIGHT) : settingsAccentColor();
+    const COLORREF accentSoft = highContrast ? GetSysColor(COLOR_WINDOW)
+        : settingsAccentSoftColor();
     HBRUSH backgroundBrush = CreateSolidBrush(background);
     if (dwmCornersSupported(g_app->detailPreview)) {
         FillRect(buffer, &client, backgroundBrush);
@@ -5824,12 +5836,14 @@ void paintDetailPreview(HWND hwnd, HDC dc) {
         }
     }
     if (item && !item->note.empty()) {
-        SelectObject(buffer, g_app->popupMetaFont);
-        SetTextColor(buffer, secondary);
         RECT noteRect = detailPreviewNoteRect(hwnd);
-        const std::wstring note = utf8ToWide(item->note);
-        DrawTextW(buffer, note.c_str(), -1, &noteRect,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        drawGdiRoundedSurface(buffer, noteRect, accentSoft, accent, 4);
+        RECT noteTextRect = noteRect;
+        noteTextRect.left += ui(5);
+        noteTextRect.right -= ui(5);
+        const std::wstring note = popupNoteDisplay(item->note);
+        drawSettingsText(buffer, g_app->popupHeaderFont, note.c_str(), noteTextRect, accent,
+                         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
     }
     drawGdiLine(buffer, ui(16), ui(48), width - ui(16), ui(48), divider, 1.0f);
     RECT content = detailPreviewContentRect(hwnd);
@@ -9843,11 +9857,9 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         if (!item.note.empty() && !(g_app->popupNoteEdit && g_app->popupNoteEditRow == row)) {
             RECT noteRect{rowRect.left + ui(148), metadataTop,
                           rowRect.right - ui(116), metadataTop + ui(16)};
-            const std::wstring note = utf8ToWide(item.note);
-            SelectObject(dc, metaFont);
-            SetTextColor(dc, secondary);
-            DrawTextW(dc, note.c_str(), -1, &noteRect,
-                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            const std::wstring note = popupNoteDisplay(item.note);
+            SelectObject(dc, g_app->popupHeaderFont ? g_app->popupHeaderFont : metaFont);
+            drawMetadataTag(dc, noteRect, note, accentSoft, accent, accent, 4);
         }
         SelectObject(dc, metaFont);
         const RECT missingRect{rowRect.right - ui(132), y + ui(5),
