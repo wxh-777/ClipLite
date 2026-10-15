@@ -3006,8 +3006,10 @@ std::wstring localizedPopupPreview(const ClipItem& item) {
     return preview;
 }
 
-std::wstring popupNoteDisplay(const std::string& note) {
-    return std::wstring(tr(L"Note: ", L"备注：")) + utf8ToWide(note);
+COLORREF popupNoteBackground(COLORREF base, COLORREF accentSoft) {
+    return RGB((GetRValue(base) * 2 + GetRValue(accentSoft)) / 3,
+               (GetGValue(base) * 2 + GetGValue(accentSoft)) / 3,
+               (GetBValue(base) * 2 + GetBValue(accentSoft)) / 3);
 }
 
 bool popupFileIsImage(std::size_t itemIndex, const ClipItem& item) {
@@ -5746,7 +5748,7 @@ void paintDetailPreview(HWND hwnd, HDC dc) {
     const COLORREF text = highContrast ? GetSysColor(COLOR_WINDOWTEXT) : g_app->themePalette.text;
     const COLORREF secondary = highContrast ? GetSysColor(COLOR_WINDOWTEXT)
         : g_app->themePalette.secondaryText;
-    const COLORREF accent = highContrast ? GetSysColor(COLOR_HIGHLIGHT) : settingsAccentColor();
+    const COLORREF accent = highContrast ? GetSysColor(COLOR_WINDOWTEXT) : settingsAccentColor();
     const COLORREF accentSoft = highContrast ? GetSysColor(COLOR_WINDOW)
         : settingsAccentSoftColor();
     HBRUSH backgroundBrush = CreateSolidBrush(background);
@@ -5837,12 +5839,13 @@ void paintDetailPreview(HWND hwnd, HDC dc) {
     }
     if (item && !item->note.empty()) {
         RECT noteRect = detailPreviewNoteRect(hwnd);
-        drawGdiRoundedSurface(buffer, noteRect, accentSoft, accent, 4);
+        drawGdiRoundedSurface(buffer, noteRect,
+                              popupNoteBackground(contentBackground, accentSoft), border, 4);
         RECT noteTextRect = noteRect;
         noteTextRect.left += ui(5);
         noteTextRect.right -= ui(5);
-        const std::wstring note = popupNoteDisplay(item->note);
-        drawSettingsText(buffer, g_app->popupHeaderFont, note.c_str(), noteTextRect, accent,
+        const std::wstring note = utf8ToWide(item->note);
+        drawSettingsText(buffer, g_app->popupMetaFont, note.c_str(), noteTextRect, accent,
                          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
     }
     drawGdiLine(buffer, ui(16), ui(48), width - ui(16), ui(48), divider, 1.0f);
@@ -9857,9 +9860,10 @@ void paintPopupContent(HWND hwnd, HDC dc) {
         if (!item.note.empty() && !(g_app->popupNoteEdit && g_app->popupNoteEditRow == row)) {
             RECT noteRect{rowRect.left + ui(148), metadataTop,
                           rowRect.right - ui(116), metadataTop + ui(16)};
-            const std::wstring note = popupNoteDisplay(item.note);
-            SelectObject(dc, g_app->popupHeaderFont ? g_app->popupHeaderFont : metaFont);
-            drawMetadataTag(dc, noteRect, note, accentSoft, accent, accent, 4);
+            const std::wstring note = utf8ToWide(item.note);
+            SelectObject(dc, metaFont);
+            drawMetadataTag(dc, noteRect, note,
+                            popupNoteBackground(previewBackground, accentSoft), border, accent, 4);
         }
         SelectObject(dc, metaFont);
         const RECT missingRect{rowRect.right - ui(132), y + ui(5),
