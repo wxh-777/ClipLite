@@ -509,6 +509,10 @@ struct PopupSurfaceCache {
     int radius = 0;
 };
 
+struct ClipboardSourceSnapshot {
+    std::string source;
+};
+
 struct PopupContextMenuItem {
     int command = 0;
     std::wstring label;
@@ -744,6 +748,11 @@ struct AppState {
         std::make_shared<std::atomic<bool>>(false);
     std::thread clipboardCaptureWorker;
     bool clipboardCapturePending = false;
+    HWINEVENTHOOK foregroundWindowHook = nullptr;
+    std::array<HWND, 8> recentForegroundWindows{};
+    std::size_t recentForegroundCount = 0;
+    std::size_t recentForegroundHead = 0;
+    ClipboardSourceSnapshot pendingClipboardSource;
     std::uint64_t searchGeneration = 0;
     Settings settingsData;
     ThemeRegistry themeRegistry;
@@ -1072,6 +1081,8 @@ bool popupContextCommandChecked(int command);
 void togglePopupContextMenuItem(std::size_t entryIndex);
 void togglePopupPromotePastedItem();
 LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+bool startForegroundWindowTracking();
+void stopForegroundWindowTracking();
 UINT shortcutModifiersFromKeyboard();
 bool shortcutMatches(const ShortcutBinding& binding, UINT virtualKey);
 const wchar_t* shortcutActionLabel(int id);
@@ -2234,23 +2245,29 @@ std::string wideToUtf8(const wchar_t* value, std::size_t length) {
     return result;
 }
 
-std::string clipboardSource() {
-    const HWND owner = GetClipboardOwner();
-    if (!owner) return {};
-    DWORD processId = 0;
-    GetWindowThreadProcessId(owner, &processId);
-    if (processId == 0) return {};
+bool isSystemSourceWindow(HWND window) {
+    if (!window) return true;
+    wchar_t className[128]{};
+    const int length = GetClassNameW(window, className, ARRAYSIZE(className));
+    if (length <= 0) return false;
+    return std::wcscmp(className, L"Shell_TrayWnd") == 0 ||
+           std::wcscmp(className, L"Shell_SecondaryTrayWnd") == 0 ||
+           std::wcscmp(className, L"TrayNotifyWnd") == 0 ||
+           std::wcscmp(className, L"NotifyIconOverflowWindow") == 0 ||
+           std::wcscmp(className, L"MSTaskSwWClass") == 0 ||
+           std::wcscmp(className, L"ImmersiveLauncher") == 0 ||
+           std::wcscmp(className, L"TaskSwitcherWnd") == 0 ||
+           std::wcscmp(className, L"MultitaskingViewFrame") == 0;
+}
 
-    std::wstring executablePath;
-    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
-    if (process) {
-        wchar_t buffer[1024]{};
-        DWORD length = static_cast<DWORD>(sizeof(buffer) / sizeof(buffer[0]));
-        if (QueryFullProcessImageNameW(process, 0, buffer, &length)) {
-            executablePath.assign(buffer, length);
-        }
-        CloseHandle(process);
-    }
+bool isOwnSourceWindow(HWND window) {
+    if (!window || !g_app) return false;
+    DWORD processId = 0;
+    GetWindowThreadProcessId(window, &processId);
+    return processId != 0 && processId == GetCurrentProcessId();
+}
+
+std::string sourceNameFromExecutable(const std::wstring& executablePath) {
     const std::size_t separator = executablePath.find_last_of(L"\\/");
     const std::wstring executable = separator == std::wstring::npos
         ? executablePath : executablePath.substr(separator + 1);
@@ -2268,11 +2285,86 @@ std::string clipboardSource() {
     if (_wcsicmp(stem.c_str(), L"powerpnt") == 0) return "PowerPoint";
     if (_wcsicmp(stem.c_str(), L"photoshop") == 0) return "Photoshop";
     if (_wcsicmp(stem.c_str(), L"explorer") == 0) return "File Explorer";
-    if (!stem.empty()) return wideToUtf8(stem.c_str(), stem.size());
+    if (_wcsicmp(stem.c_str(), L"windowsterminal") == 0 ||
+        _wcsicmp(stem.c_str(), L"wt") == 0) return "Windows Terminal";
+    return stem.empty() ? std::string{} : wideToUtf8(stem.c_str(), stem.size());
+}
+
+std::string sourceFromWindow(HWND window, bool requireVisible) {
+    if (!window || !IsWindow(window) || isOwnSourceWindow(window) ||
+        isSystemSourceWindow(window) || (requireVisible && !IsWindowVisible(window))) {
+        return {};
+    }
+    DWORD processId = 0;
+    GetWindowThreadProcessId(window, &processId);
+    if (processId == 0) return {};
+
+    std::wstring executablePath;
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+    if (process) {
+        wchar_t buffer[1024]{};
+        DWORD length = static_cast<DWORD>(ARRAYSIZE(buffer));
+        if (QueryFullProcessImageNameW(process, 0, buffer, &length)) {
+            executablePath.assign(buffer, length);
+        }
+        CloseHandle(process);
+    }
+    std::string source = sourceNameFromExecutable(executablePath);
+    if (!source.empty()) return source;
 
     wchar_t title[256]{};
-    const int length = GetWindowTextW(owner, title, static_cast<int>(sizeof(title) / sizeof(title[0])));
+    const int length = GetWindowTextW(window, title, ARRAYSIZE(title));
     return length > 0 ? wideToUtf8(title, static_cast<std::size_t>(length)) : std::string{};
+}
+
+void rememberForegroundWindow(HWND window) {
+    if (!g_app || !window || !IsWindowVisible(window) ||
+        isOwnSourceWindow(window) || isSystemSourceWindow(window)) return;
+    for (std::size_t index = 0; index < g_app->recentForegroundCount; ++index) {
+        if (g_app->recentForegroundWindows[index] == window) return;
+    }
+    constexpr std::size_t kRecentWindowLimit = 8;
+    if (g_app->recentForegroundCount < kRecentWindowLimit) {
+        g_app->recentForegroundWindows[g_app->recentForegroundCount++] = window;
+        return;
+    }
+    g_app->recentForegroundWindows[g_app->recentForegroundHead] = window;
+    g_app->recentForegroundHead = (g_app->recentForegroundHead + 1) % kRecentWindowLimit;
+}
+
+std::string clipboardSource(HWND owner, HWND foreground) {
+    std::string source = sourceFromWindow(owner, true);
+    if (!source.empty()) return source;
+    source = sourceFromWindow(foreground, true);
+    if (!source.empty()) return source;
+    if (!g_app) return {};
+    for (std::size_t offset = 0; offset < g_app->recentForegroundCount; ++offset) {
+        const std::size_t index = (g_app->recentForegroundHead +
+            g_app->recentForegroundCount - 1 - offset) % g_app->recentForegroundCount;
+        source = sourceFromWindow(g_app->recentForegroundWindows[index], true);
+        if (!source.empty()) return source;
+    }
+    return {};
+}
+
+void CALLBACK foregroundWindowEventProc(HWINEVENTHOOK, DWORD event, HWND window,
+                                        LONG, LONG, DWORD, DWORD) {
+    if (event == EVENT_SYSTEM_FOREGROUND) rememberForegroundWindow(window);
+}
+
+bool startForegroundWindowTracking() {
+    if (!g_app) return false;
+    rememberForegroundWindow(GetForegroundWindow());
+    g_app->foregroundWindowHook = SetWinEventHook(
+        EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr,
+        foregroundWindowEventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
+    return g_app->foregroundWindowHook != nullptr;
+}
+
+void stopForegroundWindowTracking() {
+    if (!g_app || !g_app->foregroundWindowHook) return;
+    UnhookWinEvent(g_app->foregroundWindowHook);
+    g_app->foregroundWindowHook = nullptr;
 }
 
 bool isIgnoredClipboardSource(const std::string& source) {
@@ -2510,8 +2602,7 @@ bool makeOpaqueClipboardDib(const std::string& payload, std::string& normalized)
     return true;
 }
 
-bool captureClipboard(HWND owner, ClipType& type, std::string& payload, std::string& source) {
-    source = clipboardSource();
+bool captureClipboard(HWND owner, ClipType& type, std::string& payload) {
     if (!openClipboardWithRetry(owner)) return false;
 
     const auto captureDib = [&]() {
@@ -2695,11 +2786,12 @@ void startClipboardCapture() {
         g_app->clipboardCaptureWorker.join();
     }
     const HWND hidden = g_app->hidden;
+    const std::string source = g_app->pendingClipboardSource.source;
     try {
-        g_app->clipboardCaptureWorker = std::thread([hidden, running] {
+        g_app->clipboardCaptureWorker = std::thread([hidden, running, source] {
             auto result = std::make_unique<ClipboardCaptureResult>();
-            result->captured = captureClipboard(hidden, result->type, result->payload,
-                                                result->source);
+            result->source = source;
+            result->captured = captureClipboard(hidden, result->type, result->payload);
             ClipboardCaptureResult* raw = result.release();
             if (!PostMessageW(hidden, kClipboardCaptureCompleteMessage,
                               reinterpret_cast<WPARAM>(raw), 0)) {
@@ -15378,6 +15470,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         if (message == WM_CLIPBOARDUPDATE) {
             if (!g_app->settingsData.pauseMonitoring) {
+                const HWND foreground = GetForegroundWindow();
+                rememberForegroundWindow(foreground);
+                g_app->pendingClipboardSource.source = clipboardSource(
+                    GetClipboardOwner(), foreground);
                 g_app->clipboardCapturePending = true;
                 SetTimer(hwnd, kClipboardCaptureTimer, 35, nullptr);
             }
@@ -16995,11 +17091,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     ChangeWindowMessageFilterEx(app.hidden, kExitMessage, MSGFLT_ALLOW, nullptr);
     ChangeWindowMessageFilterEx(app.hidden, kShowPopupMessage, MSGFLT_ALLOW, nullptr);
     ChangeWindowMessageFilterEx(app.hidden, kShowSettingsMessage, MSGFLT_ALLOW, nullptr);
+    if (!startForegroundWindowTracking()) {
+        appendDiagnosticLog("WARN", "startup: foreground window tracking unavailable", GetLastError());
+    }
     // 消息专用窗口不会收到 Explorer 广播，使用不可见顶层窗口监听 TaskbarCreated。
     app.taskbarWindow = CreateWindowExW(WS_EX_TOOLWINDOW, L"ClipLiteTaskbar", L"ClipLiteTaskbar",
                                         0, 0, 0, 0, 0, nullptr, nullptr, instance, nullptr);
     if (!app.taskbarWindow) {
         appendDiagnosticLog("ERROR", "startup: taskbar notification window creation failed", GetLastError());
+        stopForegroundWindowTracking();
         DestroyWindow(app.hidden);
         ReleaseMutex(mutex);
         CloseHandle(mutex);
@@ -17009,6 +17109,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
         app.storeWorker = std::thread(storageWorkerLoop, &app);
     } catch (...) {
         appendDiagnosticLog("ERROR", "startup: storage worker creation failed");
+        stopForegroundWindowTracking();
         DestroyWindow(app.taskbarWindow);
         DestroyWindow(app.hidden);
         ReleaseMutex(mutex);
@@ -17019,6 +17120,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     if (!AddClipboardFormatListener(app.hidden)) {
         appendDiagnosticLog("ERROR", "startup: clipboard listener registration failed", GetLastError());
         showStartupFailure(settingsLocale().unableMonitorClipboard);
+        stopForegroundWindowTracking();
         DestroyWindow(app.taskbarWindow);
         DestroyWindow(app.hidden);
         {
@@ -17066,6 +17168,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int) {
     closeTextEditor(false);
     if (app.popup) closePopup();
     RemoveClipboardFormatListener(app.hidden);
+    stopForegroundWindowTracking();
     KillTimer(app.hidden, kExpiryTimer);
     KillTimer(app.hidden, kPasteInputTimer);
     KillTimer(app.hidden, kStorageMaintenanceTimer);
