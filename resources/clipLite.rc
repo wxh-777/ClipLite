@@ -20,7 +20,7 @@ BEGIN
         BLOCK "040904B0"
         BEGIN
             VALUE "CompanyName", "ClipLite"
-            VALUE "FileDescription", "Lightweight Windows clipboard history"
+            VALUE "FileDescription", "ClipLite"
             VALUE "FileVersion", CLIPLITE_VERSION_STRING
             VALUE "InternalName", "ClipLite"
             VALUE "OriginalFilename", "ClipLite.exe"
