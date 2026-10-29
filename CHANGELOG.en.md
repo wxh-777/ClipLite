@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Added a bounded multi-format clipboard snapshot for safely readable `HGLOBAL` standard and registered formats; paste restores stored representations using the existing v4 append-only storage. `IStream` and WPS-specific adapters are not included.
+- Fixed repeated rich clipboard entries by normalizing visible-text deduplication, merging equivalent unpinned/unfavorited records, and retaining self-write suppression across the notification grace window.
+- Added clipboard snapshot validation and regression coverage for duplicate rich-text records.
+
 ## [1.5.4] - 2026-10-16
 
 - Added configurable history-window placement: follow the mouse, remember the last position, or use fixed screen coordinates; fixed category-memory restoration after restart.

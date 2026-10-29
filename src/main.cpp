@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <ole2.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shellscalingapi.h>
@@ -16,6 +17,7 @@
 #include "theme.h"
 #include "thumbnail_cache.h"
 #include "popup_preview_renderer.h"
+#include "clipboard_snapshot.h"
 
 #include <algorithm>
 #include <atomic>
@@ -2421,9 +2423,17 @@ bool isIgnoredClipboardSource(const std::string& source) {
     return false;
 }
 
+bool splitStoredHtml(const std::string& payload, std::string& text, std::string& html);
+
 bool containsSensitiveMarker(ClipType type, const std::string& payload) {
     if (type != ClipType::Text && type != ClipType::Html) return false;
-    std::string sample = payload.substr(0, 8192);
+    std::string sample = payload;
+    if (type == ClipType::Html) {
+        std::string text;
+        std::string html;
+        if (splitStoredHtml(payload, text, html) && !text.empty()) sample = text;
+    }
+    if (sample.size() > 8192) sample.resize(8192);
     for (char& character : sample) {
         if (character >= 'A' && character <= 'Z') {
             character = static_cast<char>(character + ('a' - 'A'));
@@ -2510,12 +2520,41 @@ std::string htmlTextPreviewPrefix(const std::string& payload, std::size_t maxByt
     return utf8PreviewPrefix(visible, maxBytes);
 }
 
+std::uint64_t clipboardTextDedupHash(const std::string& text) {
+    std::string normalized;
+    normalized.reserve(text.size());
+    for (std::size_t index = 0; index < text.size(); ++index) {
+        const char character = text[index];
+        if (character == '\0') continue;
+        if (character == '\r' || character == '\n') {
+            if (character == '\r' && index + 1 < text.size() && text[index + 1] == '\n') ++index;
+            while (!normalized.empty() && (normalized.back() == ' ' || normalized.back() == '\t')) {
+                normalized.pop_back();
+            }
+            normalized.push_back('\n');
+        } else {
+            normalized.push_back(character);
+        }
+    }
+    while (!normalized.empty() && (normalized.back() == '\n' || normalized.back() == ' ' ||
+                                   normalized.back() == '\t')) {
+        normalized.pop_back();
+    }
+    return clipLiteHash(normalized);
+}
+
 std::uint64_t clipboardDedupHash(ClipType type, const std::string& payload) {
+    if (type == ClipType::Text) return clipboardTextDedupHash(payload);
     if (type != ClipType::Html) return clipLiteHash(payload);
     std::string text;
     std::string html;
-    if (splitStoredHtml(payload, text, html) && !text.empty()) return clipLiteHash(text);
-    return clipLiteHash(payload);
+    if (!splitStoredHtml(payload, text, html)) return clipboardTextDedupHash(payload);
+    ClipboardSnapshot snapshot;
+    if (parseClipboardSnapshotHtml(html, snapshot)) {
+        // Rich application formats may contain volatile copy metadata; dedupe by visible text.
+        return text.empty() ? clipboardSnapshotFingerprint(snapshot) : clipboardTextDedupHash(text);
+    }
+    return text.empty() ? clipLiteHash(payload) : clipboardTextDedupHash(text);
 }
 
 bool openClipboardWithRetry(HWND owner) {
@@ -2650,6 +2689,24 @@ bool makeOpaqueClipboardDib(const std::string& payload, std::string& normalized)
 
 bool captureClipboard(HWND owner, ClipType& type, std::string& payload) {
     if (!openClipboardWithRetry(owner)) return false;
+
+    try {
+        ClipboardSnapshot snapshot;
+        std::string displayText;
+        if (captureClipboardSnapshot(snapshot, displayText)) {
+            std::string snapshotHtml;
+            if (buildClipboardSnapshotHtml(snapshot, displayText, snapshotHtml)) {
+                payload = makeStoredHtml(displayText, snapshotHtml);
+                if (!payload.empty()) {
+                    type = ClipType::Html;
+                    CloseClipboard();
+                    return true;
+                }
+            }
+        }
+    } catch (...) {
+        appendDiagnosticLog("WARN", "clipboard: unable to package generic snapshot; using standard formats");
+    }
 
     const auto captureDib = [&]() {
         if (HANDLE handle = GetClipboardData(CF_DIBV5)) {
@@ -2850,8 +2907,49 @@ void startClipboardCapture() {
     }
 }
 
+bool setUnicodeClipboardText(const std::string& value) {
+    if (!g_app || !openClipboardWithRetry(g_app->hidden)) return false;
+    if (!EmptyClipboard()) {
+        CloseClipboard();
+        return false;
+    }
+    const std::wstring text = utf8ToWide(value);
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, (text.size() + 1) * sizeof(wchar_t));
+    if (!memory) {
+        CloseClipboard();
+        return false;
+    }
+    void* destination = GlobalLock(memory);
+    if (!destination) {
+        GlobalFree(memory);
+        CloseClipboard();
+        return false;
+    }
+    std::memcpy(destination, text.c_str(), (text.size() + 1) * sizeof(wchar_t));
+    GlobalUnlock(memory);
+    const bool set = SetClipboardData(CF_UNICODETEXT, memory) != nullptr;
+    if (!set) GlobalFree(memory);
+    CloseClipboard();
+    return set;
+}
+
 bool setClipboardDataForItem(const ClipItem& item, const std::string& payload,
                               PasteMode mode = PasteMode::Automatic) {
+    if (item.type == ClipType::Html) {
+        std::string storedText;
+        std::string storedHtml;
+        if (splitStoredHtml(payload, storedText, storedHtml)) {
+            ClipboardSnapshot genericSnapshot;
+            std::string displayText;
+            if (parseClipboardSnapshotHtml(storedHtml, genericSnapshot, &displayText)) {
+                if (mode == PasteMode::PlainText) {
+                    return setUnicodeClipboardText(displayText.empty() ? storedText : displayText);
+                }
+                if (setClipboardSnapshot(genericSnapshot)) return true;
+                return setUnicodeClipboardText(displayText.empty() ? storedText : displayText);
+            }
+        }
+    }
     if (!openClipboardWithRetry(g_app->hidden)) return false;
     if (!EmptyClipboard()) {
         CloseClipboard();
@@ -4943,8 +5041,15 @@ bool encodeBitmapToPng(HBITMAP bitmap, std::string& data) {
 }
 
 bool decodePngToBitmap(const std::string& data, COLORREF background,
-                       HBITMAP& bitmap, int& width, int& height) {
+                       HBITMAP& bitmap, int& width, int& height,
+                       int boundsWidth = 0, int boundsHeight = 0,
+                       int* sourceWidth = nullptr, int* sourceHeight = nullptr) {
     std::lock_guard<std::recursive_mutex> lock(g_gdiplusMutex);
+    bitmap = nullptr;
+    width = 0;
+    height = 0;
+    if (sourceWidth) *sourceWidth = 0;
+    if (sourceHeight) *sourceHeight = 0;
     if (data.empty() || !ensureGdiplus()) return false;
     HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, data.size());
     if (!memory) return false;
@@ -4961,21 +5066,45 @@ bool decodePngToBitmap(const std::string& data, COLORREF background,
         return false;
     }
     Gdiplus::Image image(stream, FALSE);
-    const bool valid = image.GetLastStatus() == Gdiplus::Ok && image.GetWidth() > 0 && image.GetHeight() > 0;
+    const UINT imageWidth = image.GetWidth();
+    const UINT imageHeight = image.GetHeight();
+    const bool valid = image.GetLastStatus() == Gdiplus::Ok && imageWidth > 0 && imageHeight > 0 &&
+        imageWidth <= 4096 && imageHeight <= 4096 &&
+        static_cast<std::uint64_t>(imageWidth) * imageHeight <= 16u * 1024u * 1024u;
+    bool rendered = false;
     if (valid) {
-        width = static_cast<int>(image.GetWidth());
-        height = static_cast<int>(image.GetHeight());
-        Gdiplus::Bitmap converted(width, height, PixelFormat32bppPARGB);
-        Gdiplus::Graphics graphics(&converted);
-        configureGdiGraphics(graphics);
-        const Gdiplus::Status drawn = graphics.DrawImage(
-            &image, Gdiplus::RectF(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height)));
-        if (drawn != Gdiplus::Ok || converted.GetHBITMAP(makeGdiColor(background), &bitmap) != Gdiplus::Ok) {
-            bitmap = nullptr;
+        if (sourceWidth) *sourceWidth = static_cast<int>(imageWidth);
+        if (sourceHeight) *sourceHeight = static_cast<int>(imageHeight);
+        float scale = 1.0f;
+        if (boundsWidth > 0 && boundsHeight > 0) {
+            scale = std::min({static_cast<float>(boundsWidth) / imageWidth,
+                              static_cast<float>(boundsHeight) / imageHeight, 8.0f});
+        }
+        width = std::max(1, static_cast<int>(std::lround(imageWidth * scale)));
+        height = std::max(1, static_cast<int>(std::lround(imageHeight * scale)));
+        if (static_cast<std::uint64_t>(width) * height <= 4u * 1024u * 1024u) {
+            Gdiplus::Bitmap converted(width, height, PixelFormat32bppPARGB);
+            if (converted.GetLastStatus() == Gdiplus::Ok) {
+                Gdiplus::Graphics graphics(&converted);
+                configureGdiGraphics(graphics);
+                graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+                Gdiplus::SolidBrush backgroundBrush(makeGdiColor(background));
+                const Gdiplus::RectF target(0.0f, 0.0f,
+                                            static_cast<float>(width), static_cast<float>(height));
+                rendered = graphics.FillRectangle(&backgroundBrush, target) == Gdiplus::Ok &&
+                    graphics.DrawImage(&image, target) == Gdiplus::Ok &&
+                    converted.GetHBITMAP(makeGdiColor(background), &bitmap) == Gdiplus::Ok;
+            }
         }
     }
     stream->Release();
-    return valid && bitmap != nullptr;
+    if (!rendered) {
+        if (bitmap) DeleteObject(bitmap);
+        bitmap = nullptr;
+        width = 0;
+        height = 0;
+    }
+    return rendered;
 }
 
 std::uint64_t filePreviewCacheKey(const ClipItem& item, const std::wstring& path) {
@@ -5821,7 +5950,7 @@ void paintDetailPreview(HWND hwnd, HDC dc) {
         if (candidate.recordId == g_app->detailPreviewState.recordId) item = &candidate;
     }
     const std::wstring title = item && (isImageType(item->type) ||
-                                        g_app->detailPreviewState.sourceWidth > 0)
+                                         g_app->detailPreviewState.sourceWidth > 0)
         ? std::wstring(settingsLocale().previewOriginalImage)
         : std::wstring(settingsLocale().previewContent);
     std::wstring meta;
@@ -15727,10 +15856,6 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                         })) {
                             appendDiagnosticLog("WARN", "clipboard: storage worker unavailable");
                         }
-                    } else {
-                        g_app->ignoredClipboardHash = 0;
-                        g_app->ignoredClipboardTextHash = 0;
-                        g_app->ignoredClipboardUntil = 0;
                     }
                 }
             }

@@ -21,7 +21,7 @@ ClipLite keeps the common features needed for clipboard history while using a na
 
 | Item | Reference value |
 | --- | --- |
-| Main executable | About `862 KB` |
+| Main executable | About `901 KB` (measured Release build) |
 | Idle memory | About `0.2 MB+` in Task Manager |
 | Startup time | About `55 ms` |
 | Runtime | Native Win32, with no additional runtime |
@@ -57,6 +57,7 @@ The project uses a native Windows implementation:
 
 - Preview images on hover, zoom with the wheel, drag them, and load the original image on demand. Long text is scrollable.
 - Paste as plain text or rich text. Text and HTML records can be edited as plain text.
+- Text, HTML, RTF, and selected registered clipboard formats are captured as a bounded multi-format snapshot and restored in their original representations when possible.
 - Save edits in place, save them as a new record, or save and paste immediately.
 - Add notes, favorites, and pins to history records, or clean up records in batches.
 - Missing file paths are marked in the list and checked again before pasting.

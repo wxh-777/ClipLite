@@ -413,6 +413,30 @@ int main() {
         htmlSearch.search("personal").size() != 1 || htmlSearch.search("23").size() != 0) return 83;
     htmlSearch.clear();
 
+    ClipStore richDuplicates(10);
+    if (!richDuplicates.open()) return 266;
+    richDuplicates.clear();
+    const std::string richText = "Row 1\nRow 2";
+    const std::string richHtmlA = "<table><tr><td>Row 1</td></tr><tr><td>Row 2</td></tr></table>";
+    const std::string richHtmlB = "<table style=\"copy-1\"><tr><td>Row 1</td></tr><tr><td>Row 2</td></tr></table>";
+    auto makeStoredHtmlForTest = [&richText](const std::string& html) {
+        const TestStoredHtmlHeader header{0x314D5448, static_cast<std::uint32_t>(richText.size()),
+                                          static_cast<std::uint32_t>(html.size())};
+        std::string stored(reinterpret_cast<const char*>(&header), sizeof(header));
+        stored += richText;
+        stored += html;
+        return stored;
+    };
+    const std::string firstRich = makeStoredHtmlForTest(richHtmlA);
+    const std::string secondRich = makeStoredHtmlForTest(richHtmlB);
+    const std::uint64_t richHash = clipLiteHash("normalized-table-text");
+    if (!richDuplicates.append(ClipType::Html, firstRich, clipLiteHash("legacy-table-1"), "Spreadsheet") ||
+        !richDuplicates.append(ClipType::Html, secondRich, clipLiteHash("legacy-table-2"), "Spreadsheet") ||
+        !richDuplicates.appendOrUpdate(ClipType::Html, secondRich, richHash, "Spreadsheet") ||
+        richDuplicates.activeCount() != 1 || !richDuplicates.readPayload(0, restored) ||
+        restored != secondRich) return 267;
+    richDuplicates.clear();
+
     const std::string longHtmlText(5000, 'x');
     const std::string longHtmlBody = "<p>formatting</p>";
     const TestStoredHtmlHeader longHtmlHeader{0x314D5448,

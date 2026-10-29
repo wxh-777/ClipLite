@@ -21,7 +21,9 @@ add_executable(ClipLite WIN32
     src/popup_preview_renderer.cpp
     src/clip_store.cpp
     src/thumbnail_cache.cpp
+    src/clipboard_snapshot.cpp
     include/clip_store.h
+    include/clipboard_snapshot.h
     include/theme.h
     include/popup_preview_renderer.h
     include/thumbnail_cache.h
@@ -48,6 +50,16 @@ if(BUILD_TESTING)
     target_compile_definitions(ClipLiteStoreTests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
     target_link_libraries(ClipLiteStoreTests PRIVATE shell32 crypt32)
     add_test(NAME ClipLiteStore COMMAND ClipLiteStoreTests)
+
+    add_executable(ClipLiteClipboardSnapshotTests
+        tests/clipboard_snapshot_tests.cpp
+        src/clipboard_snapshot.cpp
+        include/clipboard_snapshot.h
+    )
+    target_include_directories(ClipLiteClipboardSnapshotTests PRIVATE include)
+    target_compile_definitions(ClipLiteClipboardSnapshotTests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(ClipLiteClipboardSnapshotTests PRIVATE user32 crypt32)
+    add_test(NAME ClipLiteClipboardSnapshot COMMAND ClipLiteClipboardSnapshotTests)
 
     add_executable(ClipLiteThemeTests
         tests/theme_tests.cpp

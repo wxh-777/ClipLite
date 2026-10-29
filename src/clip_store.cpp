@@ -473,6 +473,23 @@ bool plainTextPayload(ClipType type, const std::string& payload, std::string& te
     return false;
 }
 
+std::string normalizeDuplicateText(const std::string& text) {
+    std::string normalized;
+    normalized.reserve(text.size());
+    bool pendingSpace = false;
+    for (const unsigned char character : text) {
+        if (character == '\0') continue;
+        if (character == '\r' || character == '\n' || character == '\t' || character == ' ') {
+            pendingSpace = !normalized.empty();
+            continue;
+        }
+        if (pendingSpace) normalized.push_back(' ');
+        normalized.push_back(static_cast<char>(character));
+        pendingSpace = false;
+    }
+    return normalized;
+}
+
 bool readPayloadFromFile(std::FILE* file, const ClipItem& item, std::string& payload) {
     const std::uint32_t headerSize = item.headerSize == 0
         ? static_cast<std::uint32_t>(sizeof(DiskHeader)) : item.headerSize;
@@ -1053,7 +1070,45 @@ bool ClipStore::recordUse(std::size_t index, bool promote) {
 bool ClipStore::appendOrUpdate(ClipType type, const std::string& payload, std::uint64_t hash,
                                const std::string& source, std::uint64_t expiresAt) {
     if (payload.empty() || payload.size() > maxPayloadBytes_) return false;
-    const std::size_t existing = findHash(hash);
+    std::string incomingText;
+    const bool hasIncomingText = (type == ClipType::Html || type == ClipType::Text) &&
+        plainTextPayload(type, payload, incomingText);
+    const std::string normalizedIncomingText = hasIncomingText
+        ? normalizeDuplicateText(incomingText) : std::string{};
+    const auto removeDuplicateCopies = [this, type, hash, source, hasIncomingText,
+                                        &normalizedIncomingText](std::uint64_t keepRecordId) {
+        std::vector<ClipItem> duplicates;
+        for (std::size_t index = 0; index < items_.size(); ++index) {
+            const ClipItem& item = items_[index];
+            if (item.recordId == keepRecordId || item.favorite || item.pinned) continue;
+            bool duplicate = item.type == type && item.hash == hash;
+            if (!duplicate && hasIncomingText && !source.empty() && item.source == source &&
+                (item.type == ClipType::Html || item.type == ClipType::Text)) {
+                std::string existingPayload;
+                std::string existingText;
+                duplicate = readPayload(index, existingPayload) &&
+                    plainTextPayload(item.type, existingPayload, existingText) &&
+                    normalizeDuplicateText(existingText) == normalizedIncomingText;
+            }
+            if (duplicate) duplicates.push_back(item);
+        }
+        return duplicates.empty() || removeItems(duplicates);
+    };
+    std::size_t existing = findHash(hash);
+    if (existing == items_.size() && hasIncomingText && !source.empty()) {
+        for (std::size_t index = 0; index < items_.size(); ++index) {
+            const ClipItem& item = items_[index];
+            if (item.favorite || item.pinned ||
+                (item.type != ClipType::Html && item.type != ClipType::Text)) continue;
+            std::string existingPayload;
+            std::string existingText;
+            if (readPayload(index, existingPayload) && plainTextPayload(item.type, existingPayload, existingText) &&
+                normalizeDuplicateText(existingText) == normalizedIncomingText) {
+                existing = index;
+                break;
+            }
+        }
+    }
     if (existing == items_.size()) return append(type, payload, hash, source, expiresAt);
 
     const std::vector<ClipItem> backup = items_;
@@ -1084,8 +1139,10 @@ bool ClipStore::appendOrUpdate(ClipType type, const std::string& payload, std::u
             const bool flushed = written && std::fflush(file) == 0;
             const bool closed = std::fclose(file) == 0;
             if (written && flushed && closed) {
+                const std::uint64_t keepRecordId = item.recordId;
                 items_.erase(items_.begin() + static_cast<std::ptrdiff_t>(existing));
                 insertSortedItem(items_, std::move(item), sortByLastUsed_);
+                removeDuplicateCopies(keepRecordId);
                 ++revision_;
                 return true;
             }
@@ -1113,6 +1170,7 @@ bool ClipStore::appendOrUpdate(ClipType type, const std::string& payload, std::u
     if (!source.empty()) replacement.source = source.substr(0, kMaxSource);
     replacement.expiresAt = expiresAt;
     replacement.hash = hash;
+    const std::uint64_t keepRecordId = replacement.recordId;
     if (!appendRecordReplacement(existing, std::move(replacement), replacementPayload,
                                  items_.size())) {
         return false;
@@ -1120,6 +1178,7 @@ bool ClipStore::appendOrUpdate(ClipType type, const std::string& payload, std::u
     std::stable_sort(items_.begin(), items_.end(), [this](const ClipItem& first, const ClipItem& second) {
         return sortPinnedFirst(first, second, sortByLastUsed_);
     });
+    removeDuplicateCopies(keepRecordId);
     return true;
 }
 

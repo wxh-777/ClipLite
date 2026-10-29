@@ -6,13 +6,37 @@ param(
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class ClipLiteStressNative {
+    private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)]
-    public static extern IntPtr FindWindow(string cls, string title);
-    [DllImport("user32.dll", CharSet=CharSet.Unicode)]
-    public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr child, string cls, string title);
+    private static extern int GetClassName(IntPtr hwnd, StringBuilder name, int max);
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hwnd);
     [DllImport("user32.dll")]
     public static extern bool PostMessage(IntPtr h, uint message, IntPtr w, IntPtr l);
+
+    public static IntPtr FindWindowForProcess(uint processId, string expectedClass) {
+        IntPtr result = IntPtr.Zero;
+        EnumWindows((hwnd, lParam) => {
+            uint ownerProcessId;
+            GetWindowThreadProcessId(hwnd, out ownerProcessId);
+            if (ownerProcessId != processId || !IsWindowVisible(hwnd)) return true;
+            var className = new StringBuilder(256);
+            GetClassName(hwnd, className, className.Capacity);
+            if (string.Equals(className.ToString(), expectedClass, StringComparison.Ordinal)) {
+                result = hwnd;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return result;
+    }
 }
 '@
 
@@ -26,48 +50,55 @@ $previousDataDirectory = $env:CLIPLITE_TEST_DATA_DIR
 New-Item -ItemType Directory -Path $testDirectory -ErrorAction Stop | Out-Null
 $env:CLIPLITE_TEST_DATA_DIR = $testDirectory
 
-function Invoke-ClipLiteCommand([string]$arguments, [int]$timeoutMs) {
-    $forwarder = Start-Process -FilePath $resolved -ArgumentList $arguments -PassThru
-    if (!$forwarder.WaitForExit($timeoutMs)) {
-        Stop-Process -Id $forwarder.Id -Force -ErrorAction SilentlyContinue
+function Invoke-ClipLiteHistory([System.Diagnostics.Process]$process, [int]$timeoutMs) {
+    $forwarder = Start-Process -FilePath $resolved -ArgumentList "--history" -PassThru
+    $deadline = [Environment]::TickCount64 + $timeoutMs
+    while ([Environment]::TickCount64 -lt $deadline) {
+        if ($process.HasExited) { break }
+        $popup = [ClipLiteStressNative]::FindWindowForProcess([uint32]$process.Id, "ClipLitePopup")
+        if ($popup -ne [IntPtr]::Zero) {
+            if (!$forwarder.HasExited) { $forwarder.WaitForExit(1000) | Out-Null }
+            return $popup
+        }
+        Start-Sleep -Milliseconds 10
     }
+    if (!$forwarder.HasExited) { Stop-Process -Id $forwarder.Id -Force -ErrorAction SilentlyContinue }
+    return [IntPtr]::Zero
+}
+
+function Get-ClipLitePopup([System.Diagnostics.Process]$process) {
+    return [ClipLiteStressNative]::FindWindowForProcess([uint32]$process.Id, "ClipLitePopup")
 }
 
 try {
     $process = Start-Process -FilePath $resolved -PassThru
-    for ($wait = 0; $wait -lt 500 -and !$process.HasExited -and
-        [ClipLiteStressNative]::FindWindowEx([IntPtr]::new(-3), [IntPtr]::Zero,
-            "ClipLiteHidden", $null) -eq [IntPtr]::Zero; ++$wait) {
-        Start-Sleep -Milliseconds 20
-    }
-    if ($process.HasExited -or [ClipLiteStressNative]::FindWindowEx(
-        [IntPtr]::new(-3), [IntPtr]::Zero, "ClipLiteHidden", $null) -eq [IntPtr]::Zero) {
-        throw "ClipLite message window did not become ready (exited=$($process.HasExited))."
+    $popup = Invoke-ClipLiteHistory $process 10000
+    if ($process.HasExited -or $popup -eq [IntPtr]::Zero) {
+        throw "ClipLite history window did not become ready (exited=$($process.HasExited))."
     }
     for ($i = 0; $i -lt $Iterations; ++$i) {
-        $popup = [ClipLiteStressNative]::FindWindow("ClipLitePopup", $null)
+        $popup = Get-ClipLitePopup $process
         if ($popup -ne [IntPtr]::Zero) {
             if (![ClipLiteStressNative]::PostMessage($popup, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) {
                 throw "Unable to close the history window on iteration $i."
             }
             for ($wait = 0; $wait -lt 100 -and
-                [ClipLiteStressNative]::FindWindow("ClipLitePopup", $null) -ne [IntPtr]::Zero; ++$wait) {
+                (Get-ClipLitePopup $process) -ne [IntPtr]::Zero; ++$wait) {
                 Start-Sleep -Milliseconds 20
             }
-            if ([ClipLiteStressNative]::FindWindow("ClipLitePopup", $null) -ne [IntPtr]::Zero) {
+            if ((Get-ClipLitePopup $process) -ne [IntPtr]::Zero) {
                 throw "History window did not close on iteration $i."
             }
         }
-        Invoke-ClipLiteCommand "--history" 2000
-        for ($wait = 0; $wait -lt 100 -and
-            [ClipLiteStressNative]::FindWindow("ClipLitePopup", $null) -eq [IntPtr]::Zero; ++$wait) {
-            Start-Sleep -Milliseconds 20
-        }
-        if ([ClipLiteStressNative]::FindWindow("ClipLitePopup", $null) -eq [IntPtr]::Zero) {
+        $popup = Invoke-ClipLiteHistory $process 2000
+        if ($popup -eq [IntPtr]::Zero) {
             throw "History window did not open on iteration $i."
         }
     }
-    Invoke-ClipLiteCommand "--exit" 6000
+    $exitForwarder = Start-Process -FilePath $resolved -ArgumentList "--exit" -PassThru
+    if (!$exitForwarder.WaitForExit(6000)) {
+        Stop-Process -Id $exitForwarder.Id -Force -ErrorAction SilentlyContinue
+    }
     if (!$process.WaitForExit(6000)) {
         throw "ClipLite did not exit after the stress test."
     }
