@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(ClipLite VERSION 1.5.4 LANGUAGES CXX)
+project(ClipLite VERSION 1.5.5 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -43,12 +43,14 @@ if(BUILD_TESTING)
         tests/store_tests.cpp
         src/clip_store.cpp
         src/thumbnail_cache.cpp
+        src/clipboard_snapshot.cpp
         include/clip_store.h
         include/thumbnail_cache.h
+        include/clipboard_snapshot.h
     )
     target_include_directories(ClipLiteStoreTests PRIVATE include)
     target_compile_definitions(ClipLiteStoreTests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-    target_link_libraries(ClipLiteStoreTests PRIVATE shell32 crypt32)
+    target_link_libraries(ClipLiteStoreTests PRIVATE shell32 crypt32 user32)
     add_test(NAME ClipLiteStore COMMAND ClipLiteStoreTests)
 
     add_executable(ClipLiteClipboardSnapshotTests

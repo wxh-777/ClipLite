@@ -33,6 +33,12 @@ bool sameSnapshot(const ClipboardSnapshot& first, const ClipboardSnapshot& secon
 } // namespace
 
 int main() {
+    if (!isClipboardHtmlHeaderText(
+            "Version:1.0\r\nStartHTML:0000000128\r\nEndHTML:0000001733\r\n"
+            "StartFragment:0000000160\r\nEndFragment:0000001701\r\n")) return 11;
+    if (isClipboardHtmlHeaderText("Version: 1.0 is a plain text version string")) return 12;
+    if (isClipboardHtmlHeaderText("StartHTML: is ordinary text without a CF_HTML header")) return 13;
+
     ClipboardSnapshot original = makeSnapshot();
     std::string envelope;
     if (!makeClipboardSnapshotEnvelope(original, envelope)) return 1;

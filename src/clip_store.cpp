@@ -1,4 +1,5 @@
 #include "clip_store.h"
+#include "clipboard_snapshot.h"
 
 #include <windows.h>
 #include <shlobj.h>
@@ -445,6 +446,11 @@ std::string htmlTextPreview(const std::string& payload) {
                 html.assign(payload.data() + kStoredHtmlHeaderSize, contentSize);
             }
         }
+    }
+    if (isClipboardHtmlHeaderText(html)) {
+        const std::size_t htmlStart = html.find('<');
+        if (htmlStart == std::string::npos) return {};
+        html.erase(0, htmlStart);
     }
     std::string text;
     text.reserve(html.size());

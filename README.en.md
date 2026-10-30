@@ -4,7 +4,7 @@ A small but full-featured clipboard history manager for Windows.
 
 ClipLite keeps copied text, images, files, and web content available for later search and pasting. It runs in the system tray while keeping its program size, background usage, and data reads under control.
 
-Current release: **1.5.4 (Windows x64)**
+Current release: **1.5.5 (Windows x64)**
 
 ![Windows](https://img.shields.io/badge/Windows-10%2B-0078D6?style=flat-square&logo=windows&logoColor=white)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?style=flat-square&logo=c%2B%2B&logoColor=white)
@@ -21,7 +21,7 @@ ClipLite keeps the common features needed for clipboard history while using a na
 
 | Item | Reference value |
 | --- | --- |
-| Main executable | About `901 KB` (measured Release build) |
+| Main executable | `915.5 KiB` (1.5.5 x64 Release, 937,472 bytes) |
 | Idle memory | About `0.2 MB+` in Task Manager |
 | Startup time | About `55 ms` |
 | Runtime | Native Win32, with no additional runtime |
@@ -47,6 +47,8 @@ The project uses a native Windows implementation:
 ### History
 
 - Press `Alt+V` to open history and search text, images, files, and web content.
+- “Paste on modifier release” is enabled by default and can be disabled in Settings: hold the modifier from the configured history shortcut and press its main key again to move down, then release to paste. Holding the modifier for about one second without moving also pastes the initially selected item. Single-key history shortcuts do not support this mode; press `Esc` to cancel auto-paste and keep browsing.
+- Keyboard navigation scrolls the selected card fully into view so its entire preview can be read.
 - Combine filters for type, time range, content length, source application, and sort order.
 - Favorites and pins are independent. The history window can remember its last category.
 - Choose Compact, Standard, or Adaptive list density.
@@ -55,7 +57,7 @@ The project uses a native Windows implementation:
 
 ### Preview, Editing, and Paste
 
-- Preview images on hover, zoom with the wheel, drag them, and load the original image on demand. Long text is scrollable.
+- Preview images on hover, zoom with the wheel, drag them, and load the original image on demand. PNG clipboard images are recognized, and long text is scrollable.
 - Paste as plain text or rich text. Text and HTML records can be edited as plain text.
 - Text, HTML, RTF, and selected registered clipboard formats are captured as a bounded multi-format snapshot and restored in their original representations when possible.
 - Save edits in place, save them as a new record, or save and paste immediately.
@@ -88,8 +90,8 @@ The Windows x64 release provides two packages:
 
 | Package | File | Use case |
 | --- | --- | --- |
-| Installer | `ClipLite-Setup-1.5.4-x64.exe` | Installs ClipLite with Start menu, desktop shortcut, and standard uninstall support |
-| Portable | `ClipLite-1.5.4-portable-win-x64.zip` | Extract the complete directory and run `ClipLite.exe`; suitable for a USB drive or portable folder |
+| Installer | `ClipLite-Setup-1.5.5-x64.exe` | Installs ClipLite with Start menu, desktop shortcut, and standard uninstall support |
+| Portable | `ClipLite-1.5.5-portable-win-x64.zip` | Extract the complete directory and run `ClipLite.exe`; suitable for a USB drive or portable folder |
 
 Portable data is stored in the package's `data\\` directory. Keep that directory when updating; do not replace only `ClipLite.exe`.
 
@@ -103,7 +105,7 @@ Use `SHA256SUM.txt` in the portable package to verify `ClipLite.exe`. Verify the
 | `Enter` or left click | Paste the selected record |
 | `Ctrl+Shift+V` | Paste as plain text |
 | `Delete` | Delete the selected record |
-| `Esc` | Close the history window |
+| `Esc` | Close the history window normally; cancel auto-paste and keep browsing in modifier-release mode |
 | `F10` | Open Settings |
 | `Ctrl+0` | Clear the history filter |
 | `Ctrl+F` | Focus the search box |

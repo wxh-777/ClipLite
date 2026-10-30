@@ -1,6 +1,6 @@
 param(
     [string]$Configuration = "Release",
-    [string]$Version = "1.5.4"
+    [string]$Version = "1.5.5"
 )
 
 $root = Split-Path -Parent $PSScriptRoot

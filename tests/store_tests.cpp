@@ -413,6 +413,20 @@ int main() {
         htmlSearch.search("personal").size() != 1 || htmlSearch.search("23").size() != 0) return 83;
     htmlSearch.clear();
 
+    const std::string cfHtml = "Version:1.0\r\nStartHTML:0000000128\r\nEndHTML:0000000200\r\n"
+        "StartFragment:0000000160\r\nEndFragment:0000000190\r\n<html><body>visible</body></html>";
+    const TestStoredHtmlHeader cfHtmlHeader{0x314D5448, 0, static_cast<std::uint32_t>(cfHtml.size())};
+    std::string wrappedHtml(reinterpret_cast<const char*>(&cfHtmlHeader), sizeof(cfHtmlHeader));
+    wrappedHtml += cfHtml;
+    ClipStore htmlPreview(10);
+    if (!htmlPreview.open() || !htmlPreview.clear() ||
+        !htmlPreview.append(ClipType::Html, wrappedHtml, clipLiteHash(wrappedHtml)) ||
+        htmlPreview.items()[0].preview != "visible") return 268;
+    ClipStore htmlPreviewReopened(10);
+    if (!htmlPreviewReopened.open() || htmlPreviewReopened.items().size() != 1 ||
+        htmlPreviewReopened.items()[0].preview != "visible") return 269;
+    htmlPreviewReopened.clear();
+
     ClipStore richDuplicates(10);
     if (!richDuplicates.open()) return 266;
     richDuplicates.clear();
@@ -671,9 +685,12 @@ int main() {
     merged.clear();
     const std::uint64_t sameTextHash = clipLiteHash("same text");
     if (!merged.appendOrUpdate(ClipType::Text, "same text", sameTextHash, "Editor")) return 61;
+    const std::uint64_t initialCreatedAt = merged.items()[0].createdAt;
+    const std::uint64_t initialLastCopiedAt = merged.items()[0].lastCopiedAt;
     if (!merged.appendOrUpdate(ClipType::Text, "same text", sameTextHash, {})) return 62;
     if (merged.activeCount() != 1 || merged.items()[0].source != "Editor" ||
-        merged.items()[0].copyCount != 2) return 63;
+        merged.items()[0].copyCount != 2 || merged.items()[0].createdAt != initialCreatedAt ||
+        merged.items()[0].lastCopiedAt <= initialLastCopiedAt) return 63;
     if (!merged.appendOrUpdate(ClipType::Html, "<b>same text</b>", sameTextHash, "Browser") ||
         merged.activeCount() != 1 || merged.items()[0].type != ClipType::Html ||
         merged.items()[0].copyCount != 3) return 64;

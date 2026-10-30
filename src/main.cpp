@@ -141,6 +141,7 @@ constexpr int kSettingThemeSwatchBase = 120;
 constexpr int kSettingProtectPinnedCleanup = 140;
 constexpr int kSettingSpecialAcrossCategories = 141;
 constexpr int kSettingRememberPopupFilter = 147;
+constexpr int kSettingModifierReleasePaste = 152;
 constexpr int kSettingPopupDensity = 148;
 constexpr int kSettingPopupPositionMode = 149;
 constexpr int kSettingPopupFixedX = 150;
@@ -198,6 +199,7 @@ constexpr UINT kCloseContextMenuMessage = WM_APP + 18;
 constexpr UINT kPopupSearchCompleteMessage = WM_APP + 6;
 constexpr UINT kRunPopupImageBenchmarkMessage = WM_APP + 7;
 constexpr UINT kPopupKeyboardMessage = WM_APP + 8;
+constexpr UINT kHistoryHotkeyStepMessage = WM_APP + 22;
 constexpr UINT kSupportImageLoadedMessage = WM_APP + 9;
 constexpr UINT kPopupEnterImeMessage = WM_APP + 10;
 constexpr UINT kClipboardCaptureCompleteMessage = WM_APP + 11;
@@ -235,6 +237,9 @@ constexpr UINT_PTR kPopupContextSubmenuHideTimer = 22;
 constexpr UINT_PTR kStorageMaintenanceTimer = 23;
 constexpr UINT_PTR kSystemThemeRefreshTimer = 24;
 constexpr UINT_PTR kPopupSelectionRepeatTimer = 25;
+constexpr UINT_PTR kHistoryHotkeyReleaseTimer = 26;
+constexpr UINT kHistoryHotkeyReleaseIntervalMs = 50;
+constexpr ULONGLONG kHistoryHotkeyPasteHoldMs = 1000;
 constexpr DWORD kSettingsToggleAnimationMs = 160;
 constexpr DWORD kSettingsDropdownAnimationMs = 150;
 constexpr DWORD kSettingsThemeAnimationMs = 180;
@@ -343,7 +348,7 @@ constexpr int kSupportQqWidth = 560;
 constexpr int kSupportQqHeight = 700;
 constexpr std::size_t kPopupImagePreviewCacheLimit = 24;
 constexpr std::size_t kPopupSourceIconCacheLimit = 32;
-constexpr char kCurrentVersion[] = "1.5.4";
+constexpr char kCurrentVersion[] = "1.5.5";
 constexpr wchar_t kSourceUrl[] = L"https://github.com/wxh-777/ClipLite";
 constexpr wchar_t kLatestReleaseApiUrl[] =
     L"https://api.github.com/repos/wxh-777/ClipLite/releases/latest";
@@ -385,6 +390,7 @@ struct Settings {
     bool searchImeCompatibility = false;
     bool searchOnOpen = false;
     bool rememberPopupFilter = false;
+    bool modifierReleasePaste = true;
     std::uint32_t popupContextMenuMask = kPopupContextMenuDefaultMask;
     int lastPopupFilterType = 0;
     bool lastPopupFavoritesOnly = false;
@@ -566,6 +572,14 @@ struct AppState {
     HWND popup = nullptr;
     HWND detailPreview = nullptr;
     HWND detailPreviewTextEdit = nullptr;
+    RECT detailPreviewTimeHoverRect{};
+    RECT detailPreviewNoteHoverRect{};
+    RECT detailPreviewDetailsOverlayRect{};
+    std::wstring detailPreviewTimeText;
+    std::wstring detailPreviewNoteText;
+    int detailPreviewNoteScrollOffset = 0;
+    int detailPreviewNoteScrollMax = 0;
+    bool detailPreviewDetailsActive = false;
     HWND popupNoteEdit = nullptr;
     std::unique_ptr<PopupPreviewRenderer> detailPreviewRenderer;
     HWND searchEdit = nullptr;
@@ -810,11 +824,15 @@ struct AppState {
     bool storeWorkerStop = false;
     bool forceStorageCompaction = false;
     int benchmarkExitCode = 0;
-    std::uint64_t ignoredClipboardHash = 0;
-    std::uint64_t ignoredClipboardTextHash = 0;
+    UINT ignoredClipboardSequence = 0;
     ULONGLONG ignoredClipboardUntil = 0;
     bool pasteInputPending = false;
     bool pasteLoadPending = false;
+    UINT historyHotkeyModifiersHeld = 0;
+    ULONGLONG historyHotkeyStarted = 0;
+    bool historyHotkeySelectionMoved = false;
+    bool historyHotkeySessionActive = false;
+    bool historyHotkeyStepDown = false;
     HWND pasteTarget = nullptr;
     bool pasteKeepPopup = false;
     ULONGLONG pasteInputDeadline = 0;
@@ -920,6 +938,7 @@ struct ClipboardCaptureResult {
     ClipType type = ClipType::Text;
     std::string payload;
     std::string source;
+    UINT sequence = 0;
     bool captured = false;
 };
 
@@ -1095,9 +1114,16 @@ bool popupContextCommandChecked(int command);
 void togglePopupContextMenuItem(std::size_t entryIndex);
 void togglePopupPromotePastedItem();
 LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+void drawDetailPreviewDetailsOverlay(HDC dc, const RECT& client);
+void redrawDetailPreviewContentOverlay();
+LRESULT CALLBACK detailPreviewContentSubclass(HWND hwnd, UINT message, WPARAM wParam,
+                                               LPARAM lParam, UINT_PTR subclassId,
+                                               DWORD_PTR refData);
 bool startForegroundWindowTracking();
 void stopForegroundWindowTracking();
 UINT shortcutModifiersFromKeyboard();
+bool historyHotkeyModifiersAreDown(UINT modifiers);
+bool historyHotkeyModifiersMatch(UINT modifiers, const KBDLLHOOKSTRUCT& key);
 bool shortcutMatches(const ShortcutBinding& binding, UINT virtualKey);
 const wchar_t* shortcutActionLabel(int id);
 std::wstring formatShortcut(const ShortcutBinding& binding);
@@ -1455,7 +1481,7 @@ const SettingsLocale kEnglishSettingsLocale{
      L"Some shortcuts could not be registered. Choose different combinations.",
     L"Custom shortcuts require at least one modifier key.",
     L"Sensitive markers: password, token, api_key, secret, and private keys; detected by content pattern.",
-         L"Application    ClipLite", L"Version        1.5.4 x64", L"Storage format  v4",
+         L"Application    ClipLite", L"Version        1.5.5 x64", L"Storage format  v4",
       L"Data directory  %LOCALAPPDATA%\\ClipLite", L"Browse", L"Clear non-favorite history", L"Clear non-favorite text",
       L"Clear non-favorite images", L"Clear non-favorite files", L"Press shortcut", L"Need modifier", L"One application per line", L"Auto",
     L"ClipLite Settings", L"Choose a valid cache directory.", L"Unable to create the cache directory.",
@@ -1507,7 +1533,7 @@ const SettingsLocale kChineseSettingsLocale{
      L"无法注册“%ls”（%ls），可能已被其他程序或 Windows 占用，已恢复为 %ls。",
      L"部分快捷键注册失败，请更换组合键。", L"自定义快捷键至少需要一个修饰键。",
     L"敏感标记：password、token、api_key、secret 和私钥；按内容格式检测。",
-           L"应用名称    ClipLite", L"版本        1.5.4 x64", L"存储格式    v4",
+           L"应用名称    ClipLite", L"版本        1.5.5 x64", L"存储格式    v4",
       L"数据目录    %LOCALAPPDATA%\\ClipLite", L"浏览", L"清理未收藏历史", L"清理未收藏文本", L"清理未收藏图片",
        L"清理未收藏文件", L"按下组合键", L"需要修饰键", L"每行一个应用名称", L"自动", L"ClipLite 设置",
     L"请选择有效的缓存目录。", L"无法创建缓存目录。", L"目标目录已有历史数据，请选择空目录。",
@@ -1747,6 +1773,9 @@ void loadSettings(Settings& settings) {
                          sizeof("rememberPopupFilter=1") - 1) == 0) {
             settings.rememberPopupFilter = true;
         }
+        if (std::strncmp(line, "modifierReleasePaste=1", 22) == 0) {
+            settings.modifierReleasePaste = true;
+        }
         if (std::strncmp(line, "popupContextMenuMask=", 21) == 0) {
             settings.popupContextMenuMask =
                 static_cast<std::uint32_t>(std::strtoul(line + 21, nullptr, 10)) &
@@ -1949,6 +1978,7 @@ void saveSettings(const Settings& settings) {
            << "searchImeCompatibility=" << (settings.searchImeCompatibility ? 1 : 0) << "\n"
            << "searchOnOpen=" << (settings.searchOnOpen ? 1 : 0) << "\n"
            << "rememberPopupFilter=" << (settings.rememberPopupFilter ? 1 : 0) << "\n"
+            << "modifierReleasePaste=" << (settings.modifierReleasePaste ? 1 : 0) << "\n"
            << "popupContextMenuMask=" << settings.popupContextMenuMask << "\n"
            << "lastPopupFilterType=" << settings.lastPopupFilterType << "\n"
             << "lastPopupFavoritesOnly=" << (settings.lastPopupFavoritesOnly ? 1 : 0) << "\n"
@@ -2381,7 +2411,7 @@ void rememberForegroundWindow(HWND window) {
 }
 
 std::string clipboardSource(HWND owner, HWND foreground) {
-    std::string source = sourceFromWindow(owner, true);
+    std::string source = sourceFromWindow(owner, false);
     if (!source.empty()) return source;
     source = sourceFromWindow(foreground, true);
     if (!source.empty()) return source;
@@ -2504,10 +2534,16 @@ std::string htmlTextPreviewPrefix(const std::string& payload, std::size_t maxByt
     }
 
     const char* html = payload.data() + dataOffset + header.textSize;
+    std::size_t htmlStart = 0;
+    const std::string htmlValue(html, header.htmlSize);
+    if (isClipboardHtmlHeaderText(htmlValue)) {
+        htmlStart = htmlValue.find('<');
+        if (htmlStart == std::string::npos) return {};
+    }
     std::string visible;
     visible.reserve(std::min<std::size_t>(header.htmlSize, maxBytes + 4));
     bool inTag = false;
-    for (std::size_t index = 0; index < header.htmlSize; ++index) {
+    for (std::size_t index = htmlStart; index < header.htmlSize; ++index) {
         const char character = html[index];
         if (character == '<') {
             inTag = true;
@@ -2690,24 +2726,6 @@ bool makeOpaqueClipboardDib(const std::string& payload, std::string& normalized)
 bool captureClipboard(HWND owner, ClipType& type, std::string& payload) {
     if (!openClipboardWithRetry(owner)) return false;
 
-    try {
-        ClipboardSnapshot snapshot;
-        std::string displayText;
-        if (captureClipboardSnapshot(snapshot, displayText)) {
-            std::string snapshotHtml;
-            if (buildClipboardSnapshotHtml(snapshot, displayText, snapshotHtml)) {
-                payload = makeStoredHtml(displayText, snapshotHtml);
-                if (!payload.empty()) {
-                    type = ClipType::Html;
-                    CloseClipboard();
-                    return true;
-                }
-            }
-        }
-    } catch (...) {
-        appendDiagnosticLog("WARN", "clipboard: unable to package generic snapshot; using standard formats");
-    }
-
     const auto captureDib = [&]() {
         if (HANDLE handle = GetClipboardData(CF_DIBV5)) {
             const SIZE_T size = GlobalSize(handle);
@@ -2748,6 +2766,121 @@ bool captureClipboard(HWND owner, ClipType& type, std::string& payload) {
         return true;
     }
 
+    const auto capturePng = [&]() {
+        const UINT format = RegisterClipboardFormatW(L"PNG");
+        if (!format) return false;
+        HANDLE handle = GetClipboardData(format);
+        if (!handle) return false;
+        const SIZE_T size = GlobalSize(handle);
+        constexpr BYTE signature[] = {0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a};
+        if (size < sizeof(signature) || size > kMaxClipboardPayload) return false;
+        BYTE* data = static_cast<BYTE*>(GlobalLock(handle));
+        if (!data) return false;
+
+        const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        IWICImagingFactory* factory = nullptr;
+        IWICStream* stream = nullptr;
+        IWICBitmapDecoder* decoder = nullptr;
+        IWICBitmapFrameDecode* frame = nullptr;
+        IWICFormatConverter* converter = nullptr;
+        bool success = false;
+        try {
+            do {
+                if ((FAILED(comResult) && comResult != RPC_E_CHANGED_MODE) ||
+                    std::memcmp(data, signature, sizeof(signature)) != 0 ||
+                    FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                            IID_PPV_ARGS(&factory))) ||
+                    FAILED(factory->CreateStream(&stream)) ||
+                    FAILED(stream->InitializeFromMemory(data, static_cast<DWORD>(size))) ||
+                    FAILED(factory->CreateDecoderFromStream(stream, nullptr,
+                                                           WICDecodeMetadataCacheOnDemand, &decoder))) break;
+                GUID container{};
+                UINT width = 0;
+                UINT height = 0;
+                if (FAILED(decoder->GetContainerFormat(&container)) || container != GUID_ContainerFormatPng ||
+                    FAILED(decoder->GetFrame(0, &frame)) || FAILED(frame->GetSize(&width, &height)) ||
+                    width == 0 || height == 0 || width > 10000 || height > 10000) break;
+                const std::uint64_t pixelBytes = static_cast<std::uint64_t>(width) * height * 4u;
+                if (pixelBytes > kMaxClipboardPayload - sizeof(BITMAPV5HEADER)) break;
+                if (FAILED(factory->CreateFormatConverter(&converter)) ||
+                    FAILED(converter->Initialize(frame, GUID_WICPixelFormat32bppBGRA,
+                                                 WICBitmapDitherTypeNone, nullptr, 0.0,
+                                                 WICBitmapPaletteTypeCustom))) break;
+                BITMAPV5HEADER header{};
+                header.bV5Size = sizeof(header);
+                header.bV5Width = static_cast<LONG>(width);
+                header.bV5Height = -static_cast<LONG>(height);
+                header.bV5Planes = 1;
+                header.bV5BitCount = 32;
+                header.bV5Compression = BI_BITFIELDS;
+                header.bV5SizeImage = static_cast<DWORD>(pixelBytes);
+                header.bV5RedMask = 0x00ff0000;
+                header.bV5GreenMask = 0x0000ff00;
+                header.bV5BlueMask = 0x000000ff;
+                header.bV5AlphaMask = 0xff000000;
+                header.bV5CSType = LCS_sRGB;
+                payload.resize(sizeof(header) + static_cast<std::size_t>(pixelBytes));
+                std::memcpy(payload.data(), &header, sizeof(header));
+                if (FAILED(converter->CopyPixels(nullptr, width * 4u, static_cast<UINT>(pixelBytes),
+                                                 reinterpret_cast<BYTE*>(payload.data() + sizeof(header)))) ||
+                    !isValidDibPayload(payload)) break;
+                success = true;
+            } while (false);
+        } catch (...) {
+            success = false;
+        }
+        if (converter) converter->Release();
+        if (frame) frame->Release();
+        if (decoder) decoder->Release();
+        if (stream) stream->Release();
+        if (factory) factory->Release();
+        if (SUCCEEDED(comResult)) CoUninitialize();
+        GlobalUnlock(handle);
+        if (!success) payload.clear();
+        return success;
+    };
+
+    if (capturePng()) {
+        type = ClipType::ImageV5;
+        CloseClipboard();
+        return true;
+    }
+
+    if (HANDLE handle = GetClipboardData(CF_HDROP)) {
+        const auto count = DragQueryFileW(static_cast<HDROP>(handle), 0xFFFFFFFF, nullptr, 0);
+        for (UINT i = 0; i < count; ++i) {
+            const UINT length = DragQueryFileW(static_cast<HDROP>(handle), i, nullptr, 0);
+            std::wstring path(length + 1, L'\0');
+            DragQueryFileW(static_cast<HDROP>(handle), i, path.data(), length + 1);
+            path.resize(length);
+            if (!payload.empty()) payload.push_back('\n');
+            payload += wideToUtf8(path.data(), path.size());
+        }
+        if (!payload.empty()) {
+            type = ClipType::Files;
+            CloseClipboard();
+            return true;
+        }
+    }
+
+    try {
+        ClipboardSnapshot snapshot;
+        std::string displayText;
+        if (captureClipboardSnapshot(snapshot, displayText)) {
+            std::string snapshotHtml;
+            if (buildClipboardSnapshotHtml(snapshot, displayText, snapshotHtml)) {
+                payload = makeStoredHtml(displayText, snapshotHtml);
+                if (!payload.empty()) {
+                    type = ClipType::Html;
+                    CloseClipboard();
+                    return true;
+                }
+            }
+        }
+    } catch (...) {
+        appendDiagnosticLog("WARN", "clipboard: unable to package generic snapshot; using standard formats");
+    }
+
     std::string htmlPayload;
     if (const UINT format = htmlClipboardFormat(); format != 0) {
         if (HANDLE handle = GetClipboardData(format)) {
@@ -2768,6 +2901,16 @@ bool captureClipboard(HWND owner, ClipType& type, std::string& payload) {
             const std::size_t length = wcsnlen(text, 10u * 1024u * 1024u);
             payload = wideToUtf8(text, length);
             GlobalUnlock(handle);
+            if (isClipboardHtmlHeaderText(payload)) {
+                const std::string rawHtml = std::move(payload);
+                payload = makeStoredHtml({}, rawHtml);
+                if (!payload.empty()) {
+                    type = ClipType::Html;
+                    CloseClipboard();
+                    return true;
+                }
+                payload.clear();
+            }
             if (!payload.empty()) {
                 if (!htmlPayload.empty()) {
                     std::string stored = makeStoredHtml(payload, htmlPayload);
@@ -2790,23 +2933,6 @@ bool captureClipboard(HWND owner, ClipType& type, std::string& payload) {
         payload = makeStoredHtml({}, htmlPayload);
         if (!payload.empty()) {
             type = ClipType::Html;
-            CloseClipboard();
-            return true;
-        }
-    }
-
-    if (HANDLE handle = GetClipboardData(CF_HDROP)) {
-        const auto count = DragQueryFileW(static_cast<HDROP>(handle), 0xFFFFFFFF, nullptr, 0);
-        for (UINT i = 0; i < count; ++i) {
-            const UINT length = DragQueryFileW(static_cast<HDROP>(handle), i, nullptr, 0);
-            std::wstring path(length + 1, L'\0');
-            DragQueryFileW(static_cast<HDROP>(handle), i, path.data(), length + 1);
-            path.resize(length);
-            if (!payload.empty()) payload.push_back('\n');
-            payload += wideToUtf8(path.data(), path.size());
-        }
-        if (!payload.empty()) {
-            type = ClipType::Files;
             CloseClipboard();
             return true;
         }
@@ -2894,7 +3020,10 @@ void startClipboardCapture() {
         g_app->clipboardCaptureWorker = std::thread([hidden, running, source] {
             auto result = std::make_unique<ClipboardCaptureResult>();
             result->source = source;
+            const UINT sequence = GetClipboardSequenceNumber();
             result->captured = captureClipboard(hidden, result->type, result->payload);
+            result->sequence = GetClipboardSequenceNumber();
+            if (sequence != result->sequence) result->captured = false;
             ClipboardCaptureResult* raw = result.release();
             if (!PostMessageW(hidden, kClipboardCaptureCompleteMessage,
                               reinterpret_cast<WPARAM>(raw), 0)) {
@@ -3009,7 +3138,7 @@ bool setClipboardDataForItem(const ClipItem& item, const std::string& payload,
                 }
             }
         }
-        if (item.type == ClipType::ImageV5 && !ok) {
+        if (item.type == ClipType::ImageV5 && isValidDibPayload(payload)) {
             memory = GlobalAlloc(GMEM_MOVEABLE, payload.size());
             if (memory) {
                 void* destination = GlobalLock(memory);
@@ -3253,14 +3382,17 @@ int popupVisibleRows() {
         rebuildPopupRowLayouts();
         const int first = popupRowAt(ui(kPopupListTop));
         int rows = 0;
+        const int viewportBottom = client.bottom - ui(kPopupBottomPadding);
         for (int row = std::max(0, first); row < static_cast<int>(g_app->popupRowLayouts.size()); ++row) {
-            if (popupRowTop(row) >= client.bottom - ui(kPopupBottomPadding)) break;
+            if (popupRowTop(row) + popupRowHeightForRow(row) > viewportBottom) break;
             ++rows;
         }
         return std::max(1, rows);
     }
-    const int stride = popupScrollStride();
-    return std::max(1, (available + stride - 1) / stride);
+    const int cardHeight = g_app->settingsData.popupDensity == 0
+        ? ui(kPopupCompactCardHeight) : ui(kPopupCardHeight);
+    const int rowGap = ui(kPopupCardGap);
+    return std::max(1, (available + rowGap) / std::max(1, cardHeight + rowGap));
 }
 
 int popupCardHeight(const ClipItem& item) {
@@ -3724,6 +3856,22 @@ void addGdiRoundedRect(Gdiplus::GraphicsPath& path, const Gdiplus::RectF& rect, 
     path.CloseFigure();
 }
 
+void addGdiBottomRoundedRect(Gdiplus::GraphicsPath& path, const Gdiplus::RectF& rect,
+                             float radius) {
+    const float boundedRadius = std::min(radius, std::min(rect.Width, rect.Height) / 2.0f);
+    const float diameter = boundedRadius * 2.0f;
+    path.AddLine(rect.X, rect.Y, rect.GetRight(), rect.Y);
+    path.AddLine(rect.GetRight(), rect.Y, rect.GetRight(), rect.GetBottom() - boundedRadius);
+    path.AddArc(rect.GetRight() - diameter, rect.GetBottom() - diameter,
+                diameter, diameter, 0.0f, 90.0f);
+    path.AddLine(rect.GetRight() - boundedRadius, rect.GetBottom(),
+                 rect.X + boundedRadius, rect.GetBottom());
+    path.AddArc(rect.X, rect.GetBottom() - diameter,
+                diameter, diameter, 90.0f, 90.0f);
+    path.AddLine(rect.X, rect.GetBottom() - boundedRadius, rect.X, rect.Y);
+    path.CloseFigure();
+}
+
 void drawGdiLine(HDC dc, int x1, int y1, int x2, int y2, COLORREF color, float width = 1.0f) {
     if (!g_app || g_app->gdiplusToken == 0) return;
     Gdiplus::Graphics graphics(dc);
@@ -3744,6 +3892,27 @@ void drawGdiRoundedSurface(HDC dc, const RECT& rect, COLORREF fill, COLORREF bor
                      Gdiplus::CombineModeIntersect);
     Gdiplus::GraphicsPath path;
     addGdiRoundedRect(path, Gdiplus::RectF(
+        static_cast<float>(rect.left) + 0.5f, static_cast<float>(rect.top) + 0.5f,
+        static_cast<float>(rect.right - rect.left - 1),
+        static_cast<float>(rect.bottom - rect.top - 1)), static_cast<float>(ui(radius)));
+    Gdiplus::SolidBrush brush(makeGdiColor(fill));
+    Gdiplus::Pen pen(makeGdiColor(border), 1.0f);
+    graphics.FillPath(&brush, &path);
+    graphics.DrawPath(&pen, &path);
+}
+
+void drawGdiBottomRoundedSurface(HDC dc, const RECT& rect, COLORREF fill,
+                                 COLORREF border, int radius) {
+    if (!g_app || g_app->gdiplusToken == 0) return;
+    Gdiplus::Graphics graphics(dc);
+    configureGdiGraphics(graphics);
+    RECT clip{};
+    if (GetClipBox(dc, &clip) <= NULLREGION) return;
+    graphics.SetClip(Gdiplus::Rect(clip.left, clip.top,
+                                   clip.right - clip.left, clip.bottom - clip.top),
+                     Gdiplus::CombineModeIntersect);
+    Gdiplus::GraphicsPath path;
+    addGdiBottomRoundedRect(path, Gdiplus::RectF(
         static_cast<float>(rect.left) + 0.5f, static_cast<float>(rect.top) + 0.5f,
         static_cast<float>(rect.right - rect.left - 1),
         static_cast<float>(rect.bottom - rect.top - 1)), static_cast<float>(ui(radius)));
@@ -4395,7 +4564,10 @@ void clearPopupImagePreviews() {
     g_app->previewGeneration->store(g_app->imagePreviewGeneration, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lock(g_app->previewMutex);
-        g_app->previewJobs.clear();
+        g_app->previewJobs.erase(
+            std::remove_if(g_app->previewJobs.begin(), g_app->previewJobs.end(),
+                           [](const PopupPreviewJob& job) { return !job.detail; }),
+            g_app->previewJobs.end());
     }
 }
 
@@ -4408,7 +4580,7 @@ void cancelStalePopupPreviewWork() {
         g_app->previewJobs.erase(
             std::remove_if(g_app->previewJobs.begin(), g_app->previewJobs.end(),
                            [generation](const PopupPreviewJob& job) {
-                return job.generation != generation;
+                return !job.detail && job.generation != generation;
             }),
             g_app->previewJobs.end());
     }
@@ -5241,9 +5413,15 @@ void previewWorkerLoop(AppState* app) {
             if (app->detailPreviewGeneration->load(std::memory_order_acquire) != job.generation) {
                 continue;
             }
+            if (success && job.kind == PopupPreviewKind::File) {
+                if (!findImageFilePath(payload, job.filePath)) job.kind = PopupPreviewKind::Text;
+                if (app->detailPreviewGeneration->load(std::memory_order_acquire) != job.generation) {
+                    continue;
+                }
+            }
             if (success && job.kind == PopupPreviewKind::Dib) {
                 imageBytes = payload.size();
-                imageFormat = L"DIB";
+                imageFormat = settingsLocale().popupImageType;
                 DibLayout layout{};
                 BITMAPINFOHEADER header{};
                 success = validateDibPayload(payload, &layout);
@@ -5315,18 +5493,27 @@ void previewWorkerLoop(AppState* app) {
         success = !preserveDibAlpha &&
             app->thumbnailCache.read(job.cacheKey, job.encrypted, encoded) &&
             decodePngToBitmap(encoded, job.background, bitmap, width, height);
+        if (app->previewGeneration->load(std::memory_order_acquire) != job.generation) {
+            if (bitmap) DeleteObject(bitmap);
+            continue;
+        }
         if (!success) {
             if (bitmap) DeleteObject(bitmap);
             bitmap = nullptr;
             if (job.kind == PopupPreviewKind::File) {
                 success = createFileImagePreview(job.filePath, job.width, job.height, job.background,
                                                  bitmap, width, height, nullptr, nullptr, false,
-                                                 nullptr, 0, &premultipliedAlpha);
+                                                 app->previewGeneration.get(), job.generation,
+                                                 &premultipliedAlpha);
             } else {
                 std::string payload;
                 success = app->store.readPayloadSnapshot(job.historyPath, job.item, payload) &&
                     createDibImagePreview(payload, job.width, job.height, bitmap, width, height);
                 premultipliedAlpha = success;
+            }
+            if (app->previewGeneration->load(std::memory_order_acquire) != job.generation) {
+                if (bitmap) DeleteObject(bitmap);
+                continue;
             }
             if (success && !premultipliedAlpha && encodeBitmapToPng(bitmap, encoded)) {
                 app->thumbnailCache.write(job.cacheKey, job.encrypted, encoded);
@@ -5470,6 +5657,11 @@ bool dwmCornersSupported(HWND probe);
 void destroyDetailPreview() {
     if (!g_app) return;
     hideDetailPreview();
+    g_app->detailPreviewTimeText.clear();
+    g_app->detailPreviewNoteText.clear();
+    g_app->detailPreviewDetailsActive = false;
+    g_app->detailPreviewTimeHoverRect = RECT{};
+    g_app->detailPreviewNoteHoverRect = RECT{};
     if (g_app->detailPreview) {
         DestroyWindow(g_app->detailPreview);
         g_app->detailPreview = nullptr;
@@ -5490,15 +5682,18 @@ bool ensureDetailPreviewWindow() {
         ui(kPopupDetailPreviewHeight), nullptr, nullptr,
         GetModuleHandleW(nullptr), nullptr);
     if (g_app->detailPreview) {
+        const int width = ui(kPopupDetailPreviewWidth);
+        const int height = ui(kPopupDetailPreviewHeight);
+        g_app->detailPreviewTimeHoverRect = RECT{width / 2, ui(10), width - ui(16), ui(34)};
         g_app->detailPreviewRenderer = std::make_unique<PopupPreviewRenderer>();
         if (!g_app->detailPreviewRenderer->attach(g_app->detailPreview)) {
             g_app->detailPreviewRenderer.reset();
         } else {
             g_app->detailPreviewRenderer->setBackground(highContrastEnabled()
                 ? GetSysColor(COLOR_WINDOW) : g_app->themePalette.previewBackground);
+            SetWindowSubclass(g_app->detailPreviewRenderer->window(),
+                              detailPreviewContentSubclass, 3, 0);
         }
-        const int width = ui(kPopupDetailPreviewWidth);
-        const int height = ui(kPopupDetailPreviewHeight);
         if (!dwmCornersSupported(g_app->detailPreview)) {
             HRGN region = CreateRoundRectRgn(0, 0, width, height, ui(18), ui(18));
             if (region && SetWindowRgn(g_app->detailPreview, region, TRUE) == 0) {
@@ -5517,6 +5712,8 @@ bool ensureDetailPreviewWindow() {
             if (g_app->detailPreviewTextEdit) {
                 SetWindowSubclass(g_app->detailPreviewTextEdit,
                                   detailPreviewTextEditSubclass, 1, 0);
+                SetWindowSubclass(g_app->detailPreviewTextEdit,
+                                  detailPreviewContentSubclass, 2, 0);
                 SendMessageW(g_app->detailPreviewTextEdit, WM_SETFONT,
                              reinterpret_cast<WPARAM>(g_app->popupPreviewFont), TRUE);
                 SendMessageW(g_app->detailPreviewTextEdit, EM_EXLIMITTEXT, 0,
@@ -5664,14 +5861,7 @@ void requestDetailPreview(int row, bool upgrade) {
     if (isImageType(item.type)) {
         job.kind = PopupPreviewKind::Dib;
     } else if (item.type == ClipType::Files) {
-        std::string payload;
-        std::wstring imagePath;
-        if (g_app->store.readPayload(itemIndex, payload) && findImageFilePath(payload, imagePath)) {
-            job.kind = PopupPreviewKind::File;
-            job.filePath = std::move(imagePath);
-        } else {
-            job.kind = PopupPreviewKind::Text;
-        }
+        job.kind = PopupPreviewKind::File;
     } else {
         job.kind = PopupPreviewKind::Text;
     }
@@ -5804,7 +5994,8 @@ void refreshDetailPreviewTextEditAppearance() {
                  reinterpret_cast<WPARAM>(g_app->popupPreviewFont), TRUE);
     SendMessageW(g_app->detailPreviewTextEdit, EM_SETBKGNDCOLOR, 0, background);
     CHARFORMAT2W format{sizeof(format)};
-    format.dwMask = CFM_COLOR;
+    format.dwMask = CFM_COLOR | CFM_BACKCOLOR;
+    format.dwEffects = CFE_AUTOBACKCOLOR;
     format.crTextColor = text;
     SendMessageW(g_app->detailPreviewTextEdit, EM_SETCHARFORMAT, SCF_ALL,
                  reinterpret_cast<LPARAM>(&format));
@@ -5823,7 +6014,6 @@ void positionDetailPreviewTextEdit(bool show) {
 // 写入详情文本并重置原生滚动位置。
 void updateDetailPreviewTextEdit() {
     if (!g_app || !g_app->detailPreviewTextEdit) return;
-    refreshDetailPreviewTextEditAppearance();
     const bool show = !g_app->detailPreviewState.loading &&
         !g_app->detailPreviewState.failed && !g_app->detailPreviewState.sourceBitmap;
     if (!show) {
@@ -5861,6 +6051,151 @@ void fitDetailPreviewImage() {
     }
 }
 
+// 在现有内容预览绘制完成后直接绘制悬停信息覆盖层。
+void drawDetailPreviewDetailsOverlay(HDC dc, const RECT& client) {
+    if (!g_app || !dc || !g_app->detailPreviewDetailsActive) return;
+    const int saved = SaveDC(dc);
+    SetBkMode(dc, TRANSPARENT);
+    const bool highContrast = highContrastEnabled();
+    const COLORREF background = highContrast ? GetSysColor(COLOR_WINDOW)
+        : g_app->themePalette.surfaceBackground;
+    const COLORREF border = highContrast ? GetSysColor(COLOR_WINDOWTEXT)
+        : g_app->themePalette.border;
+    const COLORREF text = highContrast ? GetSysColor(COLOR_WINDOWTEXT)
+        : g_app->themePalette.text;
+    const COLORREF secondary = highContrast ? GetSysColor(COLOR_WINDOWTEXT)
+        : g_app->themePalette.secondaryText;
+    RECT panel{0, 0, client.right,
+               std::min(static_cast<int>(client.bottom), ui(160))};
+    if (panel.bottom <= panel.top) {
+        RestoreDC(dc, saved);
+        return;
+    }
+    IntersectClipRect(dc, panel.left, panel.top, panel.right, panel.bottom);
+    drawGdiBottomRoundedSurface(dc, panel, background, border, 8);
+    SetBkMode(dc, TRANSPARENT);
+
+    const int paddingX = ui(12);
+    const int paddingY = ui(10);
+    const int lineFlags = DT_LEFT | DT_TOP | DT_WORDBREAK | DT_EDITCONTROL |
+        DT_NOPREFIX | DT_EXPANDTABS;
+    RECT content{paddingX, paddingY, client.right - paddingX, paddingY};
+    SelectObject(dc, g_app->popupPreviewFont);
+    if (!g_app->detailPreviewTimeText.empty()) {
+        RECT timeMeasure = content;
+        DrawTextW(dc, g_app->detailPreviewTimeText.c_str(), -1, &timeMeasure,
+                  lineFlags | DT_CALCRECT);
+        content.bottom = timeMeasure.bottom;
+        content.right = client.right - paddingX;
+        SetTextColor(dc, text);
+        DrawTextW(dc, g_app->detailPreviewTimeText.c_str(), -1, &content, lineFlags);
+    }
+    if (!g_app->detailPreviewNoteText.empty()) {
+        const int gap = g_app->detailPreviewTimeText.empty() ? 0 : ui(10);
+        RECT heading{paddingX, content.bottom + gap, client.right - paddingX,
+                     content.bottom + gap + ui(20)};
+        SelectObject(dc, g_app->popupMetaFont);
+        DrawTextW(dc, tr(L"Note", L"备注"), -1, &heading,
+                  DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT);
+        drawGdiLine(dc, paddingX, heading.top - ui(6), client.right - paddingX,
+                    heading.top - ui(6), highContrast ? border : g_app->themePalette.divider, 1.0f);
+        SetTextColor(dc, secondary);
+        DrawTextW(dc, tr(L"Note", L"备注"), -1, &heading,
+                  DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+        RECT noteViewport{paddingX, heading.bottom + ui(4), client.right - paddingX,
+                          panel.bottom - paddingY};
+        RECT noteMeasure = noteViewport;
+        SelectObject(dc, g_app->popupPreviewFont);
+        DrawTextW(dc, g_app->detailPreviewNoteText.c_str(), -1, &noteMeasure,
+                  lineFlags | DT_CALCRECT);
+        const int noteHeight = noteMeasure.bottom - noteMeasure.top;
+        const int viewportHeight = noteViewport.bottom - noteViewport.top;
+        g_app->detailPreviewNoteScrollMax = std::max(0, noteHeight - viewportHeight);
+        g_app->detailPreviewNoteScrollOffset = std::clamp(
+            g_app->detailPreviewNoteScrollOffset, 0, g_app->detailPreviewNoteScrollMax);
+        RECT noteText{noteViewport.left, noteViewport.top - g_app->detailPreviewNoteScrollOffset,
+                      noteViewport.right, noteViewport.top - g_app->detailPreviewNoteScrollOffset + noteHeight};
+        const int noteSaved = SaveDC(dc);
+        IntersectClipRect(dc, noteViewport.left, noteViewport.top,
+                          noteViewport.right, noteViewport.bottom);
+        SetTextColor(dc, text);
+        DrawTextW(dc, g_app->detailPreviewNoteText.c_str(), -1, &noteText, lineFlags);
+        RestoreDC(dc, noteSaved);
+        if (g_app->detailPreviewNoteScrollMax > 0) {
+            RECT scrollTrack{client.right - ui(4), noteViewport.top,
+                             client.right - ui(1), noteViewport.bottom};
+            drawGdiLine(dc, scrollTrack.left, scrollTrack.top,
+                        scrollTrack.right, scrollTrack.top, secondary, 1.0f);
+        }
+    } else {
+        g_app->detailPreviewNoteScrollMax = 0;
+        g_app->detailPreviewNoteScrollOffset = 0;
+    }
+    RestoreDC(dc, saved);
+}
+
+// 显示或滚动时重画覆盖层，隐藏时只失效被覆盖区域。
+void redrawDetailPreviewContentOverlay() {
+    if (!g_app) return;
+    HWND contentWindow = g_app->detailPreviewState.sourceBitmap && g_app->detailPreviewRenderer
+        ? g_app->detailPreviewRenderer->window() : g_app->detailPreviewTextEdit;
+    if (!contentWindow || !IsWindowVisible(contentWindow)) return;
+    RECT panel{};
+    GetClientRect(contentWindow, &panel);
+    panel.bottom = std::min(panel.bottom, static_cast<LONG>(ui(160)));
+    if (!g_app->detailPreviewDetailsActive) {
+        InvalidateRect(contentWindow, &panel, FALSE);
+        return;
+    }
+    HDC dc = GetDC(contentWindow);
+    if (!dc) return;
+    drawDetailPreviewDetailsOverlay(dc, panel);
+    ReleaseDC(contentWindow, dc);
+}
+
+// 在内容子控件绘制后补画悬停层，并将鼠标移动和滚轮交给预览窗口。
+LRESULT CALLBACK detailPreviewContentSubclass(HWND hwnd, UINT message, WPARAM wParam,
+                                               LPARAM lParam, UINT_PTR subclassId,
+                                               DWORD_PTR refData) {
+    (void)refData;
+    const bool isTextPreview = g_app && hwnd == g_app->detailPreviewTextEdit;
+    if (isTextPreview && (message == WM_MOUSEMOVE || message == WM_MOUSELEAVE ||
+                          message == WM_MOUSEWHEEL)) {
+        LPARAM parentPosition = lParam;
+        if (message == WM_MOUSEMOVE) {
+            POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            ClientToScreen(hwnd, &point);
+            ScreenToClient(g_app->detailPreview, &point);
+            parentPosition = MAKELPARAM(point.x, point.y);
+            TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};
+            TrackMouseEvent(&tracking);
+        }
+        SendMessageW(g_app->detailPreview, message, wParam, parentPosition);
+        if (message == WM_MOUSEWHEEL && g_app->detailPreviewDetailsActive) {
+            POINT cursor{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            ScreenToClient(g_app->detailPreview, &cursor);
+            if (PtInRect(&g_app->detailPreviewDetailsOverlayRect, cursor)) return 0;
+        }
+    }
+    const LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
+    if (message == WM_PAINT && g_app && g_app->detailPreviewDetailsActive &&
+        (isTextPreview || (g_app->detailPreviewRenderer &&
+                           hwnd == g_app->detailPreviewRenderer->window()))) {
+        RECT client{};
+        GetClientRect(hwnd, &client);
+        if (isTextPreview) client.bottom = std::min(client.bottom, static_cast<LONG>(ui(160)));
+        HDC dc = GetDC(hwnd);
+        if (dc) {
+            drawDetailPreviewDetailsOverlay(dc, client);
+            ReleaseDC(hwnd, dc);
+        }
+    }
+    if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, detailPreviewContentSubclass, subclassId);
+    }
+    return result;
+}
+
 // 以鼠标位置为锚点设置目标缩放比例。
 bool zoomDetailPreviewAt(POINT cursor, int wheelDelta) {
     if (!g_app || !g_app->detailPreview || !g_app->detailPreviewState.sourceBitmap ||
@@ -5894,7 +6229,58 @@ bool zoomDetailPreviewAt(POINT cursor, int wheelDelta) {
     return true;
 }
 
-// 使用双缓冲绘制独立详情预览窗口。
+// 更新预览标题栏悬停显示的完整时间文本。
+void updateDetailPreviewTooltip(const ClipItem* item, const RECT& rect) {
+    if (!g_app) return;
+    std::wstring tooltipText;
+    std::wstring noteText;
+    if (item) {
+        const std::uint64_t createdAt = item->createdAt != 0 ? item->createdAt : item->timestamp;
+        if (createdAt != 0) {
+            tooltipText = std::wstring(tr(L"First added: ", L"首次记录：")) +
+                formatRelativeTime(createdAt);
+        }
+        if (item->lastCopiedAt != 0) {
+            if (!tooltipText.empty()) tooltipText += L"\n";
+            tooltipText += std::wstring(tr(L"Last copied: ", L"最近复制：")) +
+                formatRelativeTime(item->lastCopiedAt / 1000ULL);
+        }
+        if (item->lastUsedAt != 0) {
+            if (!tooltipText.empty()) tooltipText += L"\n";
+            tooltipText += std::wstring(tr(L"Last pasted: ", L"最近粘贴：")) +
+                formatRelativeTime(item->lastUsedAt / 1000ULL);
+        }
+        if (!item->note.empty()) {
+            noteText = utf8ToWide(item->note);
+            for (std::size_t index = 0; index < noteText.size(); ++index) {
+                if (noteText[index] == L'\r') {
+                    noteText[index] = L'\n';
+                    if (index + 1 < noteText.size() && noteText[index + 1] == L'\n') {
+                        noteText.erase(index + 1, 1);
+                    }
+                }
+            }
+        }
+    }
+    if (tooltipText != g_app->detailPreviewTimeText ||
+        noteText != g_app->detailPreviewNoteText ||
+        std::memcmp(&rect, &g_app->detailPreviewTimeHoverRect, sizeof(rect)) != 0) {
+        g_app->detailPreviewTimeText = std::move(tooltipText);
+        g_app->detailPreviewNoteText = std::move(noteText);
+        g_app->detailPreviewTimeHoverRect = rect;
+        g_app->detailPreviewNoteScrollOffset = 0;
+        g_app->detailPreviewNoteScrollMax = 0;
+        g_app->detailPreviewDetailsOverlayRect = RECT{};
+        g_app->detailPreviewDetailsActive = false;
+        if (g_app->detailPreviewTextEdit) {
+            InvalidateRect(g_app->detailPreviewTextEdit, nullptr, FALSE);
+        }
+        if (g_app->detailPreviewRenderer) {
+            InvalidateRect(g_app->detailPreviewRenderer->window(), nullptr, FALSE);
+        }
+    }
+}
+
 void paintDetailPreview(HWND hwnd, HDC dc) {
     RECT client{};
     GetClientRect(hwnd, &client);
@@ -5978,6 +6364,9 @@ void paintDetailPreview(HWND hwnd, HDC dc) {
     SelectObject(buffer, g_app->popupMetaFont);
     SetTextColor(buffer, secondary);
     RECT metaRect{width / 2, ui(10), width - ui(16), ui(34)};
+    updateDetailPreviewTooltip(item, metaRect);
+    g_app->detailPreviewNoteHoverRect = item && !item->note.empty()
+        ? detailPreviewNoteRect(hwnd) : RECT{};
     DrawTextW(buffer, meta.c_str(), -1, &metaRect,
               DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     if (g_app->detailPreviewState.sourceBitmap) {
@@ -6308,14 +6697,12 @@ void completePaste(PastePayloadResult& result) {
         notifyMissingFilePaste(g_app->popup);
         return;
     }
-    const std::uint64_t hash = result.item.hash;
     if (!setClipboardDataForItem(result.item, result.payload, result.mode)) {
         appendDiagnosticLog("ERROR", "paste: unable to write selected item to clipboard");
         notifyPasteFailure();
         return;
     }
-    g_app->ignoredClipboardHash = hash;
-    g_app->ignoredClipboardTextHash = clipboardDedupHash(result.item.type, result.payload);
+    g_app->ignoredClipboardSequence = GetClipboardSequenceNumber();
     g_app->ignoredClipboardUntil = GetTickCount64() + 750;
     const bool promote = g_app->settingsData.promotePastedItem;
     enqueueStorageJob([index = result.itemIndex, promote] {
@@ -6602,6 +6989,13 @@ void showPopup(bool openedByWinV = false) {
 }
 
 void closePopup() {
+    if (g_app) {
+        KillTimer(g_app->hidden, kHistoryHotkeyReleaseTimer);
+        g_app->historyHotkeySessionActive = false;
+        g_app->historyHotkeyModifiersHeld = 0;
+        g_app->historyHotkeySelectionMoved = false;
+        g_app->historyHotkeyStepDown = false;
+    }
     if (g_app && g_app->settingsData.rememberPopupFilter) {
         g_app->settingsData.lastPopupFilterType = std::clamp(g_app->filterType, 0, 4);
         g_app->settingsData.lastPopupFavoritesOnly = g_app->favoritesOnly && g_app->filterType == 0;
@@ -7057,6 +7451,30 @@ LRESULT CALLBACK popupKeyboardProc(int code, WPARAM wParam, LPARAM lParam) {
         const bool keyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
         const bool keyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
         const bool injected = (key->flags & LLKHF_INJECTED) != 0;
+        if (!injected && keyDown && key->vkCode == VK_ESCAPE &&
+            g_app->historyHotkeySessionActive) {
+            KillTimer(g_app->hidden, kHistoryHotkeyReleaseTimer);
+            g_app->historyHotkeySessionActive = false;
+            g_app->historyHotkeyModifiersHeld = 0;
+            g_app->historyHotkeyStarted = 0;
+            g_app->historyHotkeySelectionMoved = false;
+            g_app->historyHotkeyStepDown = false;
+            return 1;
+        }
+        if (!injected && g_app->historyHotkeySessionActive &&
+            key->vkCode == g_app->settingsData.historyHotkey.virtualKey) {
+            if (keyDown && historyHotkeyModifiersMatch(g_app->historyHotkeyModifiersHeld, *key)) {
+                if (!g_app->historyHotkeyStepDown) {
+                    g_app->historyHotkeyStepDown = true;
+                    PostMessageW(g_app->hidden, kHistoryHotkeyStepMessage, 0, 0);
+                }
+                return 1;
+            }
+            if (keyUp && g_app->historyHotkeyStepDown) {
+                g_app->historyHotkeyStepDown = false;
+                return 1;
+            }
+        }
         const HWND foreground = GetForegroundWindow();
         const bool popupHasNoSystemFocus = foreground != g_app->popup;
         if (key->vkCode >= g_app->popupSearchKeys.size() || !IsWindowVisible(g_app->popup) ||
@@ -8406,6 +8824,8 @@ SettingsLayout buildSettingsLayout(HWND hwnd) {
                             {kSettingSearchOnOpen}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, settingsLocale().rememberPopupFilter,
                             {kSettingRememberPopupFilter}, {36}, {20}, contentWidth),
+            makeSettingsRow(hwnd, tr(L"Paste on modifier release", L"松开修饰键时粘贴"),
+                            {kSettingModifierReleasePaste}, {36}, {20}, contentWidth),
             makeSettingsRow(hwnd, tr(L"History item density", L"历史项高度模式"),
                              {kSettingPopupDensity}, {150}, {30}, contentWidth),
             makeSettingsRow(hwnd, tr(L"History window position", L"历史窗口弹出位置"),
@@ -10102,7 +10522,9 @@ void paintPopupContent(HWND hwnd, HDC dc) {
             drawMetadataTag(dc, typeRect, kind, previewBackground,
                             highContrast ? border : previewBackground,
                             secondary, 3);
-            const std::wstring time = formatRelativeTime(item.timestamp);
+            const std::uint64_t displayedTimestamp = item.lastCopiedAt != 0
+                ? item.lastCopiedAt / 1000ULL : item.timestamp;
+            const std::wstring time = formatRelativeTime(displayedTimestamp);
             RECT timeRect{rowRect.right - ui(110), metadataTop,
                           rowRect.right - ui(54), metadataTop + ui(16)};
             SetTextColor(dc, secondary);
@@ -10428,6 +10850,24 @@ UINT shortcutModifiersFromKeyboard() {
     return modifiers;
 }
 
+bool historyHotkeyModifiersAreDown(UINT modifiers) {
+    if ((modifiers & MOD_CONTROL) && !(GetAsyncKeyState(VK_CONTROL) & 0x8000)) return false;
+    if ((modifiers & MOD_ALT) && !(GetAsyncKeyState(VK_MENU) & 0x8000)) return false;
+    if ((modifiers & MOD_SHIFT) && !(GetAsyncKeyState(VK_SHIFT) & 0x8000)) return false;
+    if ((modifiers & MOD_WIN) && !(GetAsyncKeyState(VK_LWIN) & 0x8000) &&
+        !(GetAsyncKeyState(VK_RWIN) & 0x8000)) return false;
+    return modifiers != 0;
+}
+
+bool historyHotkeyModifiersMatch(UINT modifiers, const KBDLLHOOKSTRUCT& key) {
+    UINT current = 0;
+    if (GetAsyncKeyState(VK_CONTROL) & 0x8000) current |= MOD_CONTROL;
+    if ((key.flags & LLKHF_ALTDOWN) || (GetAsyncKeyState(VK_MENU) & 0x8000)) current |= MOD_ALT;
+    if (GetAsyncKeyState(VK_SHIFT) & 0x8000) current |= MOD_SHIFT;
+    if ((GetAsyncKeyState(VK_LWIN) & 0x8000) || (GetAsyncKeyState(VK_RWIN) & 0x8000)) current |= MOD_WIN;
+    return (current & modifiers) == modifiers;
+}
+
 bool shortcutMatches(const ShortcutBinding& binding, UINT virtualKey) {
     return binding.virtualKey == virtualKey &&
            shortcutModifiersFromKeyboard() == binding.modifiers;
@@ -10704,27 +11144,29 @@ void createSettingsControlsModern(HWND hwnd) {
     createToggle(kSettingSearchOnOpen, 640, 474, g_app->settingsData.searchOnOpen);
     createToggle(kSettingRememberPopupFilter, 640, 509,
                  g_app->settingsData.rememberPopupFilter);
+    createToggle(kSettingModifierReleasePaste, 640, 544,
+                 g_app->settingsData.modifierReleasePaste);
     createThemeSelector(parent, kSettingPopupDensity, 544);
     createThemeSelector(parent, kSettingPopupPositionMode, 579);
     wchar_t popupPositionValue[32]{};
     swprintf_s(popupPositionValue, L"%d", g_app->settingsData.popupFixedX);
     CreateWindowExW(0, L"EDIT", popupPositionValue,
                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL,
-                    ui(520 - kSettingsSidebarWidth), ui(614 - kSettingsHeaderHeight),
+                    ui(520 - kSettingsSidebarWidth), ui(649 - kSettingsHeaderHeight),
                     ui(120), ui(30), parent,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingPopupFixedX)),
                     GetModuleHandleW(nullptr), nullptr);
     swprintf_s(popupPositionValue, L"%d", g_app->settingsData.popupFixedY);
     CreateWindowExW(0, L"EDIT", popupPositionValue,
                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOHSCROLL,
-                    ui(520 - kSettingsSidebarWidth), ui(649 - kSettingsHeaderHeight),
+                    ui(520 - kSettingsSidebarWidth), ui(684 - kSettingsHeaderHeight),
                     ui(120), ui(30), parent,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSettingPopupFixedY)),
                     GetModuleHandleW(nullptr), nullptr);
-    createToggle(kSettingPromotePastedItem, 640, 579,
+    createToggle(kSettingPromotePastedItem, 640, 614,
                  g_app->settingsData.promotePastedItem);
-    createToggle(kSettingPreviewAutomatic, 640, 614, g_app->settingsData.previewAutomatic);
-    createToggle(kSettingPreviewByKey, 640, 649, g_app->settingsData.previewByKey);
+    createToggle(kSettingPreviewAutomatic, 640, 649, g_app->settingsData.previewAutomatic);
+    createToggle(kSettingPreviewByKey, 640, 684, g_app->settingsData.previewByKey);
     createToggle(kSettingEncrypt, 640, 116, g_app->settingsData.encryptData);
     createToggle(kSettingProtectPinnedCleanup, 640, 650,
                  g_app->settingsData.protectPinnedFromAutoCleanup);
@@ -11000,7 +11442,7 @@ void updateSettingsTabControls(HWND hwnd, bool redraw) {
                            kSettingWinV, kSettingLanguage, kSettingPause,
                             kSettingStartup, kSettingStartupSettings, kSettingStartupNotification,
                              kSettingRunAsAdministrator, kSettingSearchImeCompatibility, kSettingSearchOnOpen,
-                             kSettingRememberPopupFilter,
+                             kSettingRememberPopupFilter, kSettingModifierReleasePaste,
                              kSettingPopupDensity,
                              kSettingPopupPositionMode, kSettingPopupFixedX, kSettingPopupFixedY,
                             kSettingPreviewAutomatic, kSettingPreviewByKey,
@@ -12425,7 +12867,7 @@ bool isSettingsToggle(int id) {
             id == kSettingStartupNotification || id == kSettingRunAsAdministrator ||
             id == kSettingAutoCheckUpdate ||
             id == kSettingSearchImeCompatibility || id == kSettingSearchOnOpen ||
-            id == kSettingRememberPopupFilter ||
+            id == kSettingRememberPopupFilter || id == kSettingModifierReleasePaste ||
             id == kSettingPromotePastedItem ||
            id == kSettingPreviewAutomatic || id == kSettingPreviewByKey || id == kSettingEncrypt ||
            id == kSettingProtectPinnedCleanup || id == kSettingSpecialAcrossCategories;
@@ -12745,6 +13187,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     HWND searchImeCompatibility = settingsControl(hwnd, kSettingSearchImeCompatibility);
     HWND searchOnOpen = settingsControl(hwnd, kSettingSearchOnOpen);
     HWND rememberPopupFilter = settingsControl(hwnd, kSettingRememberPopupFilter);
+    HWND modifierReleasePaste = settingsControl(hwnd, kSettingModifierReleasePaste);
     HWND popupFixedX = settingsControl(hwnd, kSettingPopupFixedX);
     HWND popupFixedY = settingsControl(hwnd, kSettingPopupFixedY);
     HWND promotePastedItem = settingsControl(hwnd, kSettingPromotePastedItem);
@@ -12762,7 +13205,8 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     if (!win || !language || !pause || !maxItems || !retentionDays || !maxDiskMb ||
         !maxContentMb || !dataDirectory || !updateProxy || !ignoredApps || !sensitiveExpiry || !startup ||
          !startupSettings || !startupNotification || !autoCheckUpdate || !runAsAdministrator ||
-           !searchImeCompatibility || !searchOnOpen || !rememberPopupFilter || !promotePastedItem ||
+           !searchImeCompatibility || !searchOnOpen || !rememberPopupFilter ||
+            !modifierReleasePaste || !promotePastedItem ||
            !popupFixedX || !popupFixedY ||
            !previewAutomatic ||
           !previewByKey || !protectPinnedCleanup || !specialAcrossCategories || !encrypt) {
@@ -12783,6 +13227,7 @@ bool syncSettingsFromControls(HWND hwnd, bool applyEncryption) {
     next.searchImeCompatibility = settingsToggleValue(searchImeCompatibility);
     next.searchOnOpen = settingsToggleValue(searchOnOpen);
     next.rememberPopupFilter = settingsToggleValue(rememberPopupFilter);
+    next.modifierReleasePaste = settingsToggleValue(modifierReleasePaste);
     readPopupCoordinate(popupFixedX, next.popupFixedX, next.popupFixedX);
     readPopupCoordinate(popupFixedY, next.popupFixedY, next.popupFixedY);
     next.promotePastedItem = settingsToggleValue(promotePastedItem);
@@ -15595,7 +16040,18 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 }
                 saveSettings(g_app->settingsData);
             } else if (wParam == kHotkeyAltV || wParam == kHotkeyWinV) {
-                showPopup();
+                const UINT modifiers = g_app->settingsData.historyHotkey.modifiers;
+                if (!g_app->historyHotkeySessionActive) {
+                    showPopup();
+                    if (g_app->settingsData.modifierReleasePaste && modifiers != 0 && g_app->popup) {
+                        g_app->historyHotkeySessionActive = true;
+                        g_app->historyHotkeyModifiersHeld = modifiers;
+                        g_app->historyHotkeyStarted = GetTickCount64();
+                        g_app->historyHotkeySelectionMoved = false;
+                        SetTimer(hwnd, kHistoryHotkeyReleaseTimer,
+                                 kHistoryHotkeyReleaseIntervalMs, nullptr);
+                    }
+                }
             }
             return 0;
         }
@@ -15717,6 +16173,12 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             updateDetailPreviewKeyState(lParam != 0);
             return 0;
         }
+        if (message == kHistoryHotkeyStepMessage && g_app->popup &&
+            g_app->historyHotkeySessionActive) {
+            movePopupSelection(VK_DOWN);
+            g_app->historyHotkeySelectionMoved = true;
+            return 0;
+        }
         if (message == kPopupKeyboardMessage && g_app->popup) {
             if (isPopupSelectionKey(static_cast<UINT>(wParam))) {
                 startPopupSelectionRepeat(static_cast<UINT>(wParam));
@@ -15779,6 +16241,23 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             scheduleStorageMaintenance();
             return 0;
         }
+        if (message == WM_TIMER && wParam == kHistoryHotkeyReleaseTimer) {
+            if (!g_app->historyHotkeySessionActive) {
+                KillTimer(hwnd, kHistoryHotkeyReleaseTimer);
+                return 0;
+            }
+            if (historyHotkeyModifiersAreDown(g_app->historyHotkeyModifiersHeld)) return 0;
+            KillTimer(hwnd, kHistoryHotkeyReleaseTimer);
+            const bool shouldPaste = g_app->historyHotkeySelectionMoved ||
+                GetTickCount64() - g_app->historyHotkeyStarted >= kHistoryHotkeyPasteHoldMs;
+            g_app->historyHotkeySessionActive = false;
+            g_app->historyHotkeyModifiersHeld = 0;
+            g_app->historyHotkeyStarted = 0;
+            g_app->historyHotkeySelectionMoved = false;
+            g_app->historyHotkeyStepDown = false;
+            if (shouldPaste && g_app->popup && !g_app->visible.empty()) sendPaste();
+            return 0;
+        }
         if (message == WM_TIMER && wParam == kPasteInputTimer) {
             dispatchPendingPaste();
             return 0;
@@ -15816,10 +16295,9 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                 const std::string source = std::move(result->source);
                 const std::size_t maxPayload = static_cast<std::size_t>(g_app->settingsData.maxContentMb) * 1024u * 1024u;
                 if (payload.size() <= maxPayload && !isIgnoredClipboardSource(source)) {
-                    const auto hash = clipboardDedupHash(type, payload);
+                    const std::uint64_t hash = clipboardDedupHash(type, payload);
                     const bool ignoredSelfWrite = GetTickCount64() <= g_app->ignoredClipboardUntil &&
-                        (hash == g_app->ignoredClipboardHash ||
-                         hash == g_app->ignoredClipboardTextHash);
+                        result->sequence == g_app->ignoredClipboardSequence;
                     if (!ignoredSelfWrite) {
                         const std::uint64_t expiresAt = g_app->settingsData.sensitiveExpiryHours > 0 &&
                             containsSensitiveMarker(type, payload)
@@ -15886,10 +16364,30 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         }
         if (message == WM_MOUSEMOVE) {
             KillTimer(g_app->popup, kPopupPreviewHideTimer);
+            const POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            const bool inTrigger =
+                (!g_app->detailPreviewTimeText.empty() &&
+                 PtInRect(&g_app->detailPreviewTimeHoverRect, point)) ||
+                (!g_app->detailPreviewNoteText.empty() &&
+                 PtInRect(&g_app->detailPreviewNoteHoverRect, point));
+            if (inTrigger && !g_app->detailPreviewDetailsActive) {
+                RECT previewClient{};
+                GetClientRect(hwnd, &previewClient);
+                const int overlayHeight = std::min(ui(160),
+                    std::max(0, static_cast<int>(previewClient.bottom) - ui(62)));
+                g_app->detailPreviewDetailsOverlayRect = RECT{
+                    ui(16), ui(62), previewClient.right - ui(16), ui(62) + overlayHeight};
+            }
+            const bool showDetails = inTrigger ||
+                (g_app->detailPreviewDetailsActive &&
+                 PtInRect(&g_app->detailPreviewDetailsOverlayRect, point));
+            if (showDetails != g_app->detailPreviewDetailsActive) {
+                g_app->detailPreviewDetailsActive = showDetails;
+                redrawDetailPreviewContentOverlay();
+            }
             TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};
             TrackMouseEvent(&tracking);
             if (g_app->detailPreviewDragging) {
-                const POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
                 g_app->detailPreviewState.panX = g_app->detailPreviewDragPanX +
                     point.x - g_app->detailPreviewDragStart.x;
                 g_app->detailPreviewState.panY = g_app->detailPreviewDragPanY +
@@ -15904,6 +16402,15 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
             POINT cursor{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             ScreenToClient(hwnd, &cursor);
+            if (g_app->detailPreviewDetailsActive &&
+                PtInRect(&g_app->detailPreviewDetailsOverlayRect, cursor)) {
+                const int direction = delta > 0 ? -1 : 1;
+                g_app->detailPreviewNoteScrollOffset = std::clamp(
+                    g_app->detailPreviewNoteScrollOffset + direction * ui(48),
+                    0, g_app->detailPreviewNoteScrollMax);
+                redrawDetailPreviewContentOverlay();
+                return 0;
+            }
             if (g_app->detailPreviewState.sourceBitmap) {
                 const RECT content = detailPreviewContentRect(hwnd);
                 if (PtInRect(&content, cursor)) {
@@ -15960,7 +16467,23 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (message == WM_MOUSELEAVE) {
             POINT cursor{};
             GetCursorPos(&cursor);
-            if (detailPreviewContainsPoint(cursor)) return 0;
+            if (detailPreviewContainsPoint(cursor)) {
+                ScreenToClient(g_app->detailPreview, &cursor);
+                const bool inTrigger =
+                    PtInRect(&g_app->detailPreviewTimeHoverRect, cursor) ||
+                    PtInRect(&g_app->detailPreviewNoteHoverRect, cursor);
+                const bool inOverlay = PtInRect(
+                    &g_app->detailPreviewDetailsOverlayRect, cursor);
+                if (g_app->detailPreviewDetailsActive && !inTrigger && !inOverlay) {
+                    g_app->detailPreviewDetailsActive = false;
+                    redrawDetailPreviewContentOverlay();
+                }
+                return 0;
+            }
+            if (g_app->detailPreviewDetailsActive) {
+                g_app->detailPreviewDetailsActive = false;
+                redrawDetailPreviewContentOverlay();
+            }
             if (!g_app->detailPreviewHeld && g_app->popup &&
                 g_app->settingsData.previewAutomatic) {
                 SetTimer(g_app->popup, kPopupPreviewHideTimer,
@@ -16564,6 +17087,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             }
             if (g_app->popup != hwnd || g_app->popupOpening ||
                  g_app->popupPinned || g_app->popupOpenedByWinV ||
+                 g_app->historyHotkeySessionActive ||
                   g_app->filterMenuOpen ||
                   g_app->popupContextMenuOpen ||
                  g_app->filterDragging || g_app->scrollDragging ||

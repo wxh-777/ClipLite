@@ -1,10 +1,9 @@
 # Changelog
 
-## Unreleased
+## [1.5.5] - 2026-10-30
 
-- Added a bounded multi-format clipboard snapshot for safely readable `HGLOBAL` standard and registered formats; paste restores stored representations using the existing v4 append-only storage. `IStream` and WPS-specific adapters are not included.
-- Fixed repeated rich clipboard entries by normalizing visible-text deduplication, merging equivalent unpinned/unfavorited records, and retaining self-write suppression across the notification grace window.
-- Added clipboard snapshot validation and regression coverage for duplicate rich-text records.
+- Added one-handed shortcut mode and improved history previews, keyboard navigation, and source labels.
+- Fixed image and file recognition, duplicate image pastes, and preview issues.
 
 ## [1.5.4] - 2026-10-16
 

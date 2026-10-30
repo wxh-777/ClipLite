@@ -15,6 +15,9 @@ struct ClipboardSnapshot {
     std::vector<ClipboardSnapshotFormat> formats;
 };
 
+// 判断 UTF-8 文本是否误包含 CF_HTML 控制头，而非用户可见正文。
+bool isClipboardHtmlHeaderText(const std::string& text);
+
 // 从已打开的系统剪贴板读取可持久化的 HGLOBAL 格式。
 bool captureClipboardSnapshot(ClipboardSnapshot& snapshot, std::string& displayText,
                              bool requireRichFormat = true);

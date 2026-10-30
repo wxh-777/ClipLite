@@ -10,6 +10,7 @@
 #include <cstring>
 #include <limits>
 #include <new>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -47,6 +48,32 @@ struct ResolvedFormat {
     std::string data;
     bool textLike = false;
 };
+
+std::string wideToUtf8(const std::wstring& value);
+
+bool isHtmlHeaderFormat(UINT format, const std::string& data) {
+    if (format != CF_UNICODETEXT && format != CF_TEXT && format != CF_OEMTEXT) return false;
+    std::string text;
+    if (format == CF_UNICODETEXT) {
+        std::wstring wide(data.size() / sizeof(wchar_t), L'\0');
+        std::memcpy(wide.data(), data.data(), wide.size() * sizeof(wchar_t));
+        const std::size_t terminator = wide.find(L'\0');
+        if (terminator != std::wstring::npos) wide.resize(terminator);
+        text = wideToUtf8(wide);
+    } else {
+        const UINT codePage = format == CF_OEMTEXT ? CP_OEMCP : CP_ACP;
+        const std::size_t terminator = data.find('\0');
+        const std::size_t length = terminator == std::string::npos ? data.size() : terminator;
+        const int wideLength = MultiByteToWideChar(codePage, 0, data.data(),
+            static_cast<int>(length), nullptr, 0);
+        if (wideLength <= 0) return false;
+        std::wstring wide(static_cast<std::size_t>(wideLength), L'\0');
+        if (MultiByteToWideChar(codePage, 0, data.data(), static_cast<int>(length),
+                                wide.data(), wideLength) != wideLength) return false;
+        text = wideToUtf8(wide);
+    }
+    return isClipboardHtmlHeaderText(text);
+}
 
 std::string lowerAscii(std::string value) {
     for (char& character : value) {
@@ -183,6 +210,7 @@ bool readDisplayText(std::string& displayText) {
                 while (length < maxChars && source[length] != L'\0') ++length;
                 displayText = wideToUtf8(std::wstring(source, length));
                 GlobalUnlock(handle);
+                if (isClipboardHtmlHeaderText(displayText)) displayText.clear();
                 if (!displayText.empty() && displayText.size() <= kMaxDisplayTextBytes) return true;
                 displayText.clear();
             }
@@ -199,6 +227,10 @@ bool readDisplayText(std::string& displayText) {
     if (MultiByteToWideChar(CP_ACP, 0, ansi.data(), static_cast<int>(ansi.size()),
                             wide.data(), required) != required) return false;
     displayText = wideToUtf8(wide);
+    if (isClipboardHtmlHeaderText(displayText)) {
+        displayText.clear();
+        return false;
+    }
     return !displayText.empty() && displayText.size() <= kMaxDisplayTextBytes;
 }
 
@@ -325,6 +357,28 @@ bool resolveSnapshotFormats(const ClipboardSnapshot& snapshot,
 
 } // namespace
 
+bool isClipboardHtmlHeaderText(const std::string& text) {
+    if (text.size() < 40) return false;
+    std::size_t lineStart = text.compare(0, 3, "\xEF\xBB\xBF") == 0 ? 3 : 0;
+    bool hasStartHtml = false;
+    bool hasEndHtml = false;
+    bool hasStartFragment = false;
+    bool hasEndFragment = false;
+    for (int line = 0; line < 6 && lineStart < text.size(); ++line) {
+        const std::size_t lineEnd = text.find_first_of("\r\n", lineStart);
+        const std::size_t length = (lineEnd == std::string::npos ? text.size() : lineEnd) - lineStart;
+        const std::string_view value(text.data() + lineStart, length);
+        hasStartHtml = hasStartHtml || value.substr(0, 10) == "StartHTML:";
+        hasEndHtml = hasEndHtml || value.substr(0, 8) == "EndHTML:";
+        hasStartFragment = hasStartFragment || value.substr(0, 14) == "StartFragment:";
+        hasEndFragment = hasEndFragment || value.substr(0, 12) == "EndFragment:";
+        if (lineEnd == std::string::npos) break;
+        lineStart = lineEnd + 1;
+        if (text[lineEnd] == '\r' && lineStart < text.size() && text[lineStart] == '\n') ++lineStart;
+    }
+    return hasStartHtml && hasEndHtml && hasStartFragment && hasEndFragment;
+}
+
 bool captureClipboardSnapshot(ClipboardSnapshot& snapshot, std::string& displayText,
                               bool requireRichFormat) {
     snapshot = ClipboardSnapshot{};
@@ -340,7 +394,7 @@ bool captureClipboardSnapshot(ClipboardSnapshot& snapshot, std::string& displayT
         if (standard && format != CF_UNICODETEXT && format != CF_TEXT && format != CF_OEMTEXT &&
             format != CF_DIB && format != CF_DIBV5) continue;
         std::string data;
-        if (!readGlobalData(format, data)) continue;
+        if (!readGlobalData(format, data) || isHtmlHeaderFormat(format, data)) continue;
         ClipboardSnapshotFormat item;
         item.standardFormat = standard ? static_cast<std::uint16_t>(format) : 0;
         item.name = std::move(name);

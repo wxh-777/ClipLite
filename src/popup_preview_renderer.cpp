@@ -44,8 +44,6 @@ void PopupPreviewRenderer::detach() {
 
 void PopupPreviewRenderer::resize(const RECT& content) {
     if (!window_) return;
-    // 在图片到达前预热渲染目标，避免首次显示图片时同步创建 Direct2D 资源。
-    createDeviceResources();
     SetWindowPos(window_, nullptr, content.left, content.top,
                  std::max(0L, content.right - content.left),
                  std::max(0L, content.bottom - content.top),
@@ -72,8 +70,7 @@ void PopupPreviewRenderer::setSource(HBITMAP bitmap, int bitmapWidth, int bitmap
     sourceHeight_ = sourceHeight;
     premultipliedAlpha_ = premultipliedAlpha;
     ShowWindow(window_, SW_SHOWNOACTIVATE);
-    if (!createDeviceResources()) return;
-    createSourceResource();
+    if (createDeviceResources()) createSourceResource();
     InvalidateRect(window_, nullptr, FALSE);
 }
 
@@ -133,7 +130,7 @@ bool PopupPreviewRenderer::createDeviceResources() {
         static_cast<UINT>(std::max(1L, client.right - client.left)),
         static_cast<UINT>(std::max(1L, client.bottom - client.top)));
     const D2D1_RENDER_TARGET_PROPERTIES properties = D2D1::RenderTargetProperties(
-        D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        D2D1_RENDER_TARGET_TYPE_SOFTWARE,
         D2D1::PixelFormat(DXGI_FORMAT_UNKNOWN, D2D1_ALPHA_MODE_UNKNOWN),
         96.0f, 96.0f);
     return factory_->CreateHwndRenderTarget(
@@ -156,7 +153,7 @@ void PopupPreviewRenderer::paint(HDC dc) {
         DeleteObject(brush);
         return;
     }
-    if (!createDeviceResources()) {
+    if (!createDeviceResources() || (!source_ && !createSourceResource())) {
         const RECT client = [&] { RECT value{}; GetClientRect(window_, &value); return value; }();
         HBRUSH brush = CreateSolidBrush(background_);
         FillRect(dc, &client, brush);
@@ -182,7 +179,6 @@ void PopupPreviewRenderer::paint(HDC dc) {
         }
         return;
     }
-    if (!source_ && !createSourceResource()) return;
     renderTarget_->BeginDraw();
     renderTarget_->Clear(D2D1::ColorF(
         GetRValue(background_) / 255.0f,
@@ -230,6 +226,10 @@ LRESULT PopupPreviewRenderer::handleMessage(HWND hwnd, UINT message,
     if (message == WM_MOUSEMOVE || message == WM_LBUTTONDOWN || message == WM_LBUTTONUP ||
         message == WM_LBUTTONDBLCLK || message == WM_RBUTTONDOWN || message == WM_RBUTTONUP ||
         message == WM_MBUTTONDOWN || message == WM_MBUTTONUP) {
+        if (message == WM_MOUSEMOVE) {
+            TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};
+            TrackMouseEvent(&tracking);
+        }
         POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         ClientToScreen(hwnd, &point);
         ScreenToClient(parent_, &point);
